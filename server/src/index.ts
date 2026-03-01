@@ -14,6 +14,10 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Enable trust proxy for cloud platforms (Railway, Render, etc.)
+// This prevents express-rate-limit validation errors
+app.set('trust proxy', 1);
+
 // ── Security Middleware ─────────────────────────────────────────────────────
 app.use(helmet());
 

@@ -15,13 +15,17 @@ if (!connectionString) {
 let finalUrl = connectionString || '';
 if (finalUrl && !finalUrl.includes('localhost') && !finalUrl.includes('127.0.0.1')) {
     if (!finalUrl.includes('sslmode=')) {
-        finalUrl += finalUrl.includes('?') ? '&sslmode=require' : '?sslmode=require';
+        // Updated to verify-full to satisfy newer pg versions and remove security warnings
+        finalUrl += finalUrl.includes('?') ? '&sslmode=verify-full' : '?sslmode=verify-full';
+    } else {
+        finalUrl = finalUrl.replace(/sslmode=(require|prefer|verify-ca)/, 'sslmode=verify-full');
     }
 }
 
 const pool = new Pool({
     connectionString: finalUrl,
-    ssl: finalUrl.includes('sslmode=require') ? { rejectUnauthorized: false } : false,
+    ssl: finalUrl.includes('sslmode=verify-full') ? { rejectUnauthorized: false } : false,
+    connectionTimeoutMillis: 10000, // 10s timeout to prevent infinite hangs
 });
 
 // Detailed error logging

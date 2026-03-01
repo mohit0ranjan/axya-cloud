@@ -4,18 +4,24 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 // Neon DB connection or local Postgres
-let connectionString = process.env.DATABASE_URL || '';
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+    console.error('❌ CRITICAL: DATABASE_URL is not defined in environment variables.');
+    console.error('💡 If deploying to Railway, add it in the "Variables" tab.');
+}
 
 // Silence PG warnings about SSL modes
-if (connectionString && !connectionString.includes('localhost') && !connectionString.includes('127.0.0.1')) {
-    if (!connectionString.includes('sslmode=')) {
-        connectionString += connectionString.includes('?') ? '&sslmode=require' : '?sslmode=require';
+let finalUrl = connectionString || '';
+if (finalUrl && !finalUrl.includes('localhost') && !finalUrl.includes('127.0.0.1')) {
+    if (!finalUrl.includes('sslmode=')) {
+        finalUrl += finalUrl.includes('?') ? '&sslmode=require' : '?sslmode=require';
     }
 }
 
 const pool = new Pool({
-    connectionString,
-    ssl: connectionString.includes('sslmode=require') ? { rejectUnauthorized: false } : false,
+    connectionString: finalUrl,
+    ssl: finalUrl.includes('sslmode=require') ? { rejectUnauthorized: false } : false,
 });
 
 // Detailed error logging

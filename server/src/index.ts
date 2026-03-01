@@ -15,7 +15,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Logging all incoming requests
-app.all('*', (req, res, next) => {
+app.use((req, res, next) => {
     console.log(`📥 [Request] ${req.method} ${req.url}`);
     next();
 });

@@ -12,10 +12,21 @@ export const sendCode = async (req: Request, res: Response) => {
     }
 
     try {
+        console.log(`📡 [Auth] Requesting code for: ${phoneNumber}`);
         const { phoneCodeHash, tempSession } = await generateOTP(phoneNumber);
+        console.log(`✅ [Auth] Code sent successfully`);
         res.json({ success: true, phoneCodeHash, tempSession });
     } catch (err: any) {
-        res.status(500).json({ success: false, error: err.message });
+        console.error('❌ [Auth Error] Telegram SendCode failed:', err);
+
+        let errorMessage = err.message || 'Telegram connection failed';
+        if (errorMessage.includes('API_ID_INVALID')) {
+            errorMessage = 'Invalid Telegram API ID or Hash. Check your .env variables.';
+        } else if (errorMessage.includes('PHONE_NUMBER_INVALID')) {
+            errorMessage = 'The phone number format is invalid. Use international format (e.g., +1234567890).';
+        }
+
+        res.status(500).json({ success: false, error: errorMessage });
     }
 };
 

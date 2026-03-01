@@ -15,6 +15,7 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.mohit.axya",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -29,6 +30,11 @@
       "expo-sharing",
       "expo-image",
       "expo-video"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "62c6665f-2655-4874-baa2-6b07e6bca3d7"
+      }
+    }
   }
 }

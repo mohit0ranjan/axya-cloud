@@ -42,14 +42,31 @@ export const getDynamicClient = async (sessionString: string) => {
 
 export const generateOTP = async (phoneNumber: string) => {
     const { apiId, apiHash } = getApiConfig();
-    const client = new TelegramClient(new StringSession(""), apiId, apiHash, { connectionRetries: 5 });
-    await client.connect();
+    const cleanPhone = phoneNumber.replace(/\s/g, ''); // Remove spaces
 
-    const { phoneCodeHash } = await client.sendCode({ apiId, apiHash }, phoneNumber);
+    console.log(`🔌 [Telegram] Initializing client for ${cleanPhone}...`);
+    const client = new TelegramClient(new StringSession(""), apiId, apiHash, {
+        connectionRetries: 3,
+        useWSS: false, // Sometimes useful for node environments
+    });
 
-    const tempSession = client.session.save() as unknown as string;
-    await client.disconnect();
-    return { phoneCodeHash, tempSession };
+    try {
+        await client.connect();
+        console.log(`📶 [Telegram] Connected. Sending code...`);
+
+        const { phoneCodeHash } = await client.sendCode({
+            apiId: apiId,
+            apiHash: apiHash
+        }, cleanPhone);
+
+        const tempSession = client.session.save() as unknown as string;
+        await client.disconnect();
+        return { phoneCodeHash, tempSession };
+    } catch (e: any) {
+        console.error(`🧨 [Telegram Error]`, e.message);
+        try { await client.disconnect(); } catch (sh) { }
+        throw e;
+    }
 };
 
 export const verifyOTPAndSignIn = async (phoneNumber: string, phoneCodeHash: string, phoneCode: string, tempSession: string) => {

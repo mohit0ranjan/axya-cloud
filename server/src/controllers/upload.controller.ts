@@ -80,7 +80,7 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
     if (hash) {
         try {
             const existing = await pool.query(
-                `SELECT * FROM files WHERE sha256_hash = $1 AND user_id = $2 LIMIT 1`,
+                `SELECT * FROM files WHERE (sha256_hash = $1 OR md5_hash = $1) AND user_id = $2 LIMIT 1`,
                 [hash, req.user.id]
             );
 
@@ -92,8 +92,8 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
                 if (effectiveFolderId && effectiveFolderId !== existingFile.folder_id) {
                     // Insert a new DB row that reuses the same telegram_file_id
                     const newFileRes = await pool.query(
-                        `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+                        `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
                         [
                             req.user.id,
                             effectiveFolderId,
@@ -103,7 +103,8 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
                             existingFile.telegram_message_id,
                             existingFile.telegram_chat_id,
                             existingFile.mime_type,
-                            hash,
+                            existingFile.sha256_hash,
+                            existingFile.md5_hash,
                         ]
                     );
                     console.log(`[Upload] Duplicate detected → inserted reference in folder ${effectiveFolderId}`);
@@ -210,15 +211,15 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
             const client = await getDynamicClient(state.sessionString);
             const fileBuffer = fs.readFileSync(state.filePath);
 
-            // Compute server-side hash (may differ from client MD5 if client sent one)
+            // Compute server-side hashes
             const serverHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-            const finalHash = state.clientHash || serverHash;
+            const serverMd5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
 
-            // Secondary server-side dedup (in case client hash was missing)
-            if (!state.clientHash) {
+            // Secondary server-side dedup (in case client hash was missing or mismatched)
+            if (true) { // Always check at the end to be completely safe
                 const existing = await pool.query(
-                    `SELECT * FROM files WHERE sha256_hash = $1 AND user_id = $2 LIMIT 1`,
-                    [serverHash, state.userId]
+                    `SELECT * FROM files WHERE (sha256_hash = $1 OR md5_hash = $2) AND user_id = $3 LIMIT 1`,
+                    [serverHash, serverMd5, state.userId]
                 );
                 if (existing.rows.length > 0) {
                     if (fs.existsSync(state.filePath)) fs.unlinkSync(state.filePath);
@@ -262,8 +263,8 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                     : '';
 
             const result = await pool.query(
-                `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+                `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
                 [
                     state.userId,
                     state.folder_id,
@@ -273,7 +274,8 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                     messageId,
                     state.telegram_chat_id,
                     state.mimetype,
-                    finalHash,
+                    serverHash,
+                    serverMd5,
                 ]
             );
 

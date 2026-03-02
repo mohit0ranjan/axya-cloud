@@ -80,12 +80,12 @@ export default function UploadProgressOverlay() {
             </View>
             <View style={s.taskActions}>
                 {item.status === 'uploading' && (
-                    <TouchableOpacity onPress={() => cancelTask(item.id)}>
+                    <TouchableOpacity onPress={() => cancelTask(item.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                         <X color={C.muted} size={18} />
                     </TouchableOpacity>
                 )}
                 {item.status === 'failed' && (
-                    <TouchableOpacity onPress={() => retryTask(item.id)}>
+                    <TouchableOpacity onPress={() => retryTask(item.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                         <Play color={C.primary} size={18} />
                     </TouchableOpacity>
                 )}
@@ -99,12 +99,12 @@ export default function UploadProgressOverlay() {
     return (
         <Animated.View style={[s.container, { height: overlayHeight }]}>
             {/* Header / Summary Bar */}
-            <TouchableOpacity
-                activeOpacity={0.9}
-                onPress={toggleExpand}
-                style={s.header}
-            >
-                <View style={s.headerInfo}>
+            <View style={s.header}>
+                <TouchableOpacity
+                    activeOpacity={0.9}
+                    onPress={toggleExpand}
+                    style={s.headerInfo}
+                >
                     <Text style={s.headerTitle}>
                         {activeTasks.length > 0 ? `Uploading ${activeTasks.length} file(s)...` :
                             failedTasks.length > 0 ? `${failedTasks.length} upload(s) failed` :
@@ -113,17 +113,19 @@ export default function UploadProgressOverlay() {
                     <Text style={s.headerSub}>
                         {Math.round(overallProgress)}% overall
                     </Text>
-                </View>
+                </TouchableOpacity>
 
                 <View style={s.headerActions}>
-                    {expanded ? <ChevronDown color={C.text} size={24} /> : <ChevronUp color={C.text} size={24} />}
+                    <TouchableOpacity onPress={toggleExpand} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                        {expanded ? <ChevronDown color={C.text} size={24} /> : <ChevronUp color={C.text} size={24} />}
+                    </TouchableOpacity>
                     {!expanded && (
-                        <TouchableOpacity style={s.closeBtn} onPress={clearCompleted}>
+                        <TouchableOpacity style={s.closeBtn} onPress={clearCompleted} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                             <X color={C.text} size={20} />
                         </TouchableOpacity>
                     )}
                 </View>
-            </TouchableOpacity>
+            </View>
 
             {/* Progress Bar (Always visible on top of header) */}
             <View style={s.mainProgressTrack}>
@@ -135,7 +137,7 @@ export default function UploadProgressOverlay() {
                 <View style={s.listContainer}>
                     <View style={s.listHeader}>
                         <Text style={s.listTitle}>Upload Queue</Text>
-                        <TouchableOpacity onPress={clearCompleted}>
+                        <TouchableOpacity onPress={clearCompleted} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                             <Text style={s.clearText}>Clear Finished</Text>
                         </TouchableOpacity>
                     </View>

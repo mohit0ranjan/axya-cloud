@@ -21,7 +21,7 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import FilesScreen from './src/screens/FilesScreen';
 import UploadProgressOverlay from './src/components/UploadProgressOverlay';
-
+import ServerWakingOverlay from './src/components/ServerWakingOverlay';
 
 const Stack = createNativeStackNavigator();
 
@@ -66,6 +66,7 @@ function RootNavigator() {
                     )}
                 </Stack.Navigator>
                 {isAuthenticated && <UploadProgressOverlay />}
+                <ServerWakingOverlay />
             </View>
         </NavigationContainer>
     );

@@ -44,6 +44,9 @@ export default function UploadProgressOverlay() {
     const [expanded, setExpanded] = useState(false);
     const [animation] = useState(new Animated.Value(0));
 
+    // Stable handlers via useCallback to prevent child re-renders
+    const handleRetry = useCallback((id: string) => resumeUpload(id), [resumeUpload]);
+
     // Don't render if nothing to show
     if (tasks.length === 0) return null;
 
@@ -73,9 +76,6 @@ export default function UploadProgressOverlay() {
             : hasFailed
                 ? 'Some uploads failed ⚠️'
                 : 'Upload queue';
-
-    // Stable handlers via useCallback to prevent child re-renders
-    const handleRetry = useCallback((id: string) => resumeUpload(id), [resumeUpload]);
 
     return (
         <Animated.View style={[s.container, { height: overlayHeight }]}>

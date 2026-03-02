@@ -3,6 +3,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { ActivityIndicator, Platform, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { AuthProvider, AuthContext } from './src/context/AuthContext';
 import { ToastProvider } from './src/context/ToastContext';
@@ -113,16 +114,18 @@ export default function App() {
     }, []);
 
     return (
-        <ThemeProvider>
-            <ServerStatusProvider>
-                <UploadProvider>
-                    <AuthProvider>
-                        <ToastProvider>
-                            <RootNavigator />
-                        </ToastProvider>
-                    </AuthProvider>
-                </UploadProvider>
-            </ServerStatusProvider>
-        </ThemeProvider>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+            <ThemeProvider>
+                <ServerStatusProvider>
+                    <UploadProvider>
+                        <AuthProvider>
+                            <ToastProvider>
+                                <RootNavigator />
+                            </ToastProvider>
+                        </AuthProvider>
+                    </UploadProvider>
+                </ServerStatusProvider>
+            </ThemeProvider>
+        </GestureHandlerRootView>
     );
 }

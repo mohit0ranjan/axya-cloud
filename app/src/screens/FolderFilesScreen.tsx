@@ -282,7 +282,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
 
     const handleUploadInit = async () => {
         try {
-            const res = await DocumentPicker.getDocumentAsync({ type: '*/*', multiple: true });
+            const res = await DocumentPicker.getDocumentAsync({ type: '*/*', multiple: true, copyToCacheDirectory: true });
             if (res.canceled) return;
             const fileAssets = res.assets.map(a => ({
                 uri: a.uri,

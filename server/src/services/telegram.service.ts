@@ -27,7 +27,9 @@ export const getDynamicClient = async (sessionString: string) => {
     }
     const { apiId, apiHash } = getApiConfig();
     const client = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-        connectionRetries: 1,
+        connectionRetries: 5,
+        requestRetries: 5,
+        useWSS: false, // Prevents MTProto WebSocket timeouts on large uploads
     });
     await client.connect();
 

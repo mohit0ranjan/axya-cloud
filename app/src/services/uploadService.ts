@@ -1,8 +1,17 @@
+/**
+ * uploadService.ts — Standalone upload helper (used outside the queue)
+ *
+ * ✅ expo-file-system SDK 55 new API only — no deprecated APIs
+ * ✅ File.open() + FileHandle.readBytes() for chunk reads
+ * ✅ File.md5 for hash (no getInfoAsync)
+ * ✅ Full cancellation support via isCancelled() callback + AbortSignal
+ */
+
+import { File } from 'expo-file-system';
 import { Platform } from 'react-native';
-import * as FileSystem from 'expo-file-system/legacy';
 import apiClient, { uploadClient } from './apiClient';
 
-const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
 
 export interface FileAsset {
     uri: string;
@@ -11,108 +20,175 @@ export interface FileAsset {
     mimeType?: string;
 }
 
-export type ProgressCallback = (progress: number) => void;
+export type ProgressCallback = (progress: number, bytesUploaded: number) => void;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+    let binary = '';
+    const chunkSize = 8192;
+    for (let i = 0; i < bytes.byteLength; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)) as number[]);
+    }
+    return btoa(binary);
+}
+
+/**
+ * Read `length` bytes from a file URI starting at `offset`, returns Base64.
+ * Uses File + FileHandle (new SDK 55 API) for file:// URIs.
+ * Falls back to fetch() + Range header for content:// URIs.
+ */
+async function readFileChunkAsBase64(
+    uri: string,
+    offset: number,
+    length: number
+): Promise<string> {
+    if (uri.startsWith('file://')) {
+        try {
+            const fileObj = new File(uri);
+            const handle = fileObj.open();
+            handle.offset = offset;
+            const chunk = handle.readBytes(length);
+            handle.close();
+            return uint8ArrayToBase64(chunk);
+        } catch (e) {
+            console.warn('[uploadService] FileHandle failed, using fetch fallback:', e);
+        }
+    }
+
+    const response = await fetch(uri, {
+        headers: { Range: `bytes=${offset}-${offset + length - 1}` },
+    });
+    if (!response.ok && response.status !== 206 && response.status !== 200) {
+        throw new Error(`Failed to read file chunk (HTTP ${response.status})`);
+    }
+    const buffer = await response.arrayBuffer();
+    return uint8ArrayToBase64(new Uint8Array(buffer));
+}
+
+// ─── Main export ──────────────────────────────────────────────────────────────
 
 export const uploadFile = async (
     file: FileAsset,
     folderId: string | null,
     chatTarget: string = 'me',
     onProgress: ProgressCallback,
-    isCancelled: () => boolean
-) => {
+    isCancelled: () => boolean,
+    abortSignal?: AbortSignal
+): Promise<void> => {
     const { uri, name, size, mimeType } = file;
-    const originalname = name;
     const mimetype = mimeType || 'application/octet-stream';
 
-    // 1. Initialize
-    const initRes = await uploadClient.post('/files/upload/init', {
-        originalname,
-        size,
-        mimetype,
-        telegram_chat_id: chatTarget,
-        folder_id: folderId
-    });
-    const { uploadId } = initRes.data;
+    const throwIfCancelled = () => {
+        if (isCancelled() || abortSignal?.aborted) throw new Error('Cancelled');
+    };
 
+    // ── Step 1: Hash ──────────────────────────────────────────────────────
+    let fileHash = '';
+    if (Platform.OS !== 'web') {
+        try {
+            const fileObj = new File(uri);
+            fileHash = fileObj.md5 ?? '';
+        } catch { /* optional */ }
+    }
+
+    throwIfCancelled();
+
+    // ── Step 2: Init ──────────────────────────────────────────────────────
+    const initRes = await uploadClient.post(
+        '/files/upload/init',
+        { originalname: name, size, mimetype, telegram_chat_id: chatTarget, folder_id: folderId, hash: fileHash },
+        { signal: abortSignal }
+    );
+
+    if (initRes.data.duplicate) {
+        onProgress(100, size);
+        return;
+    }
+
+    const { uploadId } = initRes.data;
     let offset = 0;
     let chunkIndex = 0;
 
-    // 2. Upload chunks
+    // ── Step 3: Chunks ────────────────────────────────────────────────────
     if (Platform.OS === 'web') {
-        const blobResponse = await fetch(uri);
-        const blob = await blobResponse.blob();
+        const blobResp = await fetch(uri);
+        const blob = await blobResp.blob();
 
         while (offset < size) {
-            if (isCancelled()) throw new Error('Cancelled');
-
+            throwIfCancelled();
             const chunk = blob.slice(offset, offset + CHUNK_SIZE);
             const formData = new FormData();
             formData.append('uploadId', uploadId);
             formData.append('chunkIndex', String(chunkIndex));
-            formData.append('chunk', new File([chunk], originalname, { type: mimetype }));
+            formData.append('chunk', new globalThis.File([chunk], name, { type: mimetype }));
 
-            await uploadClient.post('/files/upload/chunk', formData);
-            offset += CHUNK_SIZE;
+            await uploadClient.post('/files/upload/chunk', formData, { signal: abortSignal });
+            offset = Math.min(offset + CHUNK_SIZE, size);
             chunkIndex++;
-            onProgress(Math.min((offset / size) * 50, 50));
+            onProgress(Math.round(Math.min((offset / size) * 45, 45)), offset);
         }
     } else {
         while (offset < size) {
-            if (isCancelled()) throw new Error('Cancelled');
-
+            throwIfCancelled();
             const length = Math.min(CHUNK_SIZE, size - offset);
-            const chunkBase64 = await FileSystem.readAsStringAsync(uri, {
-                encoding: 'base64',
-                position: offset,
-                length: length
-            });
+            const chunkBase64 = await readFileChunkAsBase64(uri, offset, length);
+            throwIfCancelled();
 
-            await uploadClient.post('/files/upload/chunk', {
-                uploadId,
-                chunkIndex,
-                chunkBase64
-            });
+            await uploadClient.post(
+                '/files/upload/chunk',
+                { uploadId, chunkIndex, chunkBase64 },
+                { signal: abortSignal }
+            );
 
             offset += length;
             chunkIndex++;
-            onProgress(Math.min((offset / size) * 45, 45)); // 45% for app->server
+            onProgress(Math.round(Math.min((offset / size) * 45, 45)), offset);
         }
     }
 
-    // 3. Complete server-side upload
-    if (isCancelled()) throw new Error('Cancelled');
-    onProgress(50);
-    await uploadClient.post('/files/upload/complete', { uploadId });
+    throwIfCancelled();
+    onProgress(50, size);
 
-    // 4. Poll for Telegram status
-    return new Promise<void>((resolve, reject) => {
+    // ── Step 4: Complete ──────────────────────────────────────────────────
+    await uploadClient.post('/files/upload/complete', { uploadId }, { signal: abortSignal });
+
+    // ── Step 5: Poll ──────────────────────────────────────────────────────
+    await new Promise<void>((resolve, reject) => {
+        const maxWait = Date.now() + 10 * 60 * 1000;
+
         const timer = setInterval(async () => {
-            if (isCancelled()) {
+            if (isCancelled() || abortSignal?.aborted || Date.now() > maxWait) {
                 clearInterval(timer);
                 reject(new Error('Cancelled'));
                 return;
             }
 
             try {
-                const statusRes = await apiClient.get(`/files/upload/status/${uploadId}`);
-                const state = statusRes.data;
+                const res = await apiClient.get(`/files/upload/status/${uploadId}`, { signal: abortSignal });
+                const { status, progress: tgProgress, error: tgError } = res.data;
 
-                if (state.status === 'completed') {
+                if (status === 'completed') {
                     clearInterval(timer);
-                    onProgress(100);
+                    onProgress(100, size);
                     resolve();
-                } else if (state.status === 'error') {
+                } else if (status === 'error') {
                     clearInterval(timer);
-                    reject(new Error(state.error || 'Telegram upload failed'));
+                    reject(new Error(tgError || 'Telegram upload failed'));
                 } else {
-                    // Update progress (50% to 100% range)
-                    const telegramProgress = state.progress || 0;
-                    onProgress(50 + (telegramProgress * 0.5));
+                    onProgress(Math.round(50 + ((tgProgress || 0) * 0.5)), size * 0.5);
                 }
-            } catch (e) {
-                // Ignore transient errors while polling
-                console.warn('[Upload] Poll error:', e);
+            } catch (e: any) {
+                if (e.name === 'CanceledError' || e.name === 'AbortError') {
+                    clearInterval(timer);
+                    reject(new Error('Cancelled'));
+                }
             }
         }, 2000);
+
+        abortSignal?.addEventListener('abort', () => {
+            clearInterval(timer);
+            reject(new Error('Cancelled'));
+        });
     });
 };

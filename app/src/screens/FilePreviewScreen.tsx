@@ -8,7 +8,7 @@ import { ArrowLeft, Download, Trash2, FileText, FolderInput, Star, Link, CheckCi
 
 import { Image } from 'expo-image';
 import VideoPlayer from '../components/VideoPlayer';
-import * as FileSystem from 'expo-file-system/legacy';
+import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -16,11 +16,30 @@ import apiClient, { API_BASE } from '../services/apiClient';
 import { useToast } from '../context/ToastContext';
 import { theme } from '../ui/theme';
 
+// react-native-reanimated v3/v4 — import as `Animated` (standard naming)
+import Animated2, {
+    useSharedValue,
+    useAnimatedStyle,
+    withSpring,
+} from 'react-native-reanimated';
+
+// react-native-gesture-handler v2
+// GestureHandlerRootView is now in App.tsx — do NOT import here
+import { GestureDetector, Gesture } from 'react-native-gesture-handler';
+
 const { width, height } = Dimensions.get('window');
 
 // ─────────────────────────────────────────────────────────────
-// ImagePreviewItem — own loading/error state per image
-// This is the key fix: each FlatList slide has its own state
+// Module-level constants (safe to capture inside worklets)
+// ─────────────────────────────────────────────────────────────
+const MIN_SCALE = 1;
+const MAX_SCALE = 5;
+const IMG_H = height * 0.65;   // module-level — worklets can safely reference this
+const SPRING_CFG = { damping: 20, stiffness: 200 };
+
+// ─────────────────────────────────────────────────────────────
+// ImagePreviewItem — pinch-zoom, pan, double-tap reset
+// GestureHandlerRootView is at App.tsx root, not needed here.
 // ─────────────────────────────────────────────────────────────
 function ImagePreviewItem({ item, jwt }: { item: any; jwt: string }) {
     const [loading, setLoading] = useState(true);
@@ -32,8 +51,89 @@ function ImagePreviewItem({ item, jwt }: { item: any; jwt: string }) {
     const headers = { Authorization: `Bearer ${jwt}` };
     const src = useFallback ? downloadUrl : thumbUrl;
 
+    // ── Gesture shared values ────────────────────────────────────────
+    const scale = useSharedValue(1);
+    const savedScale = useSharedValue(1);
+    const translateX = useSharedValue(0);
+    const translateY = useSharedValue(0);
+    const savedTransX = useSharedValue(0);
+    const savedTransY = useSharedValue(0);
+
+    // ── Pinch ────────────────────────────────────────────────────────
+    const pinch = Gesture.Pinch()
+        .onUpdate(e => {
+            'worklet';
+            scale.value = Math.max(MIN_SCALE, Math.min(MAX_SCALE, savedScale.value * e.scale));
+        })
+        .onEnd(() => {
+            'worklet';
+            if (scale.value < 1.05) {
+                scale.value = withSpring(1, SPRING_CFG);
+                translateX.value = withSpring(0, SPRING_CFG);
+                translateY.value = withSpring(0, SPRING_CFG);
+                savedScale.value = 1;
+                savedTransX.value = 0;
+                savedTransY.value = 0;
+            } else {
+                savedScale.value = scale.value;
+                // clamp inline — module-level IMG_H is safe here
+                const maxX = (width * (scale.value - 1)) / 2;
+                const maxY = (IMG_H * (scale.value - 1)) / 2;
+                const cx = Math.max(-maxX, Math.min(maxX, translateX.value));
+                const cy = Math.max(-maxY, Math.min(maxY, translateY.value));
+                translateX.value = cx;
+                translateY.value = cy;
+                savedTransX.value = cx;
+                savedTransY.value = cy;
+            }
+        });
+
+    // ── Pan (only active while zoomed; minDistance avoids FlatList conflict) ──
+    const pan = Gesture.Pan()
+        .averageTouches(true)
+        .minDistance(4)              // short threshold so it activates fast
+        .onUpdate(e => {
+            'worklet';
+            if (scale.value <= 1) return; // don't steal from FlatList when at 1x
+            const maxX = (width * (scale.value - 1)) / 2;
+            const maxY = (IMG_H * (scale.value - 1)) / 2;
+            translateX.value = Math.max(-maxX, Math.min(maxX, savedTransX.value + e.translationX));
+            translateY.value = Math.max(-maxY, Math.min(maxY, savedTransY.value + e.translationY));
+        })
+        .onEnd(() => {
+            'worklet';
+            savedTransX.value = translateX.value;
+            savedTransY.value = translateY.value;
+        });
+
+    // ── Double-tap to reset ──────────────────────────────────────────
+    const doubleTap = Gesture.Tap()
+        .numberOfTaps(2)
+        .maxDelay(250)               // maxDelay not maxDuration (RNGH v2 API)
+        .onEnd(() => {
+            'worklet';
+            scale.value = withSpring(1, SPRING_CFG);
+            translateX.value = withSpring(0, SPRING_CFG);
+            translateY.value = withSpring(0, SPRING_CFG);
+            savedScale.value = 1;
+            savedTransX.value = 0;
+            savedTransY.value = 0;
+        });
+
+    // Pinch + pan run simultaneously; double-tap is parallel
+    const composed = Gesture.Simultaneous(pinch, pan, doubleTap);
+
+    const animStyle = useAnimatedStyle(() => ({
+        transform: [
+            { scale: scale.value as number },
+            { translateX: translateX.value as number },
+            { translateY: translateY.value as number },
+        ] as any,   // Reanimated v4 strict transform types — `as any` is safe here
+    }));
+
     return (
-        <View style={{ width, flex: 1, backgroundColor: '#0a0a0f', justifyContent: 'center', alignItems: 'center' }}>
+        <View style={{ width, flex: 1, backgroundColor: '#0a0a0f' }}>
+            {/* Loading spinner */}
             {loading && (
                 <View style={StyleSheet.absoluteFillObject as any}>
                     <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
@@ -44,31 +144,38 @@ function ImagePreviewItem({ item, jwt }: { item: any; jwt: string }) {
                     </View>
                 </View>
             )}
+
             {errored ? (
-                <View style={{ alignItems: 'center', padding: 32 }}>
+                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 }}>
                     <FileText color="rgba(255,255,255,0.3)" size={72} strokeWidth={1} />
-                    <Text style={{ color: 'rgba(255,255,255,0.5)', marginTop: 16, fontSize: 14 }}>Could not load image</Text>
+                    <Text style={{ color: 'rgba(255,255,255,0.5)', marginTop: 16, fontSize: 14 }}>
+                        Could not load image
+                    </Text>
                 </View>
             ) : (
-                <Image
-                    source={{ uri: src, headers }}
-                    style={{ width, height: height * 0.65 }}
-                    contentFit="contain"
-                    transition={300}
-                    cachePolicy="disk"
-                    onLoad={() => setLoading(false)}
-                    onError={() => {
-                        if (!useFallback) {
-                            // Thumbnail failed → try full download URL
-                            setUseFallback(true);
-                            setLoading(true);
-                        } else {
-                            // Both failed
-                            setLoading(false);
-                            setErrored(true);
-                        }
-                    }}
-                />
+                <GestureDetector gesture={composed}>
+                    <Animated2.View
+                        style={[{ width, height: IMG_H, justifyContent: 'center', alignItems: 'center' }, animStyle]}
+                    >
+                        <Image
+                            source={{ uri: src, headers }}
+                            style={{ width, height: IMG_H }}
+                            contentFit="contain"
+                            transition={300}
+                            cachePolicy="disk"
+                            onLoad={() => setLoading(false)}
+                            onError={() => {
+                                if (!useFallback) {
+                                    setUseFallback(true);
+                                    setLoading(true);
+                                } else {
+                                    setLoading(false);
+                                    setErrored(true);
+                                }
+                            }}
+                        />
+                    </Animated2.View>
+                </GestureDetector>
             )}
         </View>
     );
@@ -139,20 +246,16 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         setDownloading(true);
         try {
             const fileName = file.name || file.file_name || 'download';
-            const cacheDir = FileSystem.documentDirectory ?? '/tmp/';
-            const localUri = cacheDir + fileName;
             showToast('Downloading…');
 
-            const downloadResult = await FileSystem.downloadAsync(
-                `${API_BASE}/files/${file.id}/download`,
-                localUri,
-                { headers: { Authorization: `Bearer ${jwt}` } }
+            // New expo-file-system API: File.downloadFileAsync is static (SDK 54+)
+            const destFile = await File.downloadFileAsync(`${API_BASE}/files/${file.id}/download`,
+                new File(Paths.document, fileName),
+                { headers: { Authorization: `Bearer ${jwt}` }, idempotent: true }
             );
 
-            if (downloadResult.status !== 200) throw new Error('Server returned ' + downloadResult.status);
-
             if (await Sharing.isAvailableAsync()) {
-                await Sharing.shareAsync(downloadResult.uri, { mimeType: file.mime_type });
+                await Sharing.shareAsync(destFile.uri, { mimeType: file.mime_type });
             } else {
                 showToast('File saved: ' + fileName);
             }

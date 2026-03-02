@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { ArrowLeft, HardDrive, FileText, Image as ImageIcon, Film, Music, Archive } from 'lucide-react-native';
 import Svg, { G, Circle, Path } from 'react-native-svg';
-import apiClient from '../api/client';
+import apiClient from '../services/apiClient';
 import { useTheme } from '../context/ThemeContext';
 import { formatSize, formatPct } from '../utils/format';
 

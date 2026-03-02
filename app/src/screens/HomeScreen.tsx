@@ -14,9 +14,9 @@ import {
 import { Image } from 'expo-image';
 import * as DocumentPicker from 'expo-document-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import apiClient, { uploadClient } from '../api/client';
+import apiClient, { uploadClient } from '../services/apiClient';
 import { AuthContext } from '../context/AuthContext';
-import { useUploadStore } from '../context/UploadStore';
+import { useUpload } from '../context/UploadContext';
 import { useApiCacheStore } from '../context/ApiCacheStore';
 import { useToast } from '../context/ToastContext';
 import { FileCardSkeleton, SkeletonBlock } from '../ui/Skeleton';
@@ -196,10 +196,10 @@ export default function HomeScreen({ navigation }: any) {
         }
     };
 
-    const { tasks, addTask, isUploading: globalUploading } = useUploadStore();
+    const { tasks, addUpload } = useUpload();
+    const globalUploading = tasks.some(t => t.status === 'uploading' || t.status === 'queued');
     const [allFolders, setAllFolders] = useState<any[]>([]);
     const [uploadFolderId, setUploadFolderId] = useState<string | null>(null);
-
 
     const handlePickFile = async () => {
         setFabOpen(false);
@@ -215,7 +215,9 @@ export default function HomeScreen({ navigation }: any) {
     const handleUpload = () => {
         if (!pickedFiles || pickedFiles.length === 0) return;
         setUploadModal(false);
-        addTask(pickedFiles, uploadFolderId, chatTarget);
+        pickedFiles.forEach(file => {
+            addUpload(file as any, uploadFolderId, chatTarget);
+        });
         setPickedFiles([]);
     };
 

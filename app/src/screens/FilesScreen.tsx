@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { ArrowLeft, HardDrive, Search } from 'lucide-react-native';
 import { AuthContext } from '../context/AuthContext';
-import apiClient from '../api/client';
+import apiClient from '../services/apiClient';
 import FileCard from '../components/FileCard';
 import { useToast } from '../context/ToastContext';
 import { theme } from '../ui/theme';

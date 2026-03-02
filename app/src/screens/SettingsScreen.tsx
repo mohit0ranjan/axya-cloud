@@ -11,7 +11,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthContext } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useTheme } from '../context/ThemeContext';
-import apiClient from '../api/client';
+import apiClient from '../services/apiClient';
 import { theme } from '../ui/theme';
 
 export default function SettingsScreen({ navigation }: any) {

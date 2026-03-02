@@ -1,7 +1,7 @@
-import React, { createContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useState, useEffect, ReactNode, useContext } from 'react';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_BASE } from '../api/client';
+import apiClient from '../services/apiClient';
 
 interface AuthContextType {
     isAuthenticated: boolean;
@@ -13,15 +13,7 @@ interface AuthContextType {
     logout: () => Promise<void>;
 }
 
-export const AuthContext = createContext<AuthContextType>({
-    isAuthenticated: false,
-    isLoading: true,
-    user: null,
-    token: null,
-    setUser: () => { },
-    login: async () => { },
-    logout: async () => { },
-});
+export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -29,90 +21,49 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const [user, setUser] = useState<any>(null);
     const [token, setToken] = useState<string | null>(null);
 
-    // Check for stored token dynamically on launch
     useEffect(() => {
         const bootstrapAsync = async () => {
-            let userToken;
             try {
-                userToken = await AsyncStorage.getItem('jwtToken');
-                if (Platform.OS === 'web' && !userToken) {
-                    userToken = localStorage.getItem('jwtToken');
-                }
+                const userToken = await AsyncStorage.getItem('jwtToken');
                 if (userToken) {
                     setToken(userToken);
-                    // Pre-verify token & fetch user identity here ONCE
-                    // Custom fetch with retry since Render.com goes to sleep
-                    const fetchWithRetry = async (url: string, retries = 5, delay = 2000): Promise<any> => {
-                        for (let i = 0; i < retries; i++) {
-                            try {
-                                const res = await fetch(url, { headers: { Authorization: `Bearer ${userToken}` } });
-                                if (res.ok) return await res.json();
-                                // if 502 Bad Gateway (Render waking), throw to trigger retry
-                                if (res.status === 502) throw new Error('Bad Gateway');
-                                // if not ok but not 502, just return json if possible (like 401 authorized error)
-                                return await res.json().catch(() => ({ success: false }));
-                            } catch (e) {
-                                if (i === retries - 1) throw e;
-                                await new Promise(r => setTimeout(r, delay));
-                            }
-                        }
-                    };
-
+                    // Use apiClient which has built-in retry logic
                     try {
-                        const data = await fetchWithRetry(`${API_BASE}/auth/me`);
-                        if (data && data.success && data.user) {
-                            setUser(data.user);
+                        const res = await apiClient.get('/auth/me');
+                        if (res.data && res.data.success && res.data.user) {
+                            setUser(res.data.user);
                             setIsAuthenticated(true);
                         } else {
-                            // invalid token
-                            setToken(null);
-                            await AsyncStorage.removeItem('jwtToken');
-                            if (Platform.OS === 'web') localStorage.removeItem('jwtToken');
+                            throw new Error('Invalid token');
                         }
                     } catch (e) {
-                        // Network error on load - still admit user with cached session to persist state offline
-                        console.warn('Axya server might be off, offline mode fallback...', e);
-                        setIsAuthenticated(true);
+                        console.warn('[Auth] Token verification failed:', e);
+                        // Optional: Offline fallback if network error
+                        // For now, clear it if explicit 401/403
+                        await logout();
                     }
                 }
             } catch (e) {
-                console.error("AsyncStorage Auth Load Error:", e);
-                if (Platform.OS === 'web') {
-                    localStorage.removeItem('jwtToken');
-                }
+                console.error("Auth Load Error:", e);
+            } finally {
+                setIsLoading(false);
             }
-            setIsLoading(false);
         };
-
         bootstrapAsync();
     }, []);
 
     const login = async (newToken: string, userData?: any) => {
-        try {
-            setToken(newToken);
-            await AsyncStorage.setItem('jwtToken', newToken);
-            if (Platform.OS === 'web') localStorage.setItem('jwtToken', newToken);
-            if (userData) setUser(userData);
-            setIsAuthenticated(true);
-        } catch (error) {
-            console.error("Error storing token:", error);
-            if (Platform.OS === 'web') localStorage.setItem('jwtToken', newToken);
-            setIsAuthenticated(true);
-        }
+        setToken(newToken);
+        await AsyncStorage.setItem('jwtToken', newToken);
+        if (userData) setUser(userData);
+        setIsAuthenticated(true);
     };
 
     const logout = async () => {
-        try {
-            await AsyncStorage.removeItem('jwtToken');
-            if (Platform.OS === 'web') localStorage.removeItem('jwtToken');
-            setUser(null);
-            setIsAuthenticated(false);
-        } catch (error) {
-            console.error("Error clearing token:", error);
-            if (Platform.OS === 'web') localStorage.removeItem('jwtToken');
-            setUser(null);
-            setIsAuthenticated(false);
-        }
+        await AsyncStorage.removeItem('jwtToken');
+        setToken(null);
+        setUser(null);
+        setIsAuthenticated(false);
     };
 
     return (
@@ -128,4 +79,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             {children}
         </AuthContext.Provider>
     );
+};
+
+export const useAuth = () => {
+    const context = useContext(AuthContext);
+    if (!context) throw new Error('useAuth must be used within AuthProvider');
+    return context;
 };

@@ -12,7 +12,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import apiClient, { API_BASE } from '../api/client';
+import apiClient, { API_BASE } from '../services/apiClient';
 import { useToast } from '../context/ToastContext';
 import { theme } from '../ui/theme';
 

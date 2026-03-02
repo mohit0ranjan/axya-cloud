@@ -1,17 +1,19 @@
-import React, { useState, useContext, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-    View, Text, TextInput, TouchableOpacity, StyleSheet,
+    View, Text, StyleSheet,
     ActivityIndicator, Alert, Dimensions, StatusBar,
     Animated, Easing, KeyboardAvoidingView, Platform,
+    TouchableOpacity
 } from 'react-native';
 import { Image } from 'expo-image';
-import { Phone, Lock, ArrowRight, ArrowLeft, Shield, Zap, HardDrive } from 'lucide-react-native';
-import apiClient from '../api/client';
-import { AuthContext } from '../context/AuthContext';
+import { ArrowRight, ArrowLeft, Shield, Zap, HardDrive } from 'lucide-react-native';
+import apiClient from '../services/apiClient';
+import { useAuth } from '../context/AuthContext';
+import PhoneInput from '../components/PhoneInput';
+import OTPInput from '../components/OTPInput';
 
 const { width, height } = Dimensions.get('window');
 
-// Same scattered dots pattern as WelcomeScreen
 const DOTS = [
     { top: 0.06, left: 0.08, size: 9, color: '#4B6EF5' },
     { top: 0.09, left: 0.84, size: 7, color: '#FCBD0B' },
@@ -28,15 +30,17 @@ const FEATURES = [
 ];
 
 export default function AuthScreen({ navigation }: any) {
-    const { login } = useContext(AuthContext);
+    const { login } = useAuth();
 
     const [step, setStep] = useState<'phone' | 'otp'>('phone');
     const [isLoading, setIsLoading] = useState(false);
-    const [isWaking, setIsWaking] = useState(false);
-    const [phone, setPhone] = useState('+');
+    const [phone, setPhone] = useState('');
+    const [otp, setOtp] = useState('');
+    const [error, setError] = useState<string | undefined>();
+
+    // Telegram specific session info
     const [tempSession, setTempSession] = useState('');
     const [phoneCodeHash, setPhoneCodeHash] = useState('');
-    const [otp, setOtp] = useState('');
 
     // Animations
     const heroOpacity = useRef(new Animated.Value(0)).current;
@@ -69,59 +73,63 @@ export default function AuthScreen({ navigation }: any) {
         return () => { clearTimeout(t); float.stop(); };
     }, []);
 
-    // Animate step transition
     const animateStep = () => {
         stepAnim.setValue(0);
         Animated.timing(stepAnim, { toValue: 1, duration: 350, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
     };
 
     const handleSendCode = async () => {
-        if (!phone || phone.length < 5) return Alert.alert('Error', 'Please enter a valid phone number.');
+        if (!phone || phone.length !== 10) {
+            setError('Please enter a valid 10-digit number');
+            return;
+        }
+
+        setError(undefined);
         setIsLoading(true);
 
-        const trySend = async (retries = 3): Promise<void> => {
-            try {
-                console.log(`📡 [Auth] Attempting to reach: ${apiClient.defaults.baseURL}/auth/send-code`);
-                const res = await apiClient.post('/auth/send-code', { phoneNumber: phone });
-                setIsWaking(false);
-                if (res.data.success) {
-                    setTempSession(res.data.tempSession);
-                    setPhoneCodeHash(res.data.phoneCodeHash);
-                    animateStep();
-                    setStep('otp');
-                } else Alert.alert('Error', res.data.error || 'Failed to send code');
-            } catch (e: any) {
-                // Determine if this is a cold-start sleep response (502 usually) or network timeout
-                if (retries > 0 && (!e.response || e.response.status === 502)) {
-                    setIsWaking(true);
-                    await new Promise(r => setTimeout(r, 4000));
-                    return trySend(retries - 1);
-                }
+        try {
+            const fullPhone = `+91${phone}`;
+            const res = await apiClient.post('/auth/send-code', { phoneNumber: fullPhone });
 
-                setIsWaking(false);
-                const errorMsg = e?.response?.data?.error || e.message || 'Unknown network error';
-                Alert.alert(
-                    'Connection Error',
-                    `Error: ${errorMsg}\n\nThe Axya Cloud server might be waking up (Render free tier). Please try again in 30 seconds.`
-                );
+            if (res.data.success) {
+                setTempSession(res.data.tempSession);
+                setPhoneCodeHash(res.data.phoneCodeHash);
+                animateStep();
+                setStep('otp');
+            } else {
+                setError(res.data.error || 'Failed to send code');
             }
-        };
-
-        await trySend();
-        setIsLoading(false);
+        } catch (e: any) {
+            setError(e?.response?.data?.error || 'Network error. Please try again.');
+        } finally {
+            setIsLoading(false);
+        }
     };
 
-    const handleVerifyOtp = async () => {
-        if (!otp || otp.length < 4) return Alert.alert('Error', 'Enter valid OTP.');
+    const handleVerifyOtp = async (inputOtp?: string) => {
+        const otpToVerify = inputOtp || otp;
+        if (!otpToVerify || otpToVerify.length < 5) return;
+
+        setError(undefined);
         setIsLoading(true);
         try {
+            const fullPhone = `+91${phone}`;
             const res = await apiClient.post('/auth/verify-code', {
-                phoneNumber: phone, phoneCodeHash, phoneCode: otp, tempSession,
+                phoneNumber: fullPhone,
+                phoneCodeHash,
+                phoneCode: otpToVerify,
+                tempSession,
             });
-            if (res.data.success && res.data.token) await login(res.data.token);
-            else Alert.alert('Verification Failed', res.data.error || 'Incorrect OTP');
-        } catch (e: any) { Alert.alert('API Error', e?.response?.data?.error || 'Verify Failed'); }
-        finally { setIsLoading(false); }
+            if (res.data.success && res.data.token) {
+                await login(res.data.token, res.data.user);
+            } else {
+                setError(res.data.error || 'Incorrect OTP');
+            }
+        } catch (e: any) {
+            setError(e?.response?.data?.error || 'Verification failed');
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     const floatY = floatAnim.interpolate({ inputRange: [0, 1], outputRange: [0, -12] });
@@ -132,7 +140,6 @@ export default function AuthScreen({ navigation }: any) {
         <View style={styles.root}>
             <StatusBar barStyle="dark-content" backgroundColor="#F4F6FB" />
 
-            {/* ── Decorative dots ── */}
             {DOTS.map((d, i) => (
                 <Animated.View key={i} style={{
                     position: 'absolute',
@@ -146,22 +153,17 @@ export default function AuthScreen({ navigation }: any) {
                 }} />
             ))}
 
-            {/* ── Back arrow ── */}
             <TouchableOpacity style={styles.backBtn} onPress={() => navigation?.goBack()}>
                 <ArrowLeft color="#8892A4" size={22} />
             </TouchableOpacity>
 
-            {/* ── Hero section ── */}
             <View style={styles.heroArea}>
                 <Animated.View style={{
                     transform: [{ scale: heroScale }, { translateY: floatY }],
                     opacity: heroOpacity,
                     alignItems: 'center',
                 }}>
-                    {/* Warm blob */}
                     <View style={styles.blob} />
-
-                    {/* Axya logo in a glowing circle */}
                     <View style={styles.logoCircle}>
                         <Image
                             source={require('../../assets/axya_logo.png')}
@@ -169,8 +171,6 @@ export default function AuthScreen({ navigation }: any) {
                             contentFit="contain"
                         />
                     </View>
-
-                    {/* Feature pills floating around */}
                     <View style={styles.featureRow}>
                         {FEATURES.map((f) => {
                             const FIcon = f.icon;
@@ -185,117 +185,92 @@ export default function AuthScreen({ navigation }: any) {
                 </Animated.View>
             </View>
 
-            {/* ── Floating bottom sheet ── */}
             <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'position' : 'padding'}
+                behavior={Platform.OS === 'ios' ? 'position' : undefined}
                 style={styles.kavWrapper}
             >
                 <Animated.View style={[styles.sheet, {
                     opacity: sheetOpacity,
                     transform: [{ translateY: sheetY }],
                 }]}>
-                    {/* Handle */}
                     <View style={styles.sheetHandle} />
 
-                    {/* Header */}
                     <View style={styles.sheetHeader}>
                         <Text style={styles.sheetTitle}>
                             {step === 'phone' ? 'Sign in with Telegram' : 'Enter the code'}
                         </Text>
                         <Text style={styles.sheetSubtitle}>
                             {step === 'phone'
-                                ? 'Enter your Telegram phone number to\ncontinue to Axya.'
-                                : `A verification code was sent to\n${phone}`
+                                ? 'Enter your mobile number to\nsecurely log in with Telegram.'
+                                : `A verification code was sent to\n+91 ${phone.substring(0, 5)} ${phone.substring(5)}`
                             }
                         </Text>
                     </View>
 
-                    {/* Step progress dots */}
                     <View style={styles.stepDots}>
                         <View style={[styles.stepDot, { backgroundColor: '#4B6EF5', width: step === 'phone' ? 24 : 8 }]} />
                         <View style={[styles.stepDot, { backgroundColor: step === 'otp' ? '#4B6EF5' : '#EAEDF3', width: step === 'otp' ? 24 : 8 }]} />
                     </View>
 
-                    {/* Form fields */}
                     {step === 'phone' ? (
-                        <>
-                            <View style={styles.inputWrap}>
-                                <View style={styles.inputIconBox}>
-                                    <Phone color="#4B6EF5" size={18} />
-                                </View>
-                                <TextInput
-                                    style={styles.input}
-                                    placeholder="+1 234 567 8900"
-                                    placeholderTextColor="#B0BAC9"
-                                    keyboardType="phone-pad"
-                                    value={phone}
-                                    onChangeText={setPhone}
-                                    editable={!isLoading}
-                                    autoFocus
-                                />
-                            </View>
+                        <View style={styles.formArea}>
+                            <PhoneInput
+                                value={phone}
+                                onChangeText={setPhone}
+                                error={error}
+                                editable={!isLoading}
+                            />
 
                             <TouchableOpacity
-                                style={[styles.ctaBtn, isLoading && styles.ctaDisabled]}
+                                style={[styles.ctaBtn, (isLoading || phone.length !== 10) && styles.ctaDisabled]}
                                 onPress={handleSendCode}
                                 activeOpacity={0.85}
-                                disabled={isLoading}
+                                disabled={isLoading || phone.length !== 10}
                             >
                                 {isLoading ? (
-                                    <>
-                                        <ActivityIndicator color="#fff" style={{ marginRight: 8 }} />
-                                        {isWaking && <Text style={styles.ctaText}>Waking server...</Text>}
-                                    </>
+                                    <ActivityIndicator color="#fff" />
                                 ) : (
                                     <>
-                                        <Text style={styles.ctaText}>Send Code</Text>
+                                        <Text style={styles.ctaText}>Send Verification Code</Text>
                                         <ArrowRight color="#fff" size={20} />
                                     </>
                                 )}
                             </TouchableOpacity>
-                        </>
+                        </View>
                     ) : (
-                        <Animated.View style={{ width: '100%', gap: 16, opacity: stepFadeIn, transform: [{ translateY: stepSlide }] }}>
-                            <View style={styles.inputWrap}>
-                                <View style={styles.inputIconBox}>
-                                    <Lock color="#4B6EF5" size={18} />
-                                </View>
-                                <TextInput
-                                    style={styles.input}
-                                    placeholder="5-digit code"
-                                    placeholderTextColor="#B0BAC9"
-                                    keyboardType="number-pad"
-                                    value={otp}
-                                    onChangeText={setOtp}
-                                    editable={!isLoading}
-                                    autoFocus
-                                    maxLength={6}
-                                />
-                            </View>
+                        <Animated.View style={[styles.formArea, { opacity: stepFadeIn, transform: [{ translateY: stepSlide }] }]}>
+                            <OTPInput
+                                value={otp}
+                                onChange={(val) => {
+                                    setOtp(val);
+                                    if (val.length === 6) handleVerifyOtp(val);
+                                }}
+                                onResend={handleSendCode}
+                                loading={isLoading}
+                                error={error}
+                            />
 
                             <TouchableOpacity
-                                style={[styles.ctaBtn, isLoading && styles.ctaDisabled]}
-                                onPress={handleVerifyOtp}
+                                style={[styles.ctaBtn, (isLoading || otp.length < 5) && styles.ctaDisabled]}
+                                onPress={() => handleVerifyOtp()}
                                 activeOpacity={0.85}
-                                disabled={isLoading}
+                                disabled={isLoading || otp.length < 5}
                             >
-                                {isLoading
-                                    ? <ActivityIndicator color="#fff" />
-                                    : <>
+                                {isLoading ? <ActivityIndicator color="#fff" /> : (
+                                    <>
                                         <Text style={styles.ctaText}>Verify &amp; Sign In</Text>
                                         <ArrowRight color="#fff" size={20} />
                                     </>
-                                }
+                                )}
                             </TouchableOpacity>
 
-                            <TouchableOpacity onPress={() => setStep('phone')} style={styles.backLink}>
+                            <TouchableOpacity onPress={() => setStep('phone')} style={styles.backLink} disabled={isLoading}>
                                 <ArrowLeft color="#8892A4" size={16} />
                                 <Text style={styles.backLinkText}>Wrong number? Change it</Text>
                             </TouchableOpacity>
                         </Animated.View>
                     )}
 
-                    {/* Fine print */}
                     <Text style={styles.finePrint}>
                         By continuing you agree to Axya's Terms · No passwords stored
                     </Text>
@@ -307,33 +282,25 @@ export default function AuthScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
     root: { flex: 1, backgroundColor: '#F4F6FB' },
-    backBtn: { padding: 18, marginTop: 44, position: 'absolute', top: 0, left: 0, zIndex: 20 },
-
-    // Dots / hero
+    backBtn: { padding: 18, marginTop: Platform.OS === 'ios' ? 44 : 20, position: 'absolute', top: 0, left: 0, zIndex: 20 },
     heroArea: {
         position: 'absolute',
-        top: 0,
-        left: 0,
-        right: 0,
+        top: 0, left: 0, right: 0,
         bottom: 380,
-        alignItems: 'center',
-        justifyContent: 'center',
+        alignItems: 'center', justifyContent: 'center',
     },
     blob: {
         position: 'absolute',
-        width: 260,
-        height: 260,
+        width: 260, height: 260,
         borderRadius: 9999,
         backgroundColor: '#E8EFFE',
         opacity: 0.65,
     },
     logoCircle: {
-        width: 90,
-        height: 90,
+        width: 90, height: 90,
         borderRadius: 26,
         backgroundColor: '#fff',
-        justifyContent: 'center',
-        alignItems: 'center',
+        justifyContent: 'center', alignItems: 'center',
         shadowColor: '#4B6EF5',
         shadowOffset: { width: 0, height: 10 },
         shadowOpacity: 0.2,
@@ -344,116 +311,44 @@ const styles = StyleSheet.create({
     logoImg: { width: 66, height: 66, borderRadius: 18 },
     featureRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'center', paddingHorizontal: 20 },
     featurePill: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 5,
-        paddingVertical: 6,
-        paddingHorizontal: 12,
+        flexDirection: 'row', alignItems: 'center', gap: 5,
+        paddingVertical: 6, paddingHorizontal: 12,
         borderRadius: 20,
     },
     featurePillText: { fontSize: 11, fontWeight: '700' },
 
-    // Sheet
-    kavWrapper: {
-        position: 'absolute',
-        bottom: 0,
-        left: 0,
-        right: 0,
-    },
+    kavWrapper: { position: 'absolute', bottom: 0, left: 0, right: 0 },
     sheet: {
         backgroundColor: '#fff',
-        borderTopLeftRadius: 32,
-        borderTopRightRadius: 32,
-        paddingHorizontal: 28,
-        paddingTop: 16,
-        paddingBottom: 36,
+        borderTopLeftRadius: 32, borderTopRightRadius: 32,
+        paddingHorizontal: 28, paddingTop: 16, paddingBottom: 36,
         alignItems: 'center',
         shadowColor: '#000',
         shadowOffset: { width: 0, height: -8 },
-        shadowOpacity: 0.07,
-        shadowRadius: 24,
+        shadowOpacity: 0.07, shadowRadius: 24,
         elevation: 20,
         gap: 16,
     },
-    sheetHandle: {
-        width: 40, height: 4, borderRadius: 2,
-        backgroundColor: '#E2E8F0', marginBottom: 4,
-    },
+    sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: '#E2E8F0', marginBottom: 4 },
     sheetHeader: { alignItems: 'center', gap: 6 },
-    sheetTitle: {
-        fontSize: 24,
-        fontWeight: '800',
-        color: '#1A1F36',
-        letterSpacing: -0.5,
-        textAlign: 'center',
-    },
-    sheetSubtitle: {
-        fontSize: 14,
-        color: '#8892A4',
-        textAlign: 'center',
-        lineHeight: 21,
-    },
-
-    // Step dots
+    sheetTitle: { fontSize: 24, fontWeight: '800', color: '#1A1F36', letterSpacing: -0.5, textAlign: 'center' },
+    sheetSubtitle: { fontSize: 14, color: '#8892A4', textAlign: 'center', lineHeight: 21 },
     stepDots: { flexDirection: 'row', gap: 6, alignItems: 'center' },
-    stepDot: {
-        height: 8,
-        borderRadius: 4,
-        // width is set inline
-    },
+    stepDot: { height: 8, borderRadius: 4 },
 
-    // Input
-    inputWrap: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: '#F4F6FB',
-        borderRadius: 16,
-        borderWidth: 1.5,
-        borderColor: '#EAEDF3',
-        height: 58,
-        width: '100%',
-        paddingHorizontal: 4,
-        gap: 4,
-    },
-    inputIconBox: {
-        width: 44,
-        height: 44,
-        borderRadius: 12,
-        backgroundColor: '#EEF1FD',
-        justifyContent: 'center',
-        alignItems: 'center',
-        marginLeft: 4,
-    },
-    input: {
-        flex: 1,
-        fontSize: 16,
-        color: '#1A1F36',
-        fontWeight: '500',
-        paddingRight: 14,
-    },
-
-    // CTA
+    formArea: { width: '100%', gap: 20 },
     ctaBtn: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 10,
-        backgroundColor: '#4B6EF5',
-        borderRadius: 18,
-        height: 58,
-        width: '100%',
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+        gap: 10, backgroundColor: '#4B6EF5',
+        borderRadius: 18, height: 58, width: '100%',
         shadowColor: '#4B6EF5',
         shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.28,
-        shadowRadius: 14,
+        shadowOpacity: 0.28, shadowRadius: 14,
         elevation: 8,
     },
     ctaDisabled: { backgroundColor: '#A0AABB', shadowOpacity: 0, elevation: 0 },
-    ctaText: { fontSize: 17, fontWeight: '700', color: '#fff' },
-
-    // Back link
-    backLink: { flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center' },
+    ctaText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+    backLink: { flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center', marginTop: 8 },
     backLinkText: { fontSize: 14, color: '#8892A4', fontWeight: '600' },
-
-    finePrint: { fontSize: 11, color: '#B0BAC9', textAlign: 'center', lineHeight: 17 },
+    finePrint: { fontSize: 11, color: '#B0BAC9', textAlign: 'center', lineHeight: 17, marginTop: 4 },
 });

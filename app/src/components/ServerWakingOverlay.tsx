@@ -1,22 +1,22 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Text, ActivityIndicator, StyleSheet, Animated } from 'react-native';
+import { View, Text, ActivityIndicator, StyleSheet, Animated, Platform } from 'react-native';
 import { Server } from 'lucide-react-native';
-import { useServerStatusStore } from '../context/ServerStatusStore';
+import { useServerStatus } from '../context/ServerStatusContext';
 
 export default function ServerWakingOverlay() {
-    const isWaking = useServerStatusStore((state) => state.isWaking);
-    const translateY = useRef(new Animated.Value(-100)).current;
+    const { isWaking, statusText } = useServerStatus();
+    const translateY = useRef(new Animated.Value(-120)).current;
     const opacity = useRef(new Animated.Value(0)).current;
 
     useEffect(() => {
         if (isWaking) {
             Animated.parallel([
-                Animated.spring(translateY, { toValue: 0, tension: 60, friction: 8, useNativeDriver: true }),
+                Animated.spring(translateY, { toValue: 0, tension: 50, friction: 8, useNativeDriver: true }),
                 Animated.timing(opacity, { toValue: 1, duration: 300, useNativeDriver: true })
             ]).start();
         } else {
             Animated.parallel([
-                Animated.timing(translateY, { toValue: -100, duration: 400, useNativeDriver: true }),
+                Animated.timing(translateY, { toValue: -120, duration: 400, useNativeDriver: true }),
                 Animated.timing(opacity, { toValue: 0, duration: 300, useNativeDriver: true })
             ]).start();
         }
@@ -25,12 +25,14 @@ export default function ServerWakingOverlay() {
     return (
         <Animated.View style={[styles.overlay, { opacity, transform: [{ translateY }] }]}>
             <View style={styles.card}>
-                <Server color="#4B6EF5" size={24} />
-                <ActivityIndicator size="small" color="#4B6EF5" style={styles.loader} />
-                <View>
-                    <Text style={styles.title}>Waking Server...</Text>
-                    <Text style={styles.subtitle}>First request takes ~30s on free tier</Text>
+                <View style={styles.iconCircle}>
+                    <Server color="#4B6EF5" size={18} />
                 </View>
+                <View style={styles.content}>
+                    <Text style={styles.title}>{statusText}</Text>
+                    <Text style={styles.subtitle}>Render cold start can take ~30s</Text>
+                </View>
+                <ActivityIndicator size="small" color="#4B6EF5" style={styles.loader} />
             </View>
         </Animated.View>
     );
@@ -39,7 +41,7 @@ export default function ServerWakingOverlay() {
 const styles = StyleSheet.create({
     overlay: {
         position: 'absolute',
-        top: 50,
+        top: Platform.OS === 'ios' ? 60 : 40,
         left: 0,
         right: 0,
         alignItems: 'center',
@@ -48,31 +50,46 @@ const styles = StyleSheet.create({
         pointerEvents: 'none',
     },
     card: {
-        backgroundColor: '#EEF1FD',
+        backgroundColor: '#FFFFFF',
         flexDirection: 'row',
         alignItems: 'center',
-        paddingHorizontal: 20,
-        paddingVertical: 14,
-        borderRadius: 100,
-        borderWidth: 1,
-        borderColor: '#C6D4F9',
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        borderRadius: 20,
+        borderWidth: 1.5,
+        borderColor: '#E2E8F0',
         shadowColor: '#4B6EF5',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.25,
-        shadowRadius: 16,
-        elevation: 8,
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.15,
+        shadowRadius: 20,
+        elevation: 12,
+        width: '90%',
+        maxWidth: 400,
+    },
+    iconCircle: {
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        backgroundColor: '#EEF1FD',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    content: {
+        flex: 1,
+        marginLeft: 12,
     },
     loader: {
-        marginHorizontal: 12,
+        marginLeft: 8,
     },
     title: {
         fontSize: 14,
-        fontWeight: '700',
-        color: '#1E293B',
+        fontWeight: '800',
+        color: '#1A1F36',
     },
     subtitle: {
-        fontSize: 12,
-        color: '#4B6EF5',
-        fontWeight: '500',
+        fontSize: 11,
+        color: '#8892A4',
+        fontWeight: '600',
+        marginTop: 1,
     }
 });

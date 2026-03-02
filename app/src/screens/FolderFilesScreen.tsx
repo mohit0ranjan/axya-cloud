@@ -11,9 +11,9 @@ import {
 } from 'lucide-react-native';
 import { Image } from 'expo-image';
 import * as DocumentPicker from 'expo-document-picker';
-import apiClient from '../api/client';
+import apiClient from '../services/apiClient';
 import { AuthContext } from '../context/AuthContext';
-import { useUploadStore } from '../context/UploadStore';
+import { useUpload } from '../context/UploadContext';
 import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
 
@@ -77,14 +77,10 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     const [selectMode, setSelectMode] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-    const { addTask } = useUploadStore();
+    const { addUpload } = useUpload();
 
 
     // Upload
-    const [isUploading, setIsUploading] = useState(false);
-    const [uploadProgress, setUploadProgress] = useState(0);
-    const [totalUploadFiles, setTotalUploadFiles] = useState(0);
-    const [currentUploadIndex, setCurrentUploadIndex] = useState(0);
     const [isUploadSettingsVisible, setUploadSettingsVisible] = useState(false);
 
     // Modals
@@ -269,7 +265,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
         try {
             const res = await DocumentPicker.getDocumentAsync({ type: '*/*', multiple: true });
             if (res.canceled) return;
-            addTask(res.assets, folderId, 'me');
+            res.assets.forEach(asset => {
+                addUpload(asset as any, folderId, 'me');
+            });
         } catch { Alert.alert('Error', 'Pick failed'); }
     };
 
@@ -451,17 +449,6 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 </TouchableOpacity>
             )}
 
-            {isUploading && (
-                <View style={styles.centeredModal}>
-                    <View style={styles.modalCard}>
-                        <Text style={styles.modalTitle}>Uploading {currentUploadIndex}/{totalUploadFiles}</Text>
-                        <View style={{ height: 10, backgroundColor: '#f1f5f9', borderRadius: 5, overflow: 'hidden', marginVertical: 20 }}>
-                            <View style={{ width: `${uploadProgress}%`, height: '100%', backgroundColor: theme.colors.primary }} />
-                        </View>
-                        <Text style={styles.modalSub}>{uploadProgress}% completed</Text>
-                    </View>
-                </View>
-            )}
 
             <Modal visible={isCreateModalVisible} transparent animationType="fade">
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.centeredModal}>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { View, Text, ScrollView, StyleSheet, SafeAreaView, TouchableOpacity, Alert, RefreshControl } from 'react-native';
 import { ArrowLeft, Trash } from 'lucide-react-native';
-import apiClient from '../api/client';
+import apiClient from '../services/apiClient';
 import { useToast } from '../context/ToastContext';
 import { AuthContext } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';

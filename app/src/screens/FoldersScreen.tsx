@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView, Dimensions, ActivityIndicator, Alert, TextInput, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { MoreHorizontal, ArrowLeft, Folder as FolderIcon, Plus } from 'lucide-react-native';
-import apiClient from '../api/client';
+import apiClient from '../services/apiClient';
 import { theme } from '../ui/theme';
 
 const { width } = Dimensions.get('window');

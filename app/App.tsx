@@ -23,10 +23,16 @@ import FilesScreen from './src/screens/FilesScreen';
 import UploadProgressOverlay from './src/components/UploadProgressOverlay';
 import ServerWakingOverlay from './src/components/ServerWakingOverlay';
 
+import { ServerStatusProvider } from './src/context/ServerStatusContext';
+import { UploadProvider } from './src/context/UploadContext';
+
 const Stack = createNativeStackNavigator();
 
 function RootNavigator() {
-    const { isAuthenticated, isLoading } = useContext(AuthContext);
+    const auth = useContext(AuthContext);
+    const isAuthenticated = auth?.isAuthenticated;
+    const isLoading = auth?.isLoading;
+
     const [splashDone, setSplashDone] = useState(false);
 
     if (!splashDone) {
@@ -65,22 +71,25 @@ function RootNavigator() {
                         </>
                     )}
                 </Stack.Navigator>
-                {isAuthenticated && <UploadProgressOverlay />}
+                <UploadProgressOverlay />
                 <ServerWakingOverlay />
             </View>
         </NavigationContainer>
     );
-
 }
 
 export default function App() {
     return (
         <ThemeProvider>
-            <AuthProvider>
-                <ToastProvider>
-                    <RootNavigator />
-                </ToastProvider>
-            </AuthProvider>
+            <ServerStatusProvider>
+                <UploadProvider>
+                    <AuthProvider>
+                        <ToastProvider>
+                            <RootNavigator />
+                        </ToastProvider>
+                    </AuthProvider>
+                </UploadProvider>
+            </ServerStatusProvider>
         </ThemeProvider>
     );
 }

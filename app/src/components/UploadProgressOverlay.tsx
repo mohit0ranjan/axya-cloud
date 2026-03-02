@@ -1,16 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
     View, Text, StyleSheet, TouchableOpacity,
-    Animated, Dimensions, FlatList, Platform,
+    Animated, Dimensions, FlatList,
 } from 'react-native';
-import {
-    ChevronUp, ChevronDown, X, CheckCircle2,
-    AlertCircle, Loader2, Pause, Play, Trash2
-} from 'lucide-react-native';
-import { useUploadStore, UploadTask } from '../context/UploadStore';
-import * as Progress from 'react-native-progress'; // Assuming this might be available or I'll use simple View
+import { ChevronUp, ChevronDown, X } from 'lucide-react-native';
+import { useUpload } from '../context/UploadContext';
+import UploadProgress from './UploadProgress';
 
-const { width, height } = Dimensions.get('window');
+const { height } = Dimensions.get('window');
 
 const C = {
     primary: '#4B6EF5',
@@ -18,22 +15,14 @@ const C = {
     muted: '#8892A4',
     bg: '#FFFFFF',
     border: '#EAEDF3',
-    success: '#1FD45A',
-    danger: '#FF4E4E',
 };
 
 export default function UploadProgressOverlay() {
-    const { tasks, isUploading, cancelTask, clearCompleted, retryTask } = useUploadStore();
+    const { tasks, cancelUpload } = useUpload();
     const [expanded, setExpanded] = useState(false);
     const [animation] = useState(new Animated.Value(0));
 
-    // Only show if there are tasks that are not yet cleared
-    const activeTasks = tasks.filter(t => t.status !== 'completed' && t.status !== 'cancelled' && t.status !== 'failed');
-    const failedTasks = tasks.filter(t => t.status === 'failed');
-    const completedTasks = tasks.filter(t => t.status === 'completed');
-
-    const totalTasks = tasks.length;
-    if (totalTasks === 0) return null;
+    if (tasks.length === 0) return null;
 
     const toggleExpand = () => {
         const toValue = expanded ? 0 : 1;
@@ -41,64 +30,23 @@ export default function UploadProgressOverlay() {
             toValue,
             useNativeDriver: false,
             friction: 8,
+            tension: 40,
         }).start();
         setExpanded(!expanded);
     };
 
     const overlayHeight = animation.interpolate({
         inputRange: [0, 1],
-        outputRange: [70, height * 0.6],
+        outputRange: [74, height * 0.6],
     });
 
-    const currentUploading = tasks.find(t => t.status === 'uploading');
+    const activeTasksCount = tasks.filter(t => t.status === 'uploading' || t.status === 'queued').length;
     const overallProgress = tasks.length > 0
-        ? tasks.reduce((acc, t) => acc + (t.status === 'completed' ? 100 : t.progress), 0) / tasks.length
+        ? Math.round(tasks.reduce((acc, t) => acc + t.progress, 0) / tasks.length)
         : 0;
-
-    const renderTask = ({ item }: { item: UploadTask }) => (
-        <View style={s.taskRow}>
-            <View style={s.taskIcon}>
-                {item.status === 'uploading' && <Loader2 color={C.primary} size={20} />}
-                {item.status === 'queued' && <Loader2 color={C.muted} size={20} opacity={0.5} />}
-                {item.status === 'completed' && <CheckCircle2 color={C.success} size={20} />}
-                {item.status === 'failed' && <AlertCircle color={C.danger} size={20} />}
-                {item.status === 'cancelled' && <X color={C.muted} size={20} />}
-            </View>
-            <View style={s.taskInfo}>
-                <Text style={s.taskName} numberOfLines={1}>{item.file.name}</Text>
-                <Text style={s.taskStatus}>
-                    {item.status === 'uploading' ? `Uploading... ${Math.round(item.progress)}%` :
-                        item.status === 'queued' ? 'Queued' :
-                            item.status === 'failed' ? `Failed: ${item.error}` :
-                                item.status.charAt(0).toUpperCase() + item.status.slice(1)}
-                </Text>
-                {item.status === 'uploading' && (
-                    <View style={s.miniProgressTrack}>
-                        <View style={[s.miniProgressFill, { width: `${item.progress}%` }]} />
-                    </View>
-                )}
-            </View>
-            <View style={s.taskActions}>
-                {item.status === 'uploading' && (
-                    <TouchableOpacity onPress={() => cancelTask(item.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                        <X color={C.muted} size={18} />
-                    </TouchableOpacity>
-                )}
-                {item.status === 'failed' && (
-                    <TouchableOpacity onPress={() => retryTask(item.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                        <Play color={C.primary} size={18} />
-                    </TouchableOpacity>
-                )}
-                {(item.status === 'completed' || item.status === 'cancelled') && (
-                    <CheckCircle2 color={C.success} size={18} opacity={item.status === 'completed' ? 1 : 0} />
-                )}
-            </View>
-        </View>
-    );
 
     return (
         <Animated.View style={[s.container, { height: overlayHeight }]}>
-            {/* Header / Summary Bar */}
             <View style={s.header}>
                 <TouchableOpacity
                     activeOpacity={0.9}
@@ -106,45 +54,35 @@ export default function UploadProgressOverlay() {
                     style={s.headerInfo}
                 >
                     <Text style={s.headerTitle}>
-                        {activeTasks.length > 0 ? `Uploading ${activeTasks.length} file(s)...` :
-                            failedTasks.length > 0 ? `${failedTasks.length} upload(s) failed` :
-                                'Uploads complete'}
+                        {activeTasksCount > 0 ? `Uploading ${activeTasksCount} file(s)...` : 'Uploads complete'}
                     </Text>
                     <Text style={s.headerSub}>
-                        {Math.round(overallProgress)}% overall
+                        {overallProgress}% overall · {tasks.length} total
                     </Text>
                 </TouchableOpacity>
 
                 <View style={s.headerActions}>
-                    <TouchableOpacity onPress={toggleExpand} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <TouchableOpacity onPress={toggleExpand} style={s.expandBtn}>
                         {expanded ? <ChevronDown color={C.text} size={24} /> : <ChevronUp color={C.text} size={24} />}
                     </TouchableOpacity>
-                    {!expanded && (
-                        <TouchableOpacity style={s.closeBtn} onPress={clearCompleted} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                            <X color={C.text} size={20} />
-                        </TouchableOpacity>
-                    )}
                 </View>
             </View>
 
-            {/* Progress Bar (Always visible on top of header) */}
             <View style={s.mainProgressTrack}>
                 <View style={[s.mainProgressFill, { width: `${overallProgress}%` }]} />
             </View>
 
-            {/* Expanded List */}
             {expanded && (
                 <View style={s.listContainer}>
                     <View style={s.listHeader}>
                         <Text style={s.listTitle}>Upload Queue</Text>
-                        <TouchableOpacity onPress={clearCompleted} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                            <Text style={s.clearText}>Clear Finished</Text>
-                        </TouchableOpacity>
                     </View>
                     <FlatList
                         data={tasks}
                         keyExtractor={t => t.id}
-                        renderItem={renderTask}
+                        renderItem={({ item }) => (
+                            <UploadProgress task={item} onCancel={cancelUpload} />
+                        )}
                         contentContainerStyle={s.list}
                         showsVerticalScrollIndicator={false}
                     />
@@ -157,54 +95,58 @@ export default function UploadProgressOverlay() {
 const s = StyleSheet.create({
     container: {
         position: 'absolute',
-        bottom: 90, // Above bottom nav
+        bottom: 90,
         left: 15,
         right: 15,
         backgroundColor: C.bg,
-        borderRadius: 20,
+        borderRadius: 24,
         overflow: 'hidden',
         shadowColor: '#000',
         shadowOffset: { width: 0, height: -4 },
         shadowOpacity: 0.1,
-        shadowRadius: 10,
+        shadowRadius: 12,
         elevation: 10,
         zIndex: 1000,
+        borderWidth: 1,
+        borderColor: C.border,
     },
     header: {
         height: 70,
         flexDirection: 'row',
         alignItems: 'center',
-        paddingHorizontal: 16,
+        paddingHorizontal: 20,
         justifyContent: 'space-between',
     },
     headerInfo: {
         flex: 1,
     },
     headerTitle: {
-        fontSize: 14,
-        fontWeight: '700',
+        fontSize: 15,
+        fontWeight: '800',
         color: C.text,
     },
     headerSub: {
         fontSize: 12,
         color: C.muted,
         marginTop: 2,
+        fontWeight: '600',
     },
     headerActions: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
     },
-    closeBtn: {
+    expandBtn: {
         padding: 4,
+        backgroundColor: '#F8F9FC',
+        borderRadius: 12,
     },
     mainProgressTrack: {
-        height: 3,
-        backgroundColor: C.border,
+        height: 4,
+        backgroundColor: '#F4F6FB',
         width: '100%',
     },
     mainProgressFill: {
-        height: 3,
+        height: 4,
         backgroundColor: C.primary,
     },
     listContainer: {
@@ -216,60 +158,14 @@ const s = StyleSheet.create({
         justifyContent: 'space-between',
         alignItems: 'center',
         marginBottom: 16,
+        paddingHorizontal: 4,
     },
     listTitle: {
-        fontSize: 16,
+        fontSize: 17,
         fontWeight: '800',
         color: C.text,
     },
-    clearText: {
-        fontSize: 13,
-        fontWeight: '600',
-        color: C.primary,
-    },
     list: {
         paddingBottom: 20,
-    },
-    taskRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingVertical: 12,
-        borderBottomWidth: 1,
-        borderBottomColor: C.border,
-    },
-    taskIcon: {
-        width: 36,
-        height: 36,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    taskInfo: {
-        flex: 1,
-        marginLeft: 12,
-    },
-    taskName: {
-        fontSize: 14,
-        fontWeight: '600',
-        color: C.text,
-    },
-    taskStatus: {
-        fontSize: 11,
-        color: C.muted,
-        marginTop: 2,
-    },
-    miniProgressTrack: {
-        height: 2,
-        backgroundColor: C.border,
-        borderRadius: 1,
-        marginTop: 6,
-        width: '90%',
-    },
-    miniProgressFill: {
-        height: 2,
-        backgroundColor: C.primary,
-        borderRadius: 1,
-    },
-    taskActions: {
-        paddingLeft: 12,
     },
 });

@@ -4,7 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import apiClient, { uploadClient } from '../api/client';
 import * as Notifications from 'expo-notifications';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 export interface UploadTask {
     id: string;

@@ -187,7 +187,7 @@ export default function AuthScreen({ navigation }: any) {
 
             {/* ── Floating bottom sheet ── */}
             <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'position' : undefined}
+                behavior={Platform.OS === 'ios' ? 'position' : 'padding'}
                 style={styles.kavWrapper}
             >
                 <Animated.View style={[styles.sheet, {

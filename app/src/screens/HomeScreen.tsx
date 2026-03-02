@@ -17,9 +17,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient, { uploadClient } from '../api/client';
 import { AuthContext } from '../context/AuthContext';
 import { useUploadStore } from '../context/UploadStore';
+import { useApiCacheStore } from '../context/ApiCacheStore';
 import { useToast } from '../context/ToastContext';
 import { FileCardSkeleton, SkeletonBlock } from '../ui/Skeleton';
-import { theme as staticTheme } from '../ui/theme';
+import { theme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
 
 
@@ -130,7 +131,7 @@ export default function HomeScreen({ navigation }: any) {
     const [renameFolderTarget, setRenameFolderTarget] = useState<any>(null);
     const [renameFolderName, setRenameFolderName] = useState('');
 
-    useEffect(() => { load(); }, []);
+    const { homeData, setHomeData } = useApiCacheStore();
 
     // Debounced search
     useEffect(() => {
@@ -148,7 +149,21 @@ export default function HomeScreen({ navigation }: any) {
         return () => clearTimeout(t);
     }, [searchQuery]);
 
+    useEffect(() => {
+        if (homeData) { // Instantiate instantly from cache to prevent empty screen flashes
+            setStats(homeData.stats);
+            setRecentFiles(homeData.files);
+            setFolders(homeData.folders.slice(0, 6));
+            setAllFolders(homeData.folders);
+            setRecentlyAccessed(homeData.recent);
+            setActivity(homeData.activity);
+            setLoading(false);
+        }
+        load();
+    }, []);
+
     const load = async () => {
+        if (!homeData) setLoading(true);
         try {
             const [statsRes, filesRes, foldersRes, recentAccessedRes, activityRes] = await Promise.all([
                 apiClient.get('/files/stats'),
@@ -158,19 +173,23 @@ export default function HomeScreen({ navigation }: any) {
                 apiClient.get('/files/activity?limit=5').catch(() => ({ data: { success: true, activity: [] } })),
             ]);
 
-            if (statsRes.data.success) setStats(statsRes.data);
-            if (filesRes.data.success) setRecentFiles(filesRes.data.files);
-            if (recentAccessedRes.data.files) setRecentlyAccessed(recentAccessedRes.data.files);
-            if (foldersRes.data.success) {
-                setAllFolders(foldersRes.data.folders);
-                setFolders(foldersRes.data.folders.slice(0, 6));
-            }
-            if (activityRes.data.success) {
-                setActivity(activityRes.data.activity);
-            }
+            const newStats = statsRes.data.success ? statsRes.data : {};
+            const newFiles = filesRes.data.success ? filesRes.data.files : [];
+            const newFolders = foldersRes.data.success ? foldersRes.data.folders : [];
+            const newRecent = recentAccessedRes.data.files || [];
+            const newActivity = activityRes.data.success ? activityRes.data.activity : [];
+
+            setHomeData({ stats: newStats, files: newFiles, folders: newFolders, recent: newRecent, activity: newActivity });
+
+            setStats(newStats);
+            setRecentFiles(newFiles);
+            setFolders(newFolders.slice(0, 6));
+            setAllFolders(newFolders);
+            setRecentlyAccessed(newRecent);
+            setActivity(newActivity);
 
         } catch (e) {
-            showToast('Could not load dashboard', 'error');
+            if (!homeData) showToast('Could not load dashboard', 'error');
         } finally {
             setLoading(false);
             setRefreshing(false);

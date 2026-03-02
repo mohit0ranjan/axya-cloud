@@ -28,12 +28,15 @@ app.set('trust proxy', 1);
 app.use(helmet());
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:8081,http://localhost:3000').split(',');
+console.log(`🔒 [CORS] Configured origins:`, allowedOrigins);
+
 app.use(cors({
     origin: (origin, callback) => {
         // Allow requests with no origin (mobile apps, curl)
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
+            console.error(`🛑 [CORS Error] Origin rejected: ${origin}`);
             callback(new Error('Not allowed by CORS'));
         }
     },
@@ -68,7 +71,7 @@ app.use('/share', shareRoutes);
 
 // ── Health Check ────────────────────────────────────────────────────────────
 app.get('/health', (req: Request, res: Response) => {
-    res.json({ status: 'OK', service: 'TeleDrive API', timestamp: new Date() });
+    res.json({ status: 'OK', service: 'Axya API', timestamp: new Date() });
 });
 
 // ── Global Error Handler ────────────────────────────────────────────────────
@@ -95,11 +98,11 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 // ── Startup ──────────────────────────────────────────────────────────────────
 const start = async () => {
     try {
-        console.log(`⏳ Starting TeleDrive on Port ${port}...`);
+        console.log(`⏳ Starting Axya on Port ${port}...`);
         await initSchema();
 
         app.listen(port, () => {
-            console.log(`🚀 TeleDrive Server is READY!`);
+            console.log(`🚀 Axya Server is READY!`);
             console.log(`🔗 Interface: http://localhost:${port}`);
         });
     } catch (error: any) {

@@ -137,7 +137,7 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
             // Upload to telegram with progress & automatic retry logic
             const uploadedMessage = await uploadWithRetry(client, state.telegram_chat_id, {
                 file: customFile,
-                caption: `[TeleDrive] ${state.originalname}`,
+                caption: `[Axya] ${state.originalname}`,
                 workers: 3, // parallel upload workers for MTProto
                 progressCallback,
             });

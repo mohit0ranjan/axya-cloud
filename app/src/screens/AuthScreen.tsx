@@ -78,6 +78,7 @@ export default function AuthScreen({ navigation }: any) {
         if (!phone || phone.length < 5) return Alert.alert('Error', 'Please enter a valid phone number.');
         setIsLoading(true);
         try {
+            console.log(`📡 [Auth] Attempting to reach: ${apiClient.defaults.baseURL}/auth/send-code`);
             const res = await apiClient.post('/auth/send-code', { phoneNumber: phone });
             if (res.data.success) {
                 setTempSession(res.data.tempSession);
@@ -85,7 +86,13 @@ export default function AuthScreen({ navigation }: any) {
                 animateStep();
                 setStep('otp');
             } else Alert.alert('Error', res.data.error || 'Failed to send code');
-        } catch (e: any) { Alert.alert('API Error', e?.response?.data?.error || 'Send Failed'); }
+        } catch (e: any) {
+            const errorMsg = e?.response?.data?.error || e.message || 'Unknown network error';
+            Alert.alert(
+                'Connection Error',
+                `URL: ${apiClient.defaults.baseURL}\n\nError: ${errorMsg}\n\nPlease ensure your backend is online and the URL is correct.`
+            );
+        }
         finally { setIsLoading(false); }
     };
 

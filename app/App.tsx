@@ -20,6 +20,8 @@ import StarredScreen from './src/screens/StarredScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import FilesScreen from './src/screens/FilesScreen';
+import UploadProgressOverlay from './src/components/UploadProgressOverlay';
+
 
 const Stack = createNativeStackNavigator();
 
@@ -41,29 +43,33 @@ function RootNavigator() {
 
     return (
         <NavigationContainer>
-            <Stack.Navigator id="root" screenOptions={{ headerShown: false, animation: 'fade' }}>
-                {!isAuthenticated ? (
-                    <>
-                        <Stack.Screen name="Welcome" component={WelcomeScreen} />
-                        <Stack.Screen name="Auth" component={AuthScreen} />
-                    </>
-                ) : (
-                    <>
-                        <Stack.Screen name="Home" component={HomeScreen} />
-                        <Stack.Screen name="Folders" component={FoldersScreen} />
-                        <Stack.Screen name="FolderFiles" component={FolderFilesScreen} />
-                        <Stack.Screen name="FilePreview" component={FilePreviewScreen} />
-                        <Stack.Screen name="Profile" component={ProfileScreen} />
-                        <Stack.Screen name="Trash" component={TrashScreen} />
-                        <Stack.Screen name="Starred" component={StarredScreen} />
-                        <Stack.Screen name="Settings" component={SettingsScreen} />
-                        <Stack.Screen name="Analytics" component={AnalyticsScreen} />
-                        <Stack.Screen name="Files" component={FilesScreen} />
-                    </>
-                )}
-            </Stack.Navigator>
+            <View style={{ flex: 1 }}>
+                <Stack.Navigator id="root" screenOptions={{ headerShown: false, animation: 'fade' }}>
+                    {!isAuthenticated ? (
+                        <>
+                            <Stack.Screen name="Welcome" component={WelcomeScreen} />
+                            <Stack.Screen name="Auth" component={AuthScreen} />
+                        </>
+                    ) : (
+                        <>
+                            <Stack.Screen name="Home" component={HomeScreen} />
+                            <Stack.Screen name="Folders" component={FoldersScreen} />
+                            <Stack.Screen name="FolderFiles" component={FolderFilesScreen} />
+                            <Stack.Screen name="FilePreview" component={FilePreviewScreen} />
+                            <Stack.Screen name="Profile" component={ProfileScreen} />
+                            <Stack.Screen name="Trash" component={TrashScreen} />
+                            <Stack.Screen name="Starred" component={StarredScreen} />
+                            <Stack.Screen name="Settings" component={SettingsScreen} />
+                            <Stack.Screen name="Analytics" component={AnalyticsScreen} />
+                            <Stack.Screen name="Files" component={FilesScreen} />
+                        </>
+                    )}
+                </Stack.Navigator>
+                {isAuthenticated && <UploadProgressOverlay />}
+            </View>
         </NavigationContainer>
     );
+
 }
 
 export default function App() {

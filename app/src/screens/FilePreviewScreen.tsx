@@ -1,13 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
     View, Text, TouchableOpacity, StyleSheet, SafeAreaView, ActivityIndicator,
     Alert, Dimensions, Platform, Modal, KeyboardAvoidingView, ScrollView, TextInput,
+    FlatList, Animated, PanResponder,
 } from 'react-native';
-import { ArrowLeft, Download, Trash2, Share2, FileText, FolderInput, Star, Link, CheckCircle, X } from 'lucide-react-native';
+import { ArrowLeft, Download, Trash2, FileText, FolderInput, Star, Link, CheckCircle, X } from 'lucide-react-native';
+
 import { Image } from 'expo-image';
 import VideoPlayer from '../components/VideoPlayer';
-import * as FileSystem from 'expo-file-system';
-import { WebView } from 'react-native-webview';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -15,16 +16,82 @@ import apiClient, { API_BASE } from '../api/client';
 import { useToast } from '../context/ToastContext';
 import { theme } from '../ui/theme';
 
-const { width } = Dimensions.get('window');
+const { width, height } = Dimensions.get('window');
+
+// ─────────────────────────────────────────────────────────────
+// ImagePreviewItem — own loading/error state per image
+// This is the key fix: each FlatList slide has its own state
+// ─────────────────────────────────────────────────────────────
+function ImagePreviewItem({ item, jwt }: { item: any; jwt: string }) {
+    const [loading, setLoading] = useState(true);
+    const [useFallback, setUseFallback] = useState(false);
+    const [errored, setErrored] = useState(false);
+
+    const thumbUrl = `${API_BASE}/files/${item.id}/thumbnail`;
+    const downloadUrl = `${API_BASE}/files/${item.id}/download`;
+    const headers = { Authorization: `Bearer ${jwt}` };
+    const src = useFallback ? downloadUrl : thumbUrl;
+
+    return (
+        <View style={{ width, flex: 1, backgroundColor: '#0a0a0f', justifyContent: 'center', alignItems: 'center' }}>
+            {loading && (
+                <View style={StyleSheet.absoluteFillObject as any}>
+                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                        <ActivityIndicator size="large" color={theme.colors.primary} />
+                        <Text style={{ color: 'rgba(255,255,255,0.6)', marginTop: 14, fontSize: 13, fontWeight: '500' }}>
+                            {useFallback ? 'Loading image...' : 'Loading preview...'}
+                        </Text>
+                    </View>
+                </View>
+            )}
+            {errored ? (
+                <View style={{ alignItems: 'center', padding: 32 }}>
+                    <FileText color="rgba(255,255,255,0.3)" size={72} strokeWidth={1} />
+                    <Text style={{ color: 'rgba(255,255,255,0.5)', marginTop: 16, fontSize: 14 }}>Could not load image</Text>
+                </View>
+            ) : (
+                <Image
+                    source={{ uri: src, headers }}
+                    style={{ width, height: height * 0.65 }}
+                    contentFit="contain"
+                    transition={300}
+                    cachePolicy="disk"
+                    onLoad={() => setLoading(false)}
+                    onError={() => {
+                        if (!useFallback) {
+                            // Thumbnail failed → try full download URL
+                            setUseFallback(true);
+                            setLoading(true);
+                        } else {
+                            // Both failed
+                            setLoading(false);
+                            setErrored(true);
+                        }
+                    }}
+                />
+            )}
+        </View>
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Main Screen
+// ─────────────────────────────────────────────────────────────
 export default function FilePreviewScreen({ route, navigation }: any) {
 
-    const { file } = route.params;
+    const allFiles: any[] = useMemo(() =>
+        (route.params.files || []).filter((f: any) => f.mime_type !== 'inode/directory'),
+        [route.params.files]
+    );
+    const initialIndex: number = route.params.initialIndex ?? 0;
+
     const { showToast } = useToast();
 
+    const [currentIndex, setCurrentIndex] = useState(initialIndex);
+    const file = useMemo(() => allFiles[currentIndex] || route.params.file, [currentIndex, allFiles]);
     const [jwt, setJwt] = useState('');
     const [downloading, setDownloading] = useState(false);
-    const [isStarred, setIsStarred] = useState(file.is_starred || false);
-    const [mediaLoading, setMediaLoading] = useState(true);
+    const [isStarred, setIsStarred] = useState(file?.is_starred || false);
 
     // Share link
     const [shareModalVisible, setShareModalVisible] = useState(false);
@@ -44,18 +111,16 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         AsyncStorage.getItem('jwtToken').then(t => setJwt(t || ''));
     }, []);
 
-    const secureUrl = `${API_BASE}/files/${file.id}/download`;
-
-    const handleStar = async () => {
+    const handleStar = useCallback(async () => {
         try {
             await apiClient.patch(`/files/${file.id}/star`);
             setIsStarred((prev: boolean) => !prev);
             showToast(isStarred ? 'Removed from starred' : 'Added to starred');
         } catch { showToast('Failed to update star', 'error'); }
-    };
+    }, [file, isStarred]);
 
-    const handleTrash = () => {
-        Alert.alert('Move to Trash', `Move "${file.name}" to trash?`, [
+    const handleTrash = useCallback(() => {
+        Alert.alert('Move to Trash', `Move "${file.name || file.file_name}" to trash?`, [
             { text: 'Cancel', style: 'cancel' },
             {
                 text: 'Trash', style: 'destructive', onPress: async () => {
@@ -67,24 +132,34 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                 }
             },
         ]);
-    };
+    }, [file]);
 
-    const handleDownload = async () => {
+    const handleDownload = useCallback(async () => {
         if (!jwt) return;
         setDownloading(true);
         try {
-            const response = await fetch(secureUrl, { headers: { Authorization: `Bearer ${jwt}` } });
-            if (!response.ok) throw new Error('Could not fetch file');
-            showToast('File fetched — sharing…');
+            const fileName = file.name || file.file_name || 'download';
+            const cacheDir = FileSystem.documentDirectory ?? '/tmp/';
+            const localUri = cacheDir + fileName;
+            showToast('Downloading…');
+
+            const downloadResult = await FileSystem.downloadAsync(
+                `${API_BASE}/files/${file.id}/download`,
+                localUri,
+                { headers: { Authorization: `Bearer ${jwt}` } }
+            );
+
+            if (downloadResult.status !== 200) throw new Error('Server returned ' + downloadResult.status);
+
             if (await Sharing.isAvailableAsync()) {
-                // Create a temp blob URL and share it
-                const blob = await response.blob();
-                showToast('Download complete!');
+                await Sharing.shareAsync(downloadResult.uri, { mimeType: file.mime_type });
+            } else {
+                showToast('File saved: ' + fileName);
             }
         } catch (e: any) {
             showToast(e.message || 'Download failed', 'error');
         } finally { setDownloading(false); }
-    };
+    }, [file, jwt]);
 
     const handleCreateShare = async () => {
         setIsCreatingShare(true);
@@ -132,54 +207,43 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         } catch { } finally { setLoadingFolders(false); }
     };
 
-    const renderPreview = () => {
-        if (!jwt) return <ActivityIndicator color={theme.colors.primary} size="large" />;
-
-        const isImage = file.mime_type?.includes('image');
-        const isVideo = file.mime_type?.includes('video');
-        const isPdf = file.mime_type?.includes('pdf');
-        const headers = { Authorization: `Bearer ${jwt}` };
+    // Render each slide
+    const renderItem = useCallback(({ item }: { item: any }) => {
+        const isImage = item.mime_type?.includes('image');
+        const isVideo = item.mime_type?.includes('video');
+        const streamUrl = `${API_BASE}/files/${item.id}/stream`;
 
         if (isImage) {
+            return <ImagePreviewItem item={item} jwt={jwt} />;
+        }
+        if (isVideo) {
             return (
-                <View style={{ flex: 1, width: '100%' }}>
-                    {mediaLoading && <ActivityIndicator style={StyleSheet.absoluteFill} color={theme.colors.primary} size="large" />}
-                    <Image
-                        source={{ uri: secureUrl, headers }}
-                        style={styles.previewImage}
-                        contentFit="contain"
-                        transition={400}
-                        cachePolicy="disk"
-                        onLoad={() => setMediaLoading(false)}
-                    />
+                <View style={{ width, flex: 1, justifyContent: 'center', backgroundColor: '#0a0a0f' }}>
+                    <VideoPlayer url={streamUrl} token={jwt} width={width} onError={() => {
+                        showToast('Video stream failed. Try downloading instead.', 'error');
+                    }} />
                 </View>
             );
         }
-        if (isVideo) {
-            const streamUrl = `${API_BASE}/files/${file.id}/stream`;
-            return (
-                <VideoPlayer
-                    url={streamUrl}
-                    token={jwt}
-                    width={width}
-                    onError={() => {
-                        showToast('Stream failed — file may exceed 20MB bot limit', 'error');
-                        setMediaLoading(false);
-                    }}
-                />
-            );
-        }
-        if (isPdf && Platform.OS !== 'android') {
-            return <WebView source={{ uri: secureUrl, headers }} style={{ flex: 1, width }} />;
-        }
         return (
-            <View style={styles.genericPreview}>
-                <FileText color="#fff" size={80} strokeWidth={1} />
-                <Text style={styles.genericLabel}>{file.name || file.file_name}</Text>
-                <Text style={styles.genericSub}>{file.mime_type}</Text>
+            <View style={[styles.genericPreview, { width }]}>
+                <FileText color="rgba(255,255,255,0.4)" size={80} strokeWidth={1} />
+                <Text style={styles.genericLabel}>{item.name || item.file_name}</Text>
+                <Text style={styles.genericSub}>{item.mime_type || 'Unknown type'}</Text>
+                <Text style={styles.genericSub}>Use Download to open this file</Text>
             </View>
         );
-    };
+    }, [jwt]);
+
+    const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
+        if (viewableItems.length > 0) {
+            const idx = viewableItems[0].index ?? 0;
+            setCurrentIndex(idx);
+            setIsStarred(allFiles[idx]?.is_starred || false);
+        }
+    }).current;
+
+    const viewabilityConfig = useRef({ viewAreaCoveragePercentThreshold: 50 }).current;
 
     const formatSize = (bytes: number) => {
         if (!bytes) return '—';
@@ -205,8 +269,43 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                 </View>
             </View>
 
-            {/* Preview Area */}
-            <View style={styles.previewContainer}>{renderPreview()}</View>
+            {/* Preview Area — Swipeable FlatList */}
+            <View style={styles.previewContainer}>
+                {!jwt ? (
+                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                        <ActivityIndicator size="large" color={theme.colors.primary} />
+                        <Text style={{ color: 'rgba(255,255,255,0.5)', marginTop: 12 }}>Authenticating…</Text>
+                    </View>
+                ) : (
+                    <FlatList
+                        data={allFiles.length > 0 ? allFiles : [file]}
+                        horizontal
+                        pagingEnabled
+                        showsHorizontalScrollIndicator={false}
+                        initialScrollIndex={Math.min(initialIndex, Math.max(0, allFiles.length - 1))}
+                        getItemLayout={(_, index) => ({ length: width, offset: width * index, index })}
+                        scrollEventThrottle={16}
+                        keyExtractor={(item) => String(item.id)}
+                        renderItem={renderItem}
+                        onViewableItemsChanged={onViewableItemsChanged}
+                        viewabilityConfig={viewabilityConfig}
+                        // Disable scroll if there's only 1 file
+                        scrollEnabled={allFiles.length > 1}
+                        decelerationRate="fast"
+                        snapToInterval={width}
+                        snapToAlignment="start"
+                    />
+                )}
+            </View>
+
+            {/* Slide indicator */}
+            {allFiles.length > 1 && (
+                <View style={styles.dotRow}>
+                    {allFiles.map((_, i) => (
+                        <View key={i} style={[styles.dot, i === currentIndex && styles.dotActive]} />
+                    ))}
+                </View>
+            )}
 
             {/* Details Bottom Sheet */}
             <View style={styles.detailSheet}>
@@ -313,11 +412,15 @@ const styles = StyleSheet.create({
     headerActions: { flexDirection: 'row', gap: 10 },
     glassBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
 
-    previewContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+    previewContainer: { flex: 1 },
     previewImage: { width: '100%', height: '100%' },
-    genericPreview: { alignItems: 'center', justifyContent: 'center', padding: 32 },
+    genericPreview: { alignItems: 'center', justifyContent: 'center', padding: 32, flex: 1 },
     genericLabel: { color: '#fff', fontSize: 18, fontWeight: '700', marginTop: 20, textAlign: 'center' },
     genericSub: { color: 'rgba(255,255,255,0.5)', fontSize: 13, marginTop: 8 },
+
+    dotRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, paddingVertical: 8 },
+    dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.3)' },
+    dotActive: { width: 18, backgroundColor: theme.colors.primary },
 
     detailSheet: { backgroundColor: '#fff', borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: 28, paddingBottom: 36 },
     fileName: { fontSize: 20, fontWeight: '700', color: theme.colors.textHeading, marginBottom: 6 },

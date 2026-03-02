@@ -4,10 +4,10 @@
     "slug": "axya",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/axya_logo.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/axya_logo.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -18,13 +18,13 @@
       "package": "com.mohit.axya",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
+        "foregroundImage": "./assets/axya_logo.png",
         "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "monochromeImage": "./assets/axya_logo.png"
       }
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/axya_logo.png"
     },
     "plugins": [
       "expo-sharing",
@@ -33,8 +33,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "62c6665f-2655-4874-baa2-6b07e6bca3d7"
+        "projectId": "87856e9d-b57b-47f9-a492-ce90a79e2e3b"
       }
-    }
+    },
+    "owner": "mohit010"
   }
 }

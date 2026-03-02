@@ -9,6 +9,7 @@
     "web": "expo start --web"
   },
   "dependencies": {
+    "@expo/metro-config": "~55.0.9",
     "@gorhom/bottom-sheet": "^5.2.8",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.15.2",
@@ -17,13 +18,16 @@
     "axios": "^1.13.6",
     "expo": "~55.0.4",
     "expo-av": "^16.0.8",
+    "expo-background-fetch": "^55.0.9",
     "expo-clipboard": "~55.0.8",
     "expo-document-picker": "~55.0.8",
     "expo-file-system": "~55.0.10",
     "expo-image": "~55.0.5",
     "expo-linear-gradient": "~55.0.8",
+    "expo-notifications": "^55.0.10",
     "expo-sharing": "~55.0.11",
     "expo-status-bar": "~55.0.4",
+    "expo-task-manager": "^55.0.9",
     "expo-video": "~55.0.10",
     "lucide-react-native": "^0.575.0",
     "react": "19.2.0",
@@ -31,12 +35,14 @@
     "react-native": "0.83.2",
     "react-native-gesture-handler": "^2.30.0",
     "react-native-mmkv": "^4.1.2",
+    "react-native-progress": "^5.0.1",
     "react-native-reanimated": "^4.2.1",
     "react-native-safe-area-context": "~5.6.2",
     "react-native-screens": "~4.23.0",
     "react-native-svg": "15.15.3",
     "react-native-web": "^0.21.0",
-    "react-native-webview": "13.16.0"
+    "react-native-webview": "13.16.0",
+    "zustand": "^5.0.11"
   },
   "private": true,
   "devDependencies": {

@@ -13,7 +13,10 @@ import { Image } from 'expo-image';
 import * as DocumentPicker from 'expo-document-picker';
 import apiClient from '../api/client';
 import { AuthContext } from '../context/AuthContext';
-import { theme } from '../ui/theme';
+import { useUploadStore } from '../context/UploadStore';
+import { theme as staticTheme } from '../ui/theme';
+import { useTheme } from '../context/ThemeContext';
+
 
 const { width } = Dimensions.get('window');
 
@@ -45,17 +48,18 @@ function formatSize(bytes: number) {
 }
 
 function getIconConfig(mime: string) {
-    if (!mime || mime === 'inode/directory') return { color: theme.colors.primary, bg: '#EEF1FD', Icon: Folder };
+    if (!mime || mime === 'inode/directory') return { color: staticTheme.colors.primary, bg: '#EEF1FD', Icon: Folder };
     if (mime.includes('image')) return { color: '#F59E0B', bg: '#FEF3C7', Icon: ImageIcon };
     if (mime.includes('video')) return { color: '#9333EA', bg: '#F3E8FF', Icon: FileText };
     if (mime.includes('audio')) return { color: '#1FD45A', bg: '#DCFCE7', Icon: FileText };
     if (mime.includes('pdf')) return { color: '#EF4444', bg: '#FEE2E2', Icon: FileText };
     if (mime.includes('zip')) return { color: '#F97316', bg: '#FFEDD5', Icon: FileText };
-    return { color: theme.colors.primary, bg: '#EEF1FD', Icon: FileText };
+    return { color: staticTheme.colors.primary, bg: '#EEF1FD', Icon: FileText };
 }
 
 export default function FolderFilesScreen({ route, navigation }: any) {
     const { folderId, folderName, breadcrumb = [] } = route.params;
+    const { theme } = useTheme();
     const { token } = useContext(AuthContext);
 
     // Core data
@@ -72,6 +76,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     // Multi-select
     const [selectMode, setSelectMode] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+    const { addTask } = useUploadStore();
+
 
     // Upload
     const [isUploading, setIsUploading] = useState(false);
@@ -149,30 +156,66 @@ export default function FolderFilesScreen({ route, navigation }: any) {
         if (ids.length === 0) { setSelectMode(false); setSelectedIds(new Set()); return; }
 
         try {
-            if (action === 'trash') await apiClient.post('/files/bulk', { ids, action: 'trash' });
-            else if (action === 'star') await apiClient.post('/files/bulk', { ids, action: 'star' });
-            else if (action === 'move') { setMoveTarget({ ids }); setMoveModalVisible(true); return; }
-            fetchFolderFiles();
+            if (action === 'trash') {
+                await apiClient.post('/files/bulk', { ids, action: 'trash' });
+                fetchFolderFiles();
+            } else if (action === 'star') {
+                await apiClient.post('/files/bulk', { ids, action: 'star' });
+                fetchFolderFiles();
+            } else if (action === 'move') {
+                // Open folder picker modal — actual move happens in handleBulkMove
+                setMoveTarget({ ids });
+                setMoveModalVisible(true);
+                return; // don't reset select mode yet
+            }
         } catch (e) { Alert.alert('Error', 'Bulk action failed'); }
         finally { setSelectMode(false); setSelectedIds(new Set()); }
     };
 
-    const handleDelete = async (item: any) => {
-        Alert.alert('Confirm', `Move ${item.name || item.file_name} to trash?`, [
-            { text: 'Cancel', style: 'cancel' },
-            {
-                text: 'Delete',
-                style: 'destructive',
-                onPress: async () => {
-                    try {
-                        const endpoint = item.result_type === 'folder' ? `/files/folder/${item.id}` : `/files/${item.id}`;
-                        await apiClient.delete(endpoint);
-                        fetchFolderFiles();
-                    } catch (e) { Alert.alert('Error', 'Could not delete'); }
-                }
-            }
-        ]);
+    const handleBulkMove = async (targetFolderId: string | null) => {
+        if (!moveTarget?.ids) return;
+        try {
+            await apiClient.post('/files/bulk', { ids: moveTarget.ids, action: 'move', folder_id: targetFolderId });
+            setMoveModalVisible(false);
+            setMoveTarget(null);
+            setSelectMode(false);
+            setSelectedIds(new Set());
+            fetchFolderFiles();
+        } catch (e) { Alert.alert('Error', 'Could not move files'); }
     };
+
+    const handleDelete = async (item: any) => {
+        const isFolder = item.result_type === 'folder' || item.mime_type === 'inode/directory';
+        const name = item.name || item.file_name;
+        Alert.alert(
+            isFolder ? 'Move Folder to Trash' : 'Move to Trash',
+            isFolder
+                ? `Move "${name}" and all its contents to trash?`
+                : `Move "${name}" to trash?`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Move to Trash',
+                    style: 'destructive',
+                    onPress: async () => {
+                        try {
+                            if (isFolder) {
+                                // DELETE /files/folder/:id → server calls trashFolder (soft-delete cascade)
+                                await apiClient.delete(`/files/folder/${item.id}`);
+                            } else {
+                                // ✅ FIX: PATCH /files/:id/trash → soft-delete (NOT hard delete!)
+                                await apiClient.patch(`/files/${item.id}/trash`);
+                            }
+                            fetchFolderFiles();
+                        } catch (e: any) {
+                            Alert.alert('Error', e.response?.data?.error || 'Could not move to trash');
+                        }
+                    }
+                }
+            ]
+        );
+    };
+
 
     const handleCreateFolder = async () => {
         if (!newFolderName.trim()) return;
@@ -223,31 +266,13 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     };
 
     const handleUploadInit = async () => {
-        const res = await DocumentPicker.getDocumentAsync({ type: '*/*', multiple: true });
-        if (res.canceled) return;
-        setTotalUploadFiles(res.assets.length);
-        setCurrentUploadIndex(0);
-        setIsUploading(true);
-        handleUploadConfirm(res.assets);
+        try {
+            const res = await DocumentPicker.getDocumentAsync({ type: '*/*', multiple: true });
+            if (res.canceled) return;
+            addTask(res.assets, folderId, 'me');
+        } catch { Alert.alert('Error', 'Pick failed'); }
     };
 
-    const handleUploadConfirm = async (assets: any[]) => {
-        for (let i = 0; i < assets.length; i++) {
-            setCurrentUploadIndex(i + 1);
-            setUploadProgress(0);
-            const asset = assets[i];
-            const formData = new FormData();
-            formData.append('file', { uri: asset.uri, name: asset.name, type: asset.mimeType } as any);
-            formData.append('folder_id', folderId || '');
-            try {
-                await apiClient.post('/files/upload', formData, {
-                    headers: { 'Content-Type': 'multipart/form-data' },
-                    onUploadProgress: (p) => setUploadProgress(Math.round((p.loaded * 100) / (p.total || 1))),
-                });
-            } catch (e) { console.error('Upload failed', e); }
-        }
-        setIsUploading(false); fetchFolderFiles();
-    };
 
     const renderCard = (item: any) => {
         const isSelected = selectedIds.has(item.id);
@@ -258,11 +283,20 @@ export default function FolderFilesScreen({ route, navigation }: any) {
         return (
             <TouchableOpacity
                 key={item.id}
-                style={[isGridView ? styles.gridCard : styles.fileCard, isSelected && styles.fileCardSelected]}
+                style={[isGridView ? styles.gridCard : styles.fileCard,
+                { backgroundColor: theme.colors.card },
+                isSelected && styles.fileCardSelected]}
                 onPress={() => {
                     if (selectMode) toggleSelect(item.id);
                     else if (isFolder) navigation.push('FolderFiles', { folderId: item.id, folderName: item.name, breadcrumb: currentBreadcrumb });
-                    else navigation.navigate('FilePreview', { file: item });
+                    else {
+                        // ✅ Mark as recently accessed (non-blocking)
+                        apiClient.patch(`/files/${item.id}/accessed`).catch(() => { });
+                        const previewableFiles = filteredFiles.filter(f => f.mime_type !== 'inode/directory');
+                        const idx = previewableFiles.findIndex(f => f.id === item.id);
+                        navigation.navigate('FilePreview', { files: previewableFiles, initialIndex: idx === -1 ? 0 : idx });
+                    }
+
                 }}
                 onLongPress={() => { if (!selectMode) { setSelectMode(true); toggleSelect(item.id); } }}
             >
@@ -309,8 +343,19 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                                         { text: 'Cancel', style: 'cancel' },
                                         { text: '✏️ Rename', onPress: () => { setRenameTarget(item); setRenameValue(item.name || item.file_name); setRenameModalVisible(true); } },
                                         { text: 'ℹ️ Info & Tags', onPress: () => openInfoSheet(item) },
-                                        { text: '⭐ Star', onPress: async () => { await apiClient.patch(`/files/${item.id}/star`); fetchFolderFiles(); } },
-                                        { text: '🗑 Delete', style: 'destructive', onPress: () => handleDelete(item) },
+                                        {
+                                            text: item.is_starred ? '★ Unstar' : '⭐ Star',
+                                            onPress: async () => {
+                                                try {
+                                                    await apiClient.patch(`/files/${item.id}/star`);
+                                                    fetchFolderFiles();
+                                                } catch {
+                                                    Alert.alert('Error', 'Could not update star');
+                                                }
+                                            }
+                                        },
+                                        { text: '🗑 Move to Trash', style: 'destructive', onPress: () => handleDelete(item) },
+
                                     ]);
                                 }}
                             >
@@ -326,14 +371,15 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     const currentBreadcrumb = [...breadcrumb, { id: folderId, name: folderName }];
 
     return (
-        <SafeAreaView style={styles.container}>
-            <View style={styles.header}>
+        <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+            <View style={[styles.header, { backgroundColor: theme.colors.background }]}>
                 <TouchableOpacity style={styles.iconBtn} onPress={() => { if (selectMode) { setSelectMode(false); setSelectedIds(new Set()); } else navigation.goBack(); }}>
                     {selectMode ? <X color={theme.colors.textHeading} size={22} /> : <ArrowLeft color={theme.colors.textHeading} size={24} />}
                 </TouchableOpacity>
                 <View style={styles.headerCenter}>
-                    <Text style={styles.headerTitle} numberOfLines={1}>{selectMode ? `${selectedIds.size} selected` : folderName}</Text>
+                    <Text style={[styles.headerTitle, { color: theme.colors.textHeading }]} numberOfLines={1}>{selectMode ? `${selectedIds.size} selected` : folderName}</Text>
                 </View>
+
                 <View style={styles.headerActions}>
                     {selectMode ? (
                         <>
@@ -429,51 +475,89 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     </View>
                 </KeyboardAvoidingView>
             </Modal>
+
+            {/* ── Move Files Modal ────────────────────────────────────── */}
+            <Modal visible={isMoveModalVisible} transparent animationType="slide">
+                <TouchableOpacity
+                    style={[styles.centeredModal, { justifyContent: 'flex-end', padding: 0 }]}
+                    activeOpacity={1}
+                    onPress={() => { setMoveModalVisible(false); setMoveTarget(null); setSelectMode(false); setSelectedIds(new Set()); }}
+                >
+                    <View style={[styles.modalCard, { borderRadius: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40 }]}>
+                        <View style={{ width: 40, height: 4, backgroundColor: theme.colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: 20 }} />
+                        <Text style={[styles.modalTitle, { marginBottom: 4 }]}>📦 Move {moveTarget?.ids?.length || 0} file(s) to…</Text>
+                        <Text style={[styles.modalSub, { marginBottom: 20 }]}>Choose a destination folder</Text>
+
+                        {/* Root option */}
+                        <TouchableOpacity
+                            style={[styles.modalBtn, { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10, paddingHorizontal: 16, width: '100%' }]}
+                            onPress={() => handleBulkMove(null)}
+                        >
+                            <Folder color={theme.colors.primary} size={20} />
+                            <Text style={[styles.modalBtnText, { color: theme.colors.textHeading }]}>Home (Root)</Text>
+                        </TouchableOpacity>
+
+                        {allFolders.filter(f => f.id !== folderId).map(f => (
+                            <TouchableOpacity
+                                key={f.id}
+                                style={[styles.modalBtn, { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10, paddingHorizontal: 16, width: '100%' }]}
+                                onPress={() => handleBulkMove(f.id)}
+                            >
+                                <Folder color="#D97706" size={20} />
+                                <Text style={[styles.modalBtnText, { color: theme.colors.textHeading }]}>{f.name}</Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                </TouchableOpacity>
+            </Modal>
+
         </SafeAreaView>
     );
 }
 
+
 const GRID_SIZE = (width - 48 - 12) / 2;
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: theme.colors.background },
+    container: { flex: 1, backgroundColor: staticTheme.colors.background },
     header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 12, gap: 8 },
     headerCenter: { flex: 1, alignItems: 'center' },
-    headerTitle: { fontSize: 18, fontWeight: '700', color: theme.colors.textHeading },
+    headerTitle: { fontSize: 18, fontWeight: '700', color: staticTheme.colors.textHeading },
     headerActions: { flexDirection: 'row', gap: 4 },
     iconBtn: { padding: 8 },
-    breadcrumbBar: { backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: theme.colors.border, height: 40, justifyContent: 'center' },
-    crumbLink: { fontSize: 12, color: theme.colors.primary, fontWeight: '600' },
-    crumbSep: { fontSize: 12, color: theme.colors.textBody },
+    breadcrumbBar: { backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: staticTheme.colors.border, height: 40, justifyContent: 'center' },
+    crumbLink: { fontSize: 12, color: staticTheme.colors.primary, fontWeight: '600' },
+    crumbSep: { fontSize: 12, color: staticTheme.colors.textBody },
     tabBar: { height: 48 },
-    tab: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: theme.colors.background },
-    tabActive: { backgroundColor: theme.colors.primary },
-    tabText: { fontSize: 12, color: theme.colors.textBody, fontWeight: '600' },
+    tab: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: staticTheme.colors.background },
+    tabActive: { backgroundColor: staticTheme.colors.primary },
+    tabText: { fontSize: 12, color: staticTheme.colors.textBody, fontWeight: '600' },
     tabTextActive: { color: '#fff' },
     scrollArea: { flex: 1, paddingHorizontal: 20 },
     emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
-    emptyText: { color: theme.colors.textBody, fontSize: 15, marginTop: 16 },
-    fileCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', padding: 14, borderRadius: 18, marginBottom: 10, ...theme.shadows.card },
-    fileCardSelected: { borderWidth: 2, borderColor: theme.colors.primary },
+    emptyText: { color: staticTheme.colors.textBody, fontSize: 15, marginTop: 16 },
+    fileCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', padding: 14, borderRadius: 18, marginBottom: 10, ...staticTheme.shadows.card },
+    fileCardSelected: { borderWidth: 2, borderColor: staticTheme.colors.primary },
     fileIconBox: { width: 46, height: 46, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
     fileDetails: { flex: 1 },
-    fileName: { fontSize: 15, color: theme.colors.textHeading, fontWeight: '600', marginBottom: 3 },
-    fileMeta: { fontSize: 12, color: theme.colors.textBody },
+    fileName: { fontSize: 15, color: staticTheme.colors.textHeading, fontWeight: '600', marginBottom: 3 },
+    fileMeta: { fontSize: 12, color: staticTheme.colors.textBody },
     gridContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 12 },
-    gridCard: { width: GRID_SIZE, borderRadius: 16, backgroundColor: '#fff', overflow: 'hidden', ...theme.shadows.card },
+    gridCard: { width: GRID_SIZE, borderRadius: 16, backgroundColor: '#fff', overflow: 'hidden', ...staticTheme.shadows.card },
     gridImage: { width: '100%', height: GRID_SIZE * 0.75 },
     gridIcon: { width: '100%', height: GRID_SIZE * 0.75, justifyContent: 'center', alignItems: 'center' },
     gridLabel: { padding: 8 },
-    gridName: { fontSize: 12, fontWeight: '600', color: theme.colors.textHeading },
+    gridName: { fontSize: 12, fontWeight: '600', color: staticTheme.colors.textHeading },
     gridCheckbox: { position: 'absolute', top: 8, right: 8, width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#fff', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.3)' },
-    fab: { position: 'absolute', bottom: 40, right: 24, width: 64, height: 64, borderRadius: 32, backgroundColor: theme.colors.primary, justifyContent: 'center', alignItems: 'center', ...theme.shadows.soft, elevation: 10, zIndex: 10 },
+    fab: { position: 'absolute', bottom: 40, right: 24, width: 64, height: 64, borderRadius: 32, backgroundColor: staticTheme.colors.primary, justifyContent: 'center', alignItems: 'center', ...staticTheme.shadows.soft, elevation: 10, zIndex: 10 },
     centeredModal: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
-    modalCard: { width: '100%', backgroundColor: '#fff', borderRadius: 24, padding: 24, ...theme.shadows.card },
-    modalTitle: { fontSize: 20, fontWeight: '700', color: theme.colors.textHeading, marginBottom: 16 },
-    modalSub: { fontSize: 14, color: theme.colors.textBody, marginBottom: 20 },
-    modalInput: { width: '100%', height: 50, borderWidth: 1.5, borderColor: theme.colors.border, borderRadius: 12, paddingHorizontal: 16, fontSize: 16, marginBottom: 20, color: theme.colors.textHeading },
+    modalCard: { width: '100%', backgroundColor: '#fff', borderRadius: 24, padding: 24, ...staticTheme.shadows.card },
+    modalTitle: { fontSize: 20, fontWeight: '700', color: staticTheme.colors.textHeading, marginBottom: 16 },
+    modalSub: { fontSize: 14, color: staticTheme.colors.textBody, marginBottom: 20 },
+    modalInput: { width: '100%', height: 50, borderWidth: 1.5, borderColor: staticTheme.colors.border, borderRadius: 12, paddingHorizontal: 16, fontSize: 16, marginBottom: 20, color: staticTheme.colors.textHeading },
     modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12 },
     modalBtn: { paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12, backgroundColor: '#f1f5f9' },
-    modalBtnText: { color: theme.colors.textHeading, fontWeight: '600', fontSize: 14 },
+    modalBtnText: { color: staticTheme.colors.textHeading, fontWeight: '600', fontSize: 14 },
     searchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f8fafc', borderRadius: 12, paddingHorizontal: 12, height: 44, borderWidth: 1, borderColor: '#e2e8f0' },
-    searchInput: { flex: 1, marginLeft: 10, fontSize: 15, color: theme.colors.textHeading },
+    searchInput: { flex: 1, marginLeft: 10, fontSize: 15, color: staticTheme.colors.textHeading },
 });
+

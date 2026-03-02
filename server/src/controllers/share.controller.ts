@@ -93,7 +93,7 @@ export const shareWebPage = async (req: Request, res: Response) => {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${file_name} — TeleDrive</title>
+  <title>${file_name} — Axya</title>
   <meta name="description" content="Shared file: ${file_name} (${formatSize(file_size)})">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -139,7 +139,7 @@ export const shareWebPage = async (req: Request, res: Response) => {
   </div>
 
   <div class="footer">
-    Powered by <a href="https://teledrive.app">TeleDrive</a> — Telegram-secured cloud storage.<br/>
+    Powered by <a href="https://Axya.app">Axya</a> — Telegram-secured cloud storage.<br/>
     ${link.expires_at ? `Link expires ${new Date(link.expires_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}` : 'Link has no expiry'}
   </div>
 </body>
@@ -212,7 +212,7 @@ function escHtml(str: string) {
 }
 
 function errorPage(title: string, message: string) {
-    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title} — TeleDrive</title>
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title} — Axya</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@600;800&display=swap" rel="stylesheet">
     <style>body{font-family:Inter,sans-serif;background:#0D0F1A;color:#E8EAF0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:24px;text-align:center;}
     h1{font-size:24px;font-weight:800;color:#FF5252;margin-bottom:12px;}p{color:#6B7A99;font-size:15px;}</style>

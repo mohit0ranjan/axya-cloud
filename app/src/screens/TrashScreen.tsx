@@ -1,17 +1,19 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { View, Text, ScrollView, StyleSheet, SafeAreaView, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, SafeAreaView, TouchableOpacity, Alert, RefreshControl } from 'react-native';
 import { ArrowLeft, Trash } from 'lucide-react-native';
 import apiClient from '../api/client';
 import { useToast } from '../context/ToastContext';
 import { AuthContext } from '../context/AuthContext';
-import { theme } from '../ui/theme';
+import { useTheme } from '../context/ThemeContext';
 import FileCard from '../components/FileCard';
 import { FileCardSkeleton } from '../ui/Skeleton';
 
 export default function TrashScreen({ navigation }: any) {
     const { showToast } = useToast();
     const { token } = useContext(AuthContext);
+    const { theme } = useTheme();
     const [isLoading, setIsLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
     const [files, setFiles] = useState<any[]>([]);
 
     useEffect(() => { fetchTrash(); }, []);
@@ -22,7 +24,7 @@ export default function TrashScreen({ navigation }: any) {
             const res = await apiClient.get('/files/trash');
             if (res.data.success) setFiles(res.data.files);
         } catch { showToast('Could not load trash', 'error'); }
-        finally { setIsLoading(false); }
+        finally { setIsLoading(false); setRefreshing(false); }
     };
 
     const handleRestore = async (id: string) => {
@@ -34,7 +36,7 @@ export default function TrashScreen({ navigation }: any) {
     };
 
     const handleDelete = async (id: string) => {
-        Alert.alert('Permanent Delete', 'This will permanently delete the file and remove it from Telegram. This cannot be undone.', [
+        Alert.alert('Permanent Delete', 'This will permanently delete the file from Telegram. Cannot be undone.', [
             { text: 'Cancel', style: 'cancel' },
             {
                 text: 'Delete', style: 'destructive', onPress: async () => {
@@ -49,12 +51,12 @@ export default function TrashScreen({ navigation }: any) {
     };
 
     const handleEmptyTrash = () => {
-        Alert.alert('Empty Trash', `Permanently delete all ${files.length} files in trash?`, [
+        Alert.alert('Empty Trash', `Permanently delete all ${files.length} files?`, [
             { text: 'Cancel', style: 'cancel' },
             {
                 text: 'Empty Trash', style: 'destructive', onPress: async () => {
                     try {
-                        await Promise.all(files.map(f => apiClient.delete(`/files/${f.id}`)));
+                        await apiClient.delete('/files/trash');
                         showToast('Trash emptied');
                         setFiles([]);
                     } catch { showToast('Error emptying trash', 'error'); }
@@ -63,34 +65,50 @@ export default function TrashScreen({ navigation }: any) {
         ]);
     };
 
+    const C = theme.colors;
+
     return (
-        <SafeAreaView style={styles.container}>
-            <View style={styles.header}>
+        <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
+            <View style={[styles.header, { backgroundColor: C.background }]}>
                 <TouchableOpacity style={styles.back} onPress={() => navigation.goBack()}>
-                    <ArrowLeft color={theme.colors.textHeading} size={24} />
+                    <ArrowLeft color={C.textHeading} size={24} />
                 </TouchableOpacity>
-                <Text style={styles.title}>Trash</Text>
+                <Text style={[styles.title, { color: C.textHeading }]}>Trash</Text>
                 {files.length > 0 && (
-                    <TouchableOpacity style={styles.emptyBtn} onPress={handleEmptyTrash}>
-                        <Text style={styles.emptyText}>Empty</Text>
+                    <TouchableOpacity style={[styles.emptyBtn, { backgroundColor: 'rgba(251,78,78,0.1)' }]} onPress={handleEmptyTrash}>
+                        <Text style={[styles.emptyText, { color: C.danger }]}>Empty</Text>
                     </TouchableOpacity>
                 )}
             </View>
 
-            <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.content}>
+            <ScrollView
+                style={{ flex: 1 }}
+                contentContainerStyle={styles.content}
+                refreshControl={
+                    <RefreshControl
+                        refreshing={refreshing}
+                        tintColor={C.primary}
+                        onRefresh={() => { setRefreshing(true); fetchTrash(); }}
+                    />
+                }
+            >
                 {isLoading ? [1, 2, 3].map(i => <FileCardSkeleton key={i} />) : (
                     files.length === 0 ? (
                         <View style={styles.empty}>
                             <Trash color="#cbd5e1" size={52} />
-                            <Text style={styles.emptyTitle}>Trash is empty</Text>
-                            <Text style={styles.emptySub}>Files moved to trash appear here</Text>
+                            <Text style={[styles.emptyTitle, { color: C.textHeading }]}>Trash is empty</Text>
+                            <Text style={[styles.emptySub, { color: C.textBody }]}>Files moved to trash appear here</Text>
                         </View>
                     ) : (
                         files.map(f => (
                             <FileCard
                                 key={f.id}
                                 item={f}
-                                onPress={() => { }}
+                                onPress={() => navigation.navigate('FilePreview', {
+                                    files,
+                                    initialIndex: files.findIndex(x => x.id === f.id),
+                                    file: f,
+                                })}
                                 onTrash={() => handleDelete(f.id)}
                                 showRestore
                                 onRestore={() => handleRestore(f.id)}
@@ -98,6 +116,7 @@ export default function TrashScreen({ navigation }: any) {
                                 apiBase={apiClient.defaults.baseURL}
                             />
                         ))
+
                     )
                 )}
                 <View style={{ height: 40 }} />
@@ -107,14 +126,14 @@ export default function TrashScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: theme.colors.background },
+    container: { flex: 1 },
     header: { flexDirection: 'row', alignItems: 'center', padding: 20, paddingBottom: 12 },
     back: { marginRight: 12 },
-    title: { fontSize: 22, fontWeight: '700', color: theme.colors.textHeading, flex: 1 },
-    emptyBtn: { paddingHorizontal: 14, paddingVertical: 8, backgroundColor: 'rgba(251,78,78,0.1)', borderRadius: 10 },
-    emptyText: { color: theme.colors.danger, fontWeight: '700', fontSize: 14 },
+    title: { fontSize: 22, fontWeight: '700', flex: 1 },
+    emptyBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
+    emptyText: { fontWeight: '700', fontSize: 14 },
     content: { paddingHorizontal: 20, paddingTop: 8 },
     empty: { alignItems: 'center', paddingTop: 80 },
-    emptyTitle: { fontSize: 18, fontWeight: '700', color: theme.colors.textHeading, marginTop: 16, marginBottom: 8 },
-    emptySub: { fontSize: 14, color: theme.colors.textBody },
+    emptyTitle: { fontSize: 18, fontWeight: '700', marginTop: 16, marginBottom: 8 },
+    emptySub: { fontSize: 14 },
 });

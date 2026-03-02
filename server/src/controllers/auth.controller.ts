@@ -3,7 +3,8 @@ import { generateOTP, verifyOTPAndSignIn } from '../services/telegram.service';
 import pool from '../config/db';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key-teledrive';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error('🔴 FATAL: JWT_SECRET env var not set.');
 
 export const sendCode = async (req: Request, res: Response) => {
     const { phoneNumber } = req.body;
@@ -75,5 +76,20 @@ export const getMe = async (req: any, res: Response) => {
         res.json({ success: true, user: userResult.rows[0] });
     } catch (err) {
         res.status(500).json({ success: false, error: 'Server error' });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE ACCOUNT — cascade deletes all user data
+// ─────────────────────────────────────────────────────────────────────────────
+export const deleteAccount = async (req: any, res: Response) => {
+    if (!req.user || !req.user.id) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    try {
+        // Cascade delete works via FK ON DELETE CASCADE on: files, folders, activity_log, file_tags, shared_links
+        await pool.query('DELETE FROM users WHERE id = $1', [req.user.id]);
+        res.json({ success: true, message: 'Account permanently deleted.' });
+    } catch (err: any) {
+        console.error('❌ [DeleteAccount]', err.message);
+        res.status(500).json({ success: false, error: 'Could not delete account.' });
     }
 };

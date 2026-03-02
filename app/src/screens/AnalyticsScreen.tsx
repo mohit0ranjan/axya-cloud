@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, SafeAreaView, ScrollView,
     TouchableOpacity, ActivityIndicator, Dimensions,
@@ -6,7 +6,8 @@ import {
 import { ArrowLeft, HardDrive, FileText, Image as ImageIcon, Film, Music, Archive } from 'lucide-react-native';
 import Svg, { G, Circle, Path } from 'react-native-svg';
 import apiClient from '../api/client';
-import { theme } from '../ui/theme';
+import { useTheme } from '../context/ThemeContext';
+import { formatSize, formatPct } from '../utils/format';
 
 const { width } = Dimensions.get('window');
 
@@ -19,15 +20,8 @@ const CATEGORIES = [
     { key: 'other', label: 'Other', color: '#64748B', icon: HardDrive },
 ];
 
-function formatSize(bytes: number) {
-    if (!bytes) return '0 B';
-    const k = 1024, s = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + s[i];
-}
-
 // Mini Donut Chart using SVG
-function DonutChart({ data, total }: { data: any[]; total: number }) {
+function DonutChart({ data, total, bgColor }: { data: any[]; total: number; bgColor: string }) {
     const size = width * 0.52;
     const cx = size / 2, cy = size / 2;
     const outerR = size * 0.42, innerR = size * 0.26;
@@ -65,13 +59,16 @@ function DonutChart({ data, total }: { data: any[]; total: number }) {
         <Svg width={size} height={size}>
             <G>
                 {slices.map((s, i) => <Path key={i} d={s.path} fill={s.color} />)}
-                <Circle cx={cx} cy={cy} r={innerR - 2} fill={theme.colors.background} />
+                {/* Use dynamic bgColor so donut hole matches dark/light background */}
+                <Circle cx={cx} cy={cy} r={innerR - 2} fill={bgColor} />
             </G>
         </Svg>
     );
 }
 
 export default function AnalyticsScreen({ navigation }: any) {
+    const { theme } = useTheme();
+    const C = theme.colors;
     const [loading, setLoading] = useState(true);
     const [stats, setStats] = useState<any>({});
 
@@ -98,55 +95,61 @@ export default function AnalyticsScreen({ navigation }: any) {
     })).filter(d => d.bytes > 0);
 
     return (
-        <SafeAreaView style={styles.container}>
-            <View style={styles.header}>
+        <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
+            <View style={[styles.header, { backgroundColor: C.background }]}>
                 <TouchableOpacity style={styles.backBtn} onPress={() => navigation?.goBack()}>
-                    <ArrowLeft color={theme.colors.textHeading} size={24} />
+                    <ArrowLeft color={C.textHeading} size={24} />
                 </TouchableOpacity>
-                <Text style={styles.headerTitle}>Storage Analytics</Text>
+                <Text style={[styles.headerTitle, { color: C.textHeading }]}>Storage Analytics</Text>
                 <View style={{ width: 40 }} />
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 20 }}>
                 {loading ? (
-                    <ActivityIndicator size="large" color={theme.colors.primary} style={{ marginTop: 60 }} />
+                    <ActivityIndicator size="large" color={C.primary} style={{ marginTop: 60 }} />
                 ) : (
                     <>
                         {/* ── Storage Quota Card ── */}
-                        <View style={styles.quotaCard}>
-                            <HardDrive color={theme.colors.primary} size={22} />
+                        <View style={[styles.quotaCard, { backgroundColor: C.card }]}>
+                            <HardDrive color={C.primary} size={22} />
                             <View style={{ flex: 1, marginLeft: 14 }}>
-                                <Text style={styles.quotaTitle}>Storage Used</Text>
-                                <Text style={styles.quotaValues}>{formatSize(totalBytes)} <Text style={{ color: theme.colors.textBody, fontWeight: '400' }}>/ 5 GB</Text></Text>
-                                <View style={styles.quotaBarTrack}>
-                                    <View style={[styles.quotaBarFill, { width: `${usedPct.toFixed(0)}%` as any }]} />
+                                <Text style={[styles.quotaTitle, { color: C.textBody }]}>Storage Used</Text>
+                                <Text style={[styles.quotaValues, { color: C.textHeading }]}>
+                                    {formatSize(totalBytes)}{' '}
+                                    <Text style={{ color: C.textBody, fontWeight: '400' }}>/ 5 GB</Text>
+                                </Text>
+                                <View style={[styles.quotaBarTrack, { backgroundColor: C.border }]}>
+                                    <View style={[styles.quotaBarFill, { width: `${usedPct.toFixed(0)}%` as any, backgroundColor: C.primary }]} />
                                 </View>
                             </View>
-                            <Text style={[styles.quotaPct, { color: usedPct > 80 ? '#EF4444' : theme.colors.primary }]}>{usedPct.toFixed(0)}%</Text>
+                            <Text style={[styles.quotaPct, { color: usedPct > 80 ? '#EF4444' : C.primary }]}>
+                                {usedPct.toFixed(0)}%
+                            </Text>
                         </View>
 
                         {/* ── Quick Stats ── */}
                         <View style={styles.statsRow}>
                             {[
-                                { label: 'Files', value: stats.totalFiles ?? 0, color: theme.colors.primary },
+                                { label: 'Files', value: stats.totalFiles ?? 0, color: C.primary },
                                 { label: 'Folders', value: stats.totalFolders ?? 0, color: '#F59E0B' },
                                 { label: 'Starred', value: stats.starredCount ?? 0, color: '#1FD45A' },
                                 { label: 'In Trash', value: stats.trashCount ?? 0, color: '#EF4444' },
                             ].map((s, i) => (
-                                <View key={i} style={styles.statCard}>
+                                <View key={i} style={[styles.statCard, { backgroundColor: C.card }]}>
                                     <Text style={[styles.statVal, { color: s.color }]}>{s.value}</Text>
-                                    <Text style={styles.statLabel}>{s.label}</Text>
+                                    <Text style={[styles.statLabel, { color: C.textBody }]}>{s.label}</Text>
                                 </View>
                             ))}
                         </View>
 
                         {/* ── Donut Chart ── */}
-                        <View style={styles.chartSection}>
-                            <Text style={styles.sectionTitle}>Breakdown by Type</Text>
+                        <View style={[styles.chartSection, { backgroundColor: C.card }]}>
+                            <Text style={[styles.sectionTitle, { color: C.textHeading }]}>Breakdown by Type</Text>
                             <View style={{ alignItems: 'center', marginVertical: 16 }}>
-                                <DonutChart data={chartData} total={totalBytes || 1} />
+                                {/* Pass dynamic bgColor so donut hole works in dark mode */}
+                                <DonutChart data={chartData} total={totalBytes || 1} bgColor={C.card} />
                                 {totalBytes === 0 && (
-                                    <Text style={{ position: 'absolute', color: theme.colors.textBody, fontSize: 14 }}>No files yet</Text>
+                                    <Text style={{ position: 'absolute', color: C.textBody, fontSize: 14 }}>No files yet</Text>
                                 )}
                             </View>
 
@@ -154,24 +157,27 @@ export default function AnalyticsScreen({ navigation }: any) {
                             {CATEGORIES.map(cat => {
                                 const d = byType[cat.key];
                                 if (!d || d.bytes === 0) return null;
-                                const pct = ((d.bytes / totalBytes) * 100).toFixed(1);
+                                // ✅ FIX: guard against totalBytes=0 to prevent NaN%
+                                const pct = totalBytes > 0 ? formatPct(d.bytes, totalBytes) : '0';
                                 const CatIcon = cat.icon;
                                 return (
-                                    <View key={cat.key} style={styles.legendRow}>
+                                    <View key={cat.key} style={[styles.legendRow, { borderTopColor: C.border }]}>
                                         <View style={[styles.legendDot, { backgroundColor: cat.color }]} />
                                         <CatIcon color={cat.color} size={16} />
-                                        <Text style={styles.legendLabel}>{cat.label}</Text>
+                                        <Text style={[styles.legendLabel, { color: C.textHeading }]}>{cat.label}</Text>
                                         <View style={{ flex: 1, marginHorizontal: 12 }}>
-                                            <View style={styles.legendBarTrack}>
+                                            <View style={[styles.legendBarTrack, { backgroundColor: C.border }]}>
                                                 <View style={[styles.legendBarFill, { width: `${pct}%` as any, backgroundColor: cat.color }]} />
                                             </View>
                                         </View>
-                                        <Text style={styles.legendSize}>{formatSize(d.bytes)}</Text>
-                                        <Text style={styles.legendPct}>{pct}%</Text>
+                                        <Text style={[styles.legendSize, { color: C.textBody }]}>{formatSize(d.bytes)}</Text>
+                                        <Text style={[styles.legendPct, { color: C.textHeading }]}>{pct}%</Text>
                                     </View>
                                 );
                             })}
-                            {chartData.length === 0 && <Text style={{ textAlign: 'center', color: theme.colors.textBody, marginTop: 10 }}>Upload files to see breakdown</Text>}
+                            {chartData.length === 0 && (
+                                <Text style={{ textAlign: 'center', color: C.textBody, marginTop: 10 }}>Upload files to see breakdown</Text>
+                            )}
                         </View>
                     </>
                 )}
@@ -182,31 +188,31 @@ export default function AnalyticsScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: theme.colors.background },
+    container: { flex: 1 },
     header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 16 },
     backBtn: { padding: 4 },
-    headerTitle: { fontSize: 20, fontWeight: '700', color: theme.colors.textHeading },
+    headerTitle: { fontSize: 20, fontWeight: '700' },
 
-    quotaCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 20, padding: 18, marginBottom: 20, ...theme.shadows.card },
-    quotaTitle: { fontSize: 13, color: theme.colors.textBody, marginBottom: 4 },
-    quotaValues: { fontSize: 22, fontWeight: '700', color: theme.colors.textHeading, marginBottom: 8 },
-    quotaBarTrack: { width: '100%', height: 8, backgroundColor: theme.colors.border, borderRadius: 4 },
-    quotaBarFill: { height: '100%', backgroundColor: theme.colors.primary, borderRadius: 4 },
+    quotaCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, padding: 18, marginBottom: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.07, shadowRadius: 12, elevation: 3 },
+    quotaTitle: { fontSize: 13, marginBottom: 4 },
+    quotaValues: { fontSize: 22, fontWeight: '700', marginBottom: 8 },
+    quotaBarTrack: { width: '100%', height: 8, borderRadius: 4 },
+    quotaBarFill: { height: '100%', borderRadius: 4 },
     quotaPct: { fontSize: 18, fontWeight: '800', marginLeft: 10 },
 
     statsRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
-    statCard: { flex: 1, backgroundColor: '#fff', borderRadius: 16, padding: 14, alignItems: 'center', ...theme.shadows.card },
+    statCard: { flex: 1, borderRadius: 16, padding: 14, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2 },
     statVal: { fontSize: 22, fontWeight: '800', marginBottom: 4 },
-    statLabel: { fontSize: 11, color: theme.colors.textBody, fontWeight: '600' },
+    statLabel: { fontSize: 11, fontWeight: '600' },
 
-    chartSection: { backgroundColor: '#fff', borderRadius: 24, padding: 20, ...theme.shadows.card },
-    sectionTitle: { fontSize: 16, fontWeight: '700', color: theme.colors.textHeading },
+    chartSection: { borderRadius: 24, padding: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2 },
+    sectionTitle: { fontSize: 16, fontWeight: '700' },
 
-    legendRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 8, borderTopWidth: 1, borderTopColor: theme.colors.border },
+    legendRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 8, borderTopWidth: 1 },
     legendDot: { width: 10, height: 10, borderRadius: 5 },
-    legendLabel: { fontSize: 13, color: theme.colors.textHeading, fontWeight: '600', width: 80 },
-    legendBarTrack: { height: 6, backgroundColor: theme.colors.border, borderRadius: 3, overflow: 'hidden' },
+    legendLabel: { fontSize: 13, fontWeight: '600', width: 80 },
+    legendBarTrack: { height: 6, borderRadius: 3, overflow: 'hidden' },
     legendBarFill: { height: '100%', borderRadius: 3 },
-    legendSize: { fontSize: 12, color: theme.colors.textBody, width: 58, textAlign: 'right' },
-    legendPct: { fontSize: 12, fontWeight: '700', color: theme.colors.textHeading, width: 38, textAlign: 'right' },
+    legendSize: { fontSize: 12, width: 58, textAlign: 'right' },
+    legendPct: { fontSize: 12, fontWeight: '700', width: 38, textAlign: 'right' },
 });

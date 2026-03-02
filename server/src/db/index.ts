@@ -5,7 +5,7 @@ dotenv.config();
 // Since we're mocking local storage first, check if a connection string is provided
 // If not, we can assume a basic default or just rely on the env var being set later.
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/teledrive',
+    connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/Axya',
 });
 
 // Helper to initialize DB tables

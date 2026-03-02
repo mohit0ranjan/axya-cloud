@@ -7,15 +7,22 @@ import {
 import {
     Search, Plus, Folder, Upload, HardDrive, Star,
     Trash2, User, X, FileText, Image as ImageIcon,
-    Film, Music, Archive, MoreHorizontal, ChevronRight,
+    Film, Music, Archive, MoreHorizontal, ChevronRight, Activity,
 } from 'lucide-react-native';
+
+
 import { Image } from 'expo-image';
 import * as DocumentPicker from 'expo-document-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient, { uploadClient } from '../api/client';
 import { AuthContext } from '../context/AuthContext';
+import { useUploadStore } from '../context/UploadStore';
 import { useToast } from '../context/ToastContext';
 import { FileCardSkeleton, SkeletonBlock } from '../ui/Skeleton';
+import { theme as staticTheme } from '../ui/theme';
+import { useTheme } from '../context/ThemeContext';
+
+
 import AxyaLogo from '../components/AxyaLogo';
 
 const { width } = Dimensions.get('window');
@@ -70,6 +77,25 @@ const formatDate = (d: string) => {
 export default function HomeScreen({ navigation }: any) {
     const { logout, user, token } = useContext(AuthContext);
     const { showToast } = useToast();
+    const { theme, isDark } = useTheme();
+
+    // Dynamic color tokens — react to dark/light mode
+    const C = {
+        bg: theme.colors.background,
+        card: theme.colors.card,
+        primary: theme.colors.primary,
+        primaryDark: isDark ? '#4B6EF5' : '#2B4FD8',
+        accent: theme.colors.accent,
+        danger: theme.colors.danger,
+        success: theme.colors.success,
+        purple: isDark ? '#A855F7' : '#9B59B6',
+        text: theme.colors.textHeading,
+        muted: theme.colors.textBody,
+        border: theme.colors.border,
+        storageGrad1: theme.colors.primary,
+        storageGrad2: isDark ? '#4B6EF5' : '#2B4FD8',
+        inputBg: theme.colors.inputBg,
+    };
 
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
@@ -77,6 +103,8 @@ export default function HomeScreen({ navigation }: any) {
     const [recentFiles, setRecentFiles] = useState<any[]>([]);
     const [folders, setFolders] = useState<any[]>([]);
     const [recentlyAccessed, setRecentlyAccessed] = useState<any[]>([]);
+    const [activity, setActivity] = useState<any[]>([]);
+
 
     // Search
     const [showSearch, setShowSearch] = useState(false);
@@ -91,7 +119,7 @@ export default function HomeScreen({ navigation }: any) {
     const [uploadModal, setUploadModal] = useState(false);
     const [pickedFiles, setPickedFiles] = useState<any[]>([]);
     const [chatTarget, setChatTarget] = useState('me');
-    const [uploading, setUploading] = useState(false);
+
 
     // Folder modal
     const [folderModal, setFolderModal] = useState(false);
@@ -122,12 +150,14 @@ export default function HomeScreen({ navigation }: any) {
 
     const load = async () => {
         try {
-            const [statsRes, filesRes, foldersRes, recentAccessedRes] = await Promise.all([
+            const [statsRes, filesRes, foldersRes, recentAccessedRes, activityRes] = await Promise.all([
                 apiClient.get('/files/stats'),
                 apiClient.get('/files?limit=10&sort=created_at&order=DESC'),
                 apiClient.get('/files/folders'),
                 apiClient.get('/files/recent-accessed').catch(() => ({ data: { files: [] } })),
+                apiClient.get('/files/activity?limit=5').catch(() => ({ data: { success: true, activity: [] } })),
             ]);
+
             if (statsRes.data.success) setStats(statsRes.data);
             if (filesRes.data.success) setRecentFiles(filesRes.data.files);
             if (recentAccessedRes.data.files) setRecentlyAccessed(recentAccessedRes.data.files);
@@ -135,6 +165,10 @@ export default function HomeScreen({ navigation }: any) {
                 setAllFolders(foldersRes.data.folders);
                 setFolders(foldersRes.data.folders.slice(0, 6));
             }
+            if (activityRes.data.success) {
+                setActivity(activityRes.data.activity);
+            }
+
         } catch (e) {
             showToast('Could not load dashboard', 'error');
         } finally {
@@ -143,146 +177,29 @@ export default function HomeScreen({ navigation }: any) {
         }
     };
 
+    const { tasks, addTask, isUploading: globalUploading } = useUploadStore();
+    const [allFolders, setAllFolders] = useState<any[]>([]);
+    const [uploadFolderId, setUploadFolderId] = useState<string | null>(null);
+
+
     const handlePickFile = async () => {
         setFabOpen(false);
         try {
             const res = await DocumentPicker.getDocumentAsync({ type: '*/*', multiple: true, copyToCacheDirectory: true });
             if (res.canceled) return;
             setPickedFiles(res.assets);
-            setUploadFolderId(null); // Reset selection
+            setUploadFolderId(null);
             setUploadModal(true);
         } catch { showToast('Could not pick file', 'error'); }
     };
 
-    const [uploadProgress, setUploadProgress] = useState(0);
-    const [totalUploadFiles, setTotalUploadFiles] = useState(0);
-    const [currentUploadIndex, setCurrentUploadIndex] = useState(0);
-    const [allFolders, setAllFolders] = useState<any[]>([]);
-    const [uploadFolderId, setUploadFolderId] = useState<string | null>(null);
-
-    const handleUpload = async () => {
+    const handleUpload = () => {
         if (!pickedFiles || pickedFiles.length === 0) return;
         setUploadModal(false);
-        setUploading(true);
-
-        const token = await AsyncStorage.getItem('jwtToken');
-        if (!token) {
-            showToast('Session expired — please sign in again', 'error');
-            setUploading(false);
-            return;
-        }
-
-        setTotalUploadFiles(pickedFiles.length);
-        setCurrentUploadIndex(0);
-
-        for (let i = 0; i < pickedFiles.length; i++) {
-            const file = pickedFiles[i];
-            setCurrentUploadIndex(i + 1);
-            setUploadProgress(0);
-
-            try {
-                const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
-                const fileSize = file.size;
-                const originalname = file.name;
-                const mimetype = file.mimeType || 'application/octet-stream';
-
-                // 1. Initialize Upload
-                const initRes = await uploadClient.post('/files/upload/init', {
-                    originalname,
-                    size: fileSize,
-                    mimetype,
-                    telegram_chat_id: chatTarget,
-                    folder_id: uploadFolderId
-                });
-                const { uploadId } = initRes.data;
-
-                // 2. Upload Chunks
-                let offset = 0;
-                let chunkIndex = 0;
-
-                if (Platform.OS === 'web') {
-                    const blobResponse = await fetch(file.uri);
-                    const blob = await blobResponse.blob();
-
-                    while (offset < fileSize) {
-                        const chunk = blob.slice(offset, offset + CHUNK_SIZE);
-                        const formData = new FormData();
-                        formData.append('uploadId', uploadId);
-                        formData.append('chunkIndex', String(chunkIndex));
-                        formData.append('chunk', new File([chunk], originalname, { type: mimetype }));
-
-                        await uploadClient.post('/files/upload/chunk', formData);
-                        offset += CHUNK_SIZE;
-                        chunkIndex++;
-                        setUploadProgress(Math.min((offset / fileSize) * 50, 50));
-                    }
-                } else {
-                    const FileSystem = require('expo-file-system');
-                    while (offset < fileSize) {
-                        const length = Math.min(CHUNK_SIZE, fileSize - offset);
-                        const chunkBase64 = await FileSystem.readAsStringAsync(file.uri, {
-                            encoding: FileSystem.EncodingType.Base64,
-                            position: offset,
-                            length: length
-                        });
-
-                        await uploadClient.post('/files/upload/chunk', {
-                            uploadId,
-                            chunkIndex,
-                            chunkBase64
-                        });
-
-                        offset += length;
-                        chunkIndex++;
-                        setUploadProgress(Math.min((offset / fileSize) * 50, 50));
-                    }
-                }
-
-                // 3. Complete Upload & Begin Telegram Transfer
-                setUploadProgress(50);
-                await uploadClient.post('/files/upload/complete', { uploadId });
-
-                // 4. Poll for Telegram Progress
-                await new Promise<void>((resolve, reject) => {
-                    const timer = setInterval(async () => {
-                        try {
-                            const statusRes = await apiClient.get(`/files/upload/status/${uploadId}`);
-                            const state = statusRes.data;
-
-                            if (state.status === 'completed') {
-                                clearInterval(timer);
-                                setUploadProgress(100);
-                                load();
-                                resolve();
-                            } else if (state.status === 'error') {
-                                clearInterval(timer);
-                                reject(new Error(state.error || 'Telegram upload failed'));
-                            } else {
-                                setUploadProgress(50 + (state.progress / 2));
-                            }
-                        } catch (e) {
-                            clearInterval(timer);
-                            reject(new Error('Lost connection to upload status'));
-                        }
-                    }, 1000);
-                });
-
-            } catch (e: any) {
-                const msg = e.response?.data?.error || e.message || 'Upload failed';
-                showToast(`Failed on ${file.name}: ${msg}`, 'error');
-                break; // Stop uploading rest of files on failure
-            }
-        }
-
-        setUploading(false);
+        addTask(pickedFiles, uploadFolderId, chatTarget);
         setPickedFiles([]);
-
-        if (pickedFiles.length > 1) {
-            showToast("All files uploaded! ✅");
-        } else if (pickedFiles.length === 1) {
-            showToast(`"${pickedFiles[0].name}" uploaded! ✅`);
-        }
     };
+
 
 
     const handleCreateFolder = async () => {
@@ -312,22 +229,25 @@ export default function HomeScreen({ navigation }: any) {
     };
 
     // ── Storage card percentage ────────────────────────────────────────────
-    const usedGB = ((stats.totalBytes || 0) / (1024 ** 3)).toFixed(2);
+    const totalBytes = stats.total_size || stats.totalBytes || 0;
+    const usedGBNum = totalBytes / (1024 ** 3);
+    const usedGB = usedGBNum.toFixed(2);
     const quotaGB = 5;
-    const pct = Math.min(((stats.totalBytes || 0) / (quotaGB * 1024 ** 3)) * 100, 100);
+    const pct = Math.min((usedGBNum / quotaGB) * 100, 100);
+
 
     const displayItems = searchQuery ? searchResults : recentFiles;
 
     return (
-        <SafeAreaView style={s.root}>
+        <SafeAreaView style={[s.root, { backgroundColor: C.bg }]}>
 
             {/* ── HEADER ───────────────────────────────────────────────────── */}
-            <View style={s.header}>
+            <View style={[s.header, { backgroundColor: C.bg }]}>
                 {showSearch ? (
-                    <View style={s.searchBar}>
+                    <View style={[s.searchBar, { backgroundColor: C.card }]}>
                         <Search color={C.muted} size={18} />
                         <TextInput
-                            style={s.searchInput}
+                            style={[s.searchInput, { color: C.text }]}
                             placeholder="Search files & folders…"
                             placeholderTextColor={C.muted}
                             value={searchQuery}
@@ -373,20 +293,18 @@ export default function HomeScreen({ navigation }: any) {
                         {/* Top row */}
                         <View style={s.storageTop}>
                             <View style={s.storageIconBox}>
-                                <HardDrive color="#fff" size={22} />
+                                <HardDrive color="#fff" size={20} />
                             </View>
                             <View style={{ flex: 1, marginLeft: 12 }}>
-                                <Text style={s.storageTitle}>TeleDrive</Text>
-                                <Text style={s.storageSubtitle}>Cloud Storage</Text>
+                                <Text style={s.storageTitle}>Axya Space</Text>
+                                <Text style={s.storageSubtitle}>Personal Cloud</Text>
                             </View>
-                            <TouchableOpacity onPress={() => navigation.navigate('Profile')}>
-                                <MoreHorizontal color="rgba(255,255,255,0.6)" size={22} />
-                            </TouchableOpacity>
                         </View>
 
                         {/* Size display */}
                         <View style={s.storageSizeRow}>
-                            <Text style={s.storageBig}>{usedGB} GB</Text>
+                            <Text style={s.storageBig}>{usedGB}</Text>
+                            <Text style={s.storageGBLabel}>GB</Text>
                             <Text style={s.storageOf}>/ {quotaGB} GB</Text>
                         </View>
 
@@ -399,14 +317,19 @@ export default function HomeScreen({ navigation }: any) {
                         <View style={s.storageStats}>
                             <View style={s.storageStat}>
                                 <View style={[s.statDot, { backgroundColor: C.accent }]} />
-                                <Text style={s.statStatText}>{stats.totalFiles || 0} Files</Text>
+                                <Text style={s.statStatText}>{stats.image_count || 0} Images</Text>
                             </View>
                             <View style={s.storageStat}>
-                                <View style={[s.statDot, { backgroundColor: 'rgba(255,255,255,0.5)' }]} />
-                                <Text style={s.statStatText}>{stats.totalFolders || 0} Folders</Text>
+                                <View style={[s.statDot, { backgroundColor: '#9333EA' }]} />
+                                <Text style={s.statStatText}>{stats.video_count || 0} Videos</Text>
+                            </View>
+                            <View style={s.storageStat}>
+                                <View style={[s.statDot, { backgroundColor: 'rgba(255,255,255,0.4)' }]} />
+                                <Text style={s.statStatText}>{stats.totalFiles || 0} Files</Text>
                             </View>
                         </View>
                     </View>
+
                 )}
 
                 {/* ═══════════════════════════════════════════════════════════
@@ -618,14 +541,20 @@ export default function HomeScreen({ navigation }: any) {
                             return (
                                 <TouchableOpacity
                                     key={item.id}
-                                    style={s.fileRow}
+                                    style={[s.fileRow, { backgroundColor: C.card }]}
                                     activeOpacity={0.7}
                                     onPress={() => {
                                         if (isFolder) {
                                             navigation.navigate('FolderFiles', { folderId: item.id, folderName: item.name });
                                         } else {
-                                            navigation.navigate('FilePreview', { file: item });
+                                            const idx = recentFiles.findIndex(f => f.id === item.id);
+                                            navigation.navigate('FilePreview', {
+                                                files: recentFiles,
+                                                initialIndex: idx === -1 ? 0 : idx,
+                                                file: item
+                                            });
                                         }
+
                                     }}
                                 >
                                     <View style={[s.fileIcon, { backgroundColor: bg, overflow: 'hidden' }]}>
@@ -644,10 +573,10 @@ export default function HomeScreen({ navigation }: any) {
                                         )}
                                     </View>
                                     <View style={s.fileInfo}>
-                                        <Text style={s.fileName} numberOfLines={1}>
+                                        <Text style={[s.fileName, { color: C.text }]} numberOfLines={1}>
                                             {item.name || item.file_name}
                                         </Text>
-                                        <Text style={s.fileMeta}>
+                                        <Text style={[s.fileMeta, { color: C.muted }]}>
                                             {isFolder ? 'Folder' : [
                                                 formatSize(item.size),
                                                 formatDate(item.created_at),
@@ -663,13 +592,38 @@ export default function HomeScreen({ navigation }: any) {
                     </View>
                 )}
 
+                {/* ═══════════════════════════════════════════════════════════
+                    RECENT ACTIVITY
+                ═══════════════════════════════════════════════════════════ */}
+                {!searchQuery && activity.length > 0 && (
+                    <View style={{ marginTop: 32, paddingHorizontal: 20 }}>
+                        <Text style={s.sectionLabel}>RECENT ACTIVITY</Text>
+                        <View style={s.activityList}>
+                            {activity.map((act, i) => (
+                                <View key={act.id || i} style={[s.activityItem, { backgroundColor: C.card }]}>
+                                    <View style={s.activityIcon}>
+                                        <Activity color={C.primary} size={14} />
+                                    </View>
+                                    <View style={{ flex: 1 }}>
+                                        <Text style={[s.activityText, { color: C.text }]} numberOfLines={1}>
+                                            <Text style={{ fontWeight: '700' }}>{user?.username || 'You'}</Text> {act.action.replace(/_/g, ' ')} {act.file_name || ''}
+                                        </Text>
+                                        <Text style={s.activityTime}>{formatDate(act.created_at)}</Text>
+                                    </View>
+                                </View>
+                            ))}
+                        </View>
+                    </View>
+                )}
+
                 <View style={{ height: 140 }} />
+
             </ScrollView>
 
             {/* ═══════════════════════════════════════════════════════════════
                 BOTTOM NAV
             ═══════════════════════════════════════════════════════════════ */}
-            <View style={s.navBar}>
+            <View style={[s.navBar, { backgroundColor: C.card, borderTopColor: C.border }]}>
                 <TouchableOpacity style={s.navItem} onPress={() => { }}>
                     <HardDrive color={C.primary} size={22} />
                     <Text style={[s.navLabel, { color: C.primary }]}>Home</Text>
@@ -699,9 +653,9 @@ export default function HomeScreen({ navigation }: any) {
             ═══════════════════════════════════════════════════════════════ */}
             <Modal visible={fabOpen} transparent animationType="slide">
                 <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setFabOpen(false)}>
-                    <View style={s.sheet}>
+                    <View style={[s.sheet, { backgroundColor: C.card }]}>
                         <View style={s.sheetHandle} />
-                        <Text style={s.sheetTitle}>Create New</Text>
+                        <Text style={[s.sheetTitle, { color: C.text }]}>Create New</Text>
 
                         <TouchableOpacity style={s.sheetRow} onPress={handlePickFile} activeOpacity={0.7}>
                             <View style={[s.sheetRowIcon, { backgroundColor: '#EEF1FD' }]}>
@@ -736,8 +690,8 @@ export default function HomeScreen({ navigation }: any) {
                 <KeyboardAvoidingView
                     behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                     style={s.centeredOverlay}>
-                    <View style={s.modalCard}>
-                        <Text style={s.modalTitle}>📤 Upload File</Text>
+                    <View style={[s.modalCard, { backgroundColor: C.card }]}>
+                        <Text style={[s.modalTitle, { color: C.text }]}>📤 Upload File</Text>
                         <View style={s.filePill}>
                             <FileText color={C.primary} size={18} />
                             <Text style={s.filePillText} numberOfLines={1}>{pickedFiles.length > 1 ? `${pickedFiles.length} files selected` : pickedFiles[0]?.name}</Text>
@@ -769,21 +723,12 @@ export default function HomeScreen({ navigation }: any) {
                                 onPress={() => { setUploadModal(false); setPickedFiles([]); }}>
                                 <Text style={s.btnCancelTxt}>Cancel</Text>
                             </TouchableOpacity>
-                            <TouchableOpacity style={s.btnConfirm} onPress={handleUpload} disabled={uploading}>
-                                <Text style={s.btnConfirmTxt}>{uploading ? 'Uploading…' : 'Upload'}</Text>
+                            <TouchableOpacity style={s.btnConfirm} onPress={handleUpload} disabled={globalUploading}>
+                                <Text style={s.btnConfirmTxt}>{globalUploading ? 'Uploading…' : 'Upload'}</Text>
                             </TouchableOpacity>
                         </View>
-                        {uploading && (
-                            <View style={{ marginTop: 20 }}>
-                                <View style={s.progressTrack}>
-                                    <View style={[s.progressFill, { width: `${Math.round(uploadProgress)}%` as any }]} />
-                                </View>
-                                <Text style={{ textAlign: 'center', fontSize: 12, color: C.muted, marginTop: 4 }}>
-                                    {Math.round(uploadProgress)}% • File {currentUploadIndex} of {totalUploadFiles}
-                                </Text>
-                            </View>
-                        )}
                     </View>
+
                 </KeyboardAvoidingView>
             </Modal>
 
@@ -794,10 +739,10 @@ export default function HomeScreen({ navigation }: any) {
                 <KeyboardAvoidingView
                     behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                     style={s.centeredOverlay}>
-                    <View style={s.modalCard}>
-                        <Text style={s.modalTitle}>📁 New Folder</Text>
+                    <View style={[s.modalCard, { backgroundColor: C.card }]}>
+                        <Text style={[s.modalTitle, { color: C.text }]}>📁 New Folder</Text>
                         <TextInput
-                            style={s.modalInput}
+                            style={[s.modalInput, { color: C.text, borderColor: C.border, backgroundColor: C.inputBg }]}
                             value={folderName}
                             onChangeText={setFolderName}
                             placeholder="Folder name…"
@@ -824,10 +769,10 @@ export default function HomeScreen({ navigation }: any) {
                 <KeyboardAvoidingView
                     behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                     style={s.centeredOverlay}>
-                    <View style={s.modalCard}>
-                        <Text style={s.modalTitle}>✏️ Rename Folder</Text>
+                    <View style={[s.modalCard, { backgroundColor: C.card }]}>
+                        <Text style={[s.modalTitle, { color: C.text }]}>✏️ Rename Folder</Text>
                         <TextInput
-                            style={s.modalInput}
+                            style={[s.modalInput, { color: C.text, borderColor: C.border, backgroundColor: C.inputBg }]}
                             value={renameFolderName}
                             onChangeText={setRenameFolderName}
                             placeholder="New folder name…"
@@ -890,16 +835,19 @@ const s = StyleSheet.create({
 
     scrollContent: { paddingTop: 4, paddingBottom: 20 },   // ← tight top so card starts cleanly
 
-    /* Storage Card */
+    /* Storage Card UPGRADED */
     storageCard: {
         marginHorizontal: 20,
         borderRadius: 24,
         backgroundColor: C.primary,
         padding: 22,
-        marginTop: 4,           // small gap from header
-        marginBottom: 32,       // ↑ breathing room before FOLDERS
-        shadowColor: C.primary, shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 0.4, shadowRadius: 20, elevation: 12,
+        marginTop: 4,
+        marginBottom: 32,
+        shadowColor: C.primary,
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.4,
+        shadowRadius: 20,
+        elevation: 12,
     },
     storageTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
     storageIconBox: {
@@ -908,8 +856,11 @@ const s = StyleSheet.create({
         justifyContent: 'center', alignItems: 'center',
     },
     storageTitle: { fontSize: 18, fontWeight: '700', color: '#fff' },
-    storageSubtitle: { fontSize: 12, color: 'rgba(255,255,255,0.65)', marginTop: 2 },
-    storageSizeRow: { flexDirection: 'row', alignItems: 'baseline', marginBottom: 14 },
+    storageSubtitle: { color: '#fff', fontSize: 13, opacity: 0.7, marginTop: 2 },
+    storageSizeRow: { flexDirection: 'row', alignItems: 'baseline', marginTop: 14, gap: 4, marginBottom: 14 },
+    storageGBLabel: { color: '#fff', fontSize: 13, fontWeight: '700', marginLeft: 2, marginRight: 8, opacity: 0.8 },
+    upgradeBadge: { backgroundColor: 'rgba(255,255,255,0.25)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12 },
+    upgradeText: { color: '#fff', fontSize: 13, fontWeight: '700' },
     storageBig: { fontSize: 34, fontWeight: '800', color: '#fff', letterSpacing: -0.5 },
     storageOf: { fontSize: 16, color: 'rgba(255,255,255,0.6)', marginLeft: 6, fontWeight: '500' },
     progressTrack: {
@@ -920,6 +871,7 @@ const s = StyleSheet.create({
     storageStat: { flexDirection: 'row', alignItems: 'center', gap: 7 },
     statDot: { width: 8, height: 8, borderRadius: 4 },
     statStatText: { color: 'rgba(255,255,255,0.85)', fontSize: 13, fontWeight: '500' },
+
 
     /* Section headers */
     sectionRow: {
@@ -1101,4 +1053,26 @@ const s = StyleSheet.create({
     recentChipName: {
         fontSize: 11, fontWeight: '600', color: C.text, textAlign: 'center',
     },
+
+    // ACTIVITY LIST
+    activityList: { marginTop: 12, gap: 12 },
+    activityItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        backgroundColor: '#fff',
+        padding: 12,
+        borderRadius: 16,
+        shadowColor: 'rgba(0,0,0,0.05)',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 1,
+        shadowRadius: 10,
+        elevation: 1,
+    },
+    activityIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(75,110,245,0.08)', justifyContent: 'center', alignItems: 'center' },
+    activityText: { fontSize: 13, color: C.text },
+    activityTime: { fontSize: 11, color: C.muted, marginTop: 2 },
 });
+
+
+

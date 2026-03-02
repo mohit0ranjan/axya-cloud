@@ -2,8 +2,9 @@ import express from 'express';
 import multer from 'multer';
 import {
     uploadFile, fetchFiles, searchFiles, updateFile,
-    trashFile, restoreFile, deleteFile, fetchTrash,
+    trashFile, restoreFile, deleteFile, fetchTrash, emptyTrash,
     toggleStar, fetchStarred,
+
     createFolder, fetchFolders, updateFolder, trashFolder,
     downloadFile, streamFile, getThumbnail, getStats, getActivity,
     bulkAction,
@@ -43,6 +44,8 @@ router.patch('/:id/star', toggleStar);
 router.get('/trash', fetchTrash);
 router.patch('/:id/trash', trashFile);
 router.patch('/:id/restore', restoreFile);
+router.delete('/trash', emptyTrash);
+
 
 // ── Folders ──────────────────────────────────────────────────────────────────
 router.post('/folder', createFolder);

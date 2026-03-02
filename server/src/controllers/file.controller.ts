@@ -5,6 +5,7 @@ import { CustomFile } from 'telegram/client/uploads';
 import pool from '../config/db';
 import fs from 'fs';
 import path from 'path';
+import sharp from 'sharp';
 
 // ── Allowed MIME types ─────────────────────────────────────────────────────
 const ALLOWED_TYPES = [
@@ -65,7 +66,7 @@ export const uploadFile = async (req: AuthRequest, res: Response) => {
 
         const uploadedMessage = await client.sendFile(telegram_chat_id, {
             file: new CustomFile(originalname, size, filePath),
-            caption: `[TeleDrive] ${originalname}`,
+            caption: `[Axya] ${originalname}`,
         });
 
         const messageId = uploadedMessage.id;
@@ -354,6 +355,47 @@ export const fetchTrash = async (req: AuthRequest, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// EMPTY TRASH (Permanent Delete All)
+// ─────────────────────────────────────────────────────────────────────────────
+export const emptyTrash = async (req: AuthRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    try {
+        const result = await pool.query(
+            'SELECT id, telegram_message_id, telegram_chat_id FROM files WHERE user_id = $1 AND is_trashed = true',
+            [req.user.id]
+        );
+        const files = result.rows;
+        if (files.length === 0) return res.json({ success: true, message: 'Trash is already empty.' });
+
+        const client = await getDynamicClient(req.user.sessionString);
+
+        // Group by chat for efficiency
+        const byChat: Record<string, number[]> = {};
+        files.forEach(f => {
+            if (!byChat[f.telegram_chat_id]) byChat[f.telegram_chat_id] = [];
+            byChat[f.telegram_chat_id].push(parseInt(f.telegram_message_id, 10));
+        });
+
+        // Delete from Telegram
+        for (const chat_id in byChat) {
+            try {
+                await client.deleteMessages(chat_id, byChat[chat_id], { revoke: true });
+            } catch (e) { console.warn(`Could not delete batch in chat ${chat_id}`, e); }
+        }
+
+        // Delete from DB
+        await pool.query('DELETE FROM files WHERE user_id = $1 AND is_trashed = true', [req.user.id]);
+        await pool.query('DELETE FROM folders WHERE user_id = $1 AND is_trashed = true', [req.user.id]);
+
+        await logActivity(req.user.id, 'empty_trash');
+        res.json({ success: true, message: 'Trash cleared permanently.' });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // DOWNLOAD / STREAM
 // ─────────────────────────────────────────────────────────────────────────────
 export const downloadFile = async (req: AuthRequest, res: Response) => {
@@ -395,31 +437,77 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
 
     try {
         const fileResult = await pool.query(
-            'SELECT telegram_message_id, telegram_chat_id, mime_type, file_name, file_size FROM files WHERE id = $1 AND user_id = $2 AND is_trashed = false',
+            'SELECT telegram_message_id, telegram_chat_id, file_name, mime_type FROM files WHERE id = $1 AND user_id = $2 AND is_trashed = false',
             [id, req.user.id]
         );
         if (fileResult.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
 
-        const { telegram_message_id, telegram_chat_id, mime_type } = fileResult.rows[0];
+        const { telegram_message_id, telegram_chat_id, file_name, mime_type } = fileResult.rows[0];
         const client = await getDynamicClient(req.user.sessionString);
 
         const messages = await client.getMessages(telegram_chat_id, { ids: parseInt(telegram_message_id, 10) });
         if (!messages || messages.length === 0) return res.status(404).json({ success: false, error: 'File no longer exists' });
 
-        // Try getting a small thumbnail
-        const buffer = await client.downloadMedia(messages[0] as any, { thumb: 0 });
-        if (!buffer) return res.status(404).json({ success: false, error: 'No thumbnail available' });
+        res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
 
-        res.set('Content-Type', 'image/jpeg'); // thumbnails are usually jpeg
-        res.set('Cache-Control', 'public, max-age=86400');
-        res.send(buffer);
+        const message = messages[0];
+        let buffer: Buffer | undefined;
+
+        // 1. First attempt: Try to find a Telegram-generated thumbnail natively (fastest)
+        try {
+            const media: any = message.media;
+            let thumbIndex: any = 0;
+            if (media && (media.photo || media.document)) {
+                const thumbs = media.photo ? media.photo.sizes : media.document?.thumbs;
+                if (thumbs && thumbs.length > 1) {
+                    thumbIndex = thumbs.length > 3 ? 2 : thumbs.length - 1;
+                }
+            }
+            console.log(`🖼️ [Thumbnail] Fetching native thumb for ${file_name}`);
+            buffer = (await client.downloadMedia(message as any, { thumb: thumbIndex })) as Buffer | undefined;
+        } catch (e: any) {
+            console.warn(`[Thumbnail] Native thumb fetch rejected: ${e.message}`);
+        }
+
+        // 2. Fallback: If Telegram failed to generate a thumb (common for documents/original photos)
+        // Let's directly fetch the full photo, compress it with Sharp so it renders instantly in the app
+        if (!buffer || buffer.length === 0) {
+            console.log(`🖼️ [Thumbnail] No native thumb available. Downloading full image for edge-compression...`);
+            buffer = (await client.downloadMedia(message as any)) as Buffer | undefined;
+        }
+
+        if (!buffer || buffer.length === 0) {
+            return res.status(404).json({ success: false, error: 'Failed to extract any media data for thumbnail.' });
+        }
+
+        // 3. Compress with Sharp before sending (Extremely important so Expo Image doesn't crash/timeout on big >3MB payloads!)
+        try {
+            console.log(`[Thumbnail] Compressing buffer of size: ${buffer.length}`);
+            // Use extremely safe default settings to render high-res visually but tiny filesize
+            const optimizedBuffer = await sharp(buffer, { failOnError: false })
+                .resize(1080, 1080, { fit: 'inside', withoutEnlargement: true })
+                .toFormat('webp', { quality: 85, effort: 3 })
+                .toBuffer();
+
+            res.setHeader('Content-Type', 'image/webp');
+            return res.send(optimizedBuffer);
+
+        } catch (sharpError: any) {
+            // Wait, what if it's a PDF or DOCX file? Sharp will fail. So we just send raw bytes.
+            console.warn(`[Thumbnail] Sharp compression failed/skipped:`, sharpError.message);
+            res.setHeader('Content-Type', mime_type || 'application/octet-stream');
+            return res.send(buffer);
+        }
+
     } catch (err: any) {
+        console.error(`❌ [Thumbnail Error]`, err.message);
         if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
     }
 };
 
+
 // ─────────────────────────────────────────────────────────────────────────────
-// STREAM MEDIA (Bot API Redirect)
+// STREAM MEDIA (MTProto direct — Bot API removed, was broken without BOT_TOKEN)
 // ─────────────────────────────────────────────────────────────────────────────
 export const streamFile = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
@@ -427,36 +515,36 @@ export const streamFile = async (req: AuthRequest, res: Response) => {
 
     try {
         const fileResult = await pool.query(
-            'SELECT telegram_file_id FROM files WHERE id = $1 AND user_id = $2 AND is_trashed = false',
+            'SELECT telegram_message_id, telegram_chat_id, mime_type, file_name, file_size FROM files WHERE id = $1 AND user_id = $2 AND is_trashed = false',
             [id, req.user.id]
         );
         if (fileResult.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
 
-        const { telegram_file_id } = fileResult.rows[0];
+        const { telegram_message_id, telegram_chat_id, mime_type, file_name, file_size } = fileResult.rows[0];
 
-        let BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-        // Fix for UTF-16/spaced env keys if any
-        if (!BOT_TOKEN) {
-            const botKey = Object.keys(process.env).find(k => k.replace(/\\s/g, '').includes('TELEGRAM_BOT_TOKEN'));
-            if (botKey) BOT_TOKEN = process.env[botKey];
-        }
+        // For large video files (>50MB), Telegram Bot API cannot download them anyway.
+        // MTProto (GramJS) works for all sizes, so we use it directly here.
+        console.log(`🎬 [Stream] Starting MTProto stream for: ${file_name} (${file_size} bytes)`);
+        const client = await getDynamicClient(req.user.sessionString);
 
-        if (!BOT_TOKEN || BOT_TOKEN.includes('PUT_YOUR_BOT_TOKEN_HERE') || !BOT_TOKEN.trim()) {
-            return res.status(500).json({ success: false, error: 'TELEGRAM_BOT_TOKEN not properly configured in .env' });
-        }
+        const messages = await client.getMessages(telegram_chat_id, { ids: parseInt(telegram_message_id, 10) });
+        if (!messages || messages.length === 0) return res.status(404).json({ success: false, error: 'File no longer exists in Telegram' });
 
-        const resp = await fetch(`https://api.telegram.org/bot${BOT_TOKEN.trim()}/getFile?file_id=${telegram_file_id}`);
-        const data = await resp.json();
+        const buffer = await client.downloadMedia(messages[0] as any);
+        if (!buffer) return res.status(500).json({ success: false, error: 'Failed to download from Telegram' });
 
-        if (!data.ok) return res.status(400).json({ success: false, error: data.description || 'Failed to get file path from Telegram' });
-
-        const streamUrl = `https://api.telegram.org/file/bot${BOT_TOKEN.trim()}/${data.result.file_path}`;
-
-        res.redirect(streamUrl);
+        res.set('Content-Type', mime_type || 'video/mp4');
+        res.set('Content-Disposition', `inline; filename="${encodeURIComponent(file_name)}"`);
+        res.set('Content-Length', buffer.length.toString());
+        res.set('Cache-Control', 'private, max-age=3600');
+        res.set('Accept-Ranges', 'bytes');
+        res.send(buffer);
     } catch (err: any) {
-        res.status(500).json({ success: false, error: err.message });
+        console.error('❌ [Stream Error]', err.message);
+        if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
     }
 };
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FOLDERS: CREATE

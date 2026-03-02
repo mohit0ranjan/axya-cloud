@@ -2,7 +2,9 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import pool from '../config/db';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key-teledrive';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error('🔴 FATAL: JWT_SECRET environment variable is not set. Server cannot start safely.');
+
 
 export interface AuthRequest extends Request {
     user?: {

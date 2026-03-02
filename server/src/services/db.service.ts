@@ -106,7 +106,8 @@ export const initSchema = async () => {
     `CREATE INDEX IF NOT EXISTS idx_folders_user_trashed ON folders (user_id, is_trashed)`,
     `CREATE INDEX IF NOT EXISTS idx_shared_links_token ON shared_links(token)`,
     `CREATE TABLE IF NOT EXISTS file_tags (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), file_id UUID REFERENCES files(id) ON DELETE CASCADE, user_id UUID REFERENCES users(id) ON DELETE CASCADE, tag TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW(), UNIQUE(file_id, tag))`,
-    `CREATE INDEX IF NOT EXISTS idx_file_tags_user ON file_tags(user_id, tag)`,
+    `CREATE INDEX IF NOT EXISTS idx_files_hash ON files (sha256_hash) WHERE sha256_hash IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_files_user_hash ON files (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL`,
   ];
 
   try {

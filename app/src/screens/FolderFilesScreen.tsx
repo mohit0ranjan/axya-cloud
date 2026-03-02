@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext, useCallback } from 'react';
+﻿import React, { useState, useEffect, useContext, useCallback } from 'react';
 import {
     View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView,
     ActivityIndicator, Alert, Platform, Modal, TextInput, KeyboardAvoidingView,
@@ -112,7 +112,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 : [sortKey.split('_')[0], sortKey.split('_')[1]];
 
             const [filesRes, foldersRes] = await Promise.all([
-                apiClient.get(`/files?folder_id=${encodeURIComponent(folderId)}&sort=${sortCol}&order=${sortOrder}&limit=200`),
+                apiClient.get(`/files?folder_id=${encodeURIComponent(folderId)}&sort=${sortCol}&order=${sortOrder}&limit=1000`),
                 apiClient.get(`/files/folders?parent_id=${encodeURIComponent(folderId)}`),
             ]);
             let merged: any[] = [];
@@ -122,6 +122,27 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 }));
             }
             if (filesRes.data.success) merged = [...merged, ...filesRes.data.files];
+
+            // Client-side sort to unify folders and files
+            merged.sort((a, b) => {
+                if (sortCol === 'created_at') {
+                    const timeA = new Date(a.created_at || 0).getTime();
+                    const timeB = new Date(b.created_at || 0).getTime();
+                    return sortOrder === 'DESC' ? timeB - timeA : timeA - timeB;
+                }
+                if (sortCol === 'file_name') {
+                    const nameA = (a.name || a.file_name || '').toLowerCase();
+                    const nameB = (b.name || b.file_name || '').toLowerCase();
+                    return sortOrder === 'DESC' ? nameB.localeCompare(nameA) : nameA.localeCompare(nameB);
+                }
+                if (sortCol === 'file_size') {
+                    const sizeA = a.size || 0;
+                    const sizeB = b.size || 0;
+                    return sortOrder === 'DESC' ? sizeB - sizeA : sizeA - sizeB;
+                }
+                return 0;
+            });
+
             setFiles(merged);
         } catch (e) {
             console.error('Fetch failed', e);
@@ -196,10 +217,8 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     onPress: async () => {
                         try {
                             if (isFolder) {
-                                // DELETE /files/folder/:id → server calls trashFolder (soft-delete cascade)
                                 await apiClient.delete(`/files/folder/${item.id}`);
                             } else {
-                                // ✅ FIX: PATCH /files/:id/trash → soft-delete (NOT hard delete!)
                                 await apiClient.patch(`/files/${item.id}/trash`);
                             }
                             fetchFolderFiles();
@@ -265,9 +284,13 @@ export default function FolderFilesScreen({ route, navigation }: any) {
         try {
             const res = await DocumentPicker.getDocumentAsync({ type: '*/*', multiple: true });
             if (res.canceled) return;
-            res.assets.forEach(asset => {
-                addUpload(asset as any, folderId, 'me');
-            });
+            const fileAssets = res.assets.map(a => ({
+                uri: a.uri,
+                name: a.name,
+                size: a.size ?? 0,
+                mimeType: a.mimeType ?? 'application/octet-stream',
+            }));
+            addUpload(fileAssets, folderId, 'me');
         } catch { Alert.alert('Error', 'Pick failed'); }
     };
 
@@ -288,7 +311,6 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     if (selectMode) toggleSelect(item.id);
                     else if (isFolder) navigation.push('FolderFiles', { folderId: item.id, folderName: item.name, breadcrumb: currentBreadcrumb });
                     else {
-                        // ✅ Mark as recently accessed (non-blocking)
                         apiClient.patch(`/files/${item.id}/accessed`).catch(() => { });
                         const previewableFiles = filteredFiles.filter(f => f.mime_type !== 'inode/directory');
                         const idx = previewableFiles.findIndex(f => f.id === item.id);
@@ -358,11 +380,11 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                                 }}
                             >
                                 <MoreHorizontal color={theme.colors.textBody} size={18} />
-                            </TouchableOpacity>
+                            </TouchableOpacity >
                         )}
                     </>
                 )}
-            </TouchableOpacity>
+            </TouchableOpacity >
         );
     };
 

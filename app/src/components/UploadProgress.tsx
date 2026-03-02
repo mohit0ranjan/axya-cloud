@@ -1,20 +1,15 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Animated } from 'react-native';
-import { X, CloudUpload, CheckCircle, AlertCircle } from 'lucide-react-native';
+import { X, CloudUpload, CheckCircle, AlertCircle, Pause, Play } from 'lucide-react-native';
 import * as Progress from 'react-native-progress';
 
-export interface UploadTask {
-    id: string;
-    fileName: string;
-    fileSize: number;
-    progress: number;
-    status: 'queued' | 'uploading' | 'completed' | 'failed' | 'cancelled' | 'pending';
-    error?: string;
-}
+import { UploadTask } from '../services/UploadManager';
 
 interface UploadProgressProps {
     task: UploadTask;
     onCancel: (id: string) => void;
+    onPause?: (id: string) => void;
+    onResume?: (id: string) => void;
 }
 
 const formatFileSize = (bytes: number) => {
@@ -25,13 +20,15 @@ const formatFileSize = (bytes: number) => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-const UploadProgress: React.FC<UploadProgressProps> = ({ task, onCancel }) => {
+const UploadProgress: React.FC<UploadProgressProps> = ({ task, onCancel, onPause, onResume }) => {
     const isError = task.status === 'failed';
     const isCompleted = task.status === 'completed';
 
     const getStatusText = () => {
         if (isCompleted) return 'Upload complete';
         if (isError) return task.error || 'Upload failed';
+        if (task.status === 'retrying') return `Retrying... (${task.retryCount})`;
+        if (task.status === 'paused') return 'Paused';
         if (task.status === 'queued') return 'Waiting in queue...';
         return `Uploading... ${task.progress}%`;
     };
@@ -46,7 +43,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({ task, onCancel }) => {
         <View style={styles.card}>
             <View style={styles.header}>
                 <View style={styles.info}>
-                    <Text style={styles.fileName} numberOfLines={1}>{task.fileName}</Text>
+                    <Text style={styles.fileName} numberOfLines={1}>{task.file.name}</Text>
                     <View style={styles.statusRow}>
                         {getStatusIcon()}
                         <Text style={[
@@ -56,13 +53,25 @@ const UploadProgress: React.FC<UploadProgressProps> = ({ task, onCancel }) => {
                         ]}>
                             {getStatusText()}
                         </Text>
-                        <Text style={styles.sizeText}>· {formatFileSize(task.fileSize)}</Text>
+                        <Text style={styles.sizeText}>· {formatFileSize(task.file.size)}</Text>
                     </View>
                 </View>
-                {!isCompleted && !isError && (
-                    <TouchableOpacity onPress={() => onCancel(task.id)} style={styles.cancelBtn}>
-                        <X size={18} color="#8892A4" />
-                    </TouchableOpacity>
+                {!isCompleted && (
+                    <View style={{ flexDirection: 'row', gap: 6 }}>
+                        {(task.status === 'uploading' || task.status === 'queued') && onPause && (
+                            <TouchableOpacity onPress={() => onPause(task.id)} style={styles.cancelBtn}>
+                                <Pause size={18} color="#8892A4" />
+                            </TouchableOpacity>
+                        )}
+                        {(task.status === 'paused' || task.status === 'failed') && onResume && (
+                            <TouchableOpacity onPress={() => onResume(task.id)} style={styles.cancelBtn}>
+                                <Play size={18} color="#4B6EF5" />
+                            </TouchableOpacity>
+                        )}
+                        <TouchableOpacity onPress={() => onCancel(task.id)} style={styles.cancelBtn}>
+                            <X size={18} color="#EF4444" />
+                        </TouchableOpacity>
+                    </View>
                 )}
             </View>
 

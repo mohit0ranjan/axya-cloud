@@ -6,33 +6,52 @@ import crypto from 'crypto';
 import pool from '../config/db';
 import { getDynamicClient } from '../services/telegram.service';
 import { CustomFile } from 'telegram/client/uploads';
-import { Api } from 'telegram';
 
-// Retry helper for Telegram uploads
+// ─── Helpers ────────────────────────────────────────────────────────────────
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-const uploadWithRetry = async (client: any, chatId: string, params: any, retries = 3) => {
-    for (let i = 0; i < retries; i++) {
+
+const randomDelay = (min = 300, max = 800) =>
+    sleep(Math.floor(Math.random() * (max - min + 1)) + min);
+
+// Max retries for Telegram upload, with exponential backoff + FLOOD_WAIT handling
+const uploadToTelegramWithRetry = async (
+    client: any,
+    chatId: string,
+    params: any,
+    maxRetries = 4
+): Promise<any> => {
+    for (let i = 0; i < maxRetries; i++) {
         try {
+            await randomDelay(); // Anti-429 delay before each attempt
             return await client.sendFile(chatId, params);
         } catch (error: any) {
-            console.error(`Telegram upload error (Attempt ${i + 1}/${retries}):`, error);
-            if (error?.message?.includes('FLOOD')) {
-                const waitSeconds = parseInt(error.message.match(/\d+/)?.[0] || '10', 10);
-                console.log(`Flood wait triggered. Waiting ${waitSeconds} seconds...`);
-                await sleep((waitSeconds + 2) * 1000);
-            } else if (i === retries - 1) {
-                throw error;
+            const raw = error?.message || '';
+            console.error(`[Telegram] Upload attempt ${i + 1}/${maxRetries} failed:`, raw);
+
+            // Handle FLOOD_WAIT — Telegram explicitly gives wait time
+            if (raw.includes('FLOOD_WAIT') || raw.includes('FLOOD')) {
+                const waitSec = parseInt(raw.match(/\d+/)?.[0] || '15', 10);
+                console.warn(`[Telegram] FLOOD_WAIT: Waiting ${waitSec}s...`);
+                await sleep((waitSec + 3) * 1000); // Extra 3s buffer
+                continue;
+            }
+
+            // Other errors: backoff
+            if (i < maxRetries - 1) {
+                const backoff = [2000, 5000, 10000, 20000][i] || 20000;
+                console.warn(`[Telegram] Retrying in ${backoff / 1000}s...`);
+                await sleep(backoff);
             } else {
-                await sleep(2000 * Math.pow(2, i)); // exponential backoff
+                throw error;
             }
         }
     }
 };
 
-// Upload state management
+// ─── Upload State (in-memory, keeps progress until GC-ed after 1h) ──────────
 export const uploadState = new Map<string, any>();
 
-// Helper for formatting file row
+// Helper for formatting file row consistently
 const formatFileRow = (row: any) => ({
     id: row.id,
     name: row.file_name,
@@ -46,12 +65,71 @@ const formatFileRow = (row: any) => ({
     updated_at: row.updated_at,
 });
 
+// ─── Step 1: Init Upload ────────────────────────────────────────────────────
+// Checks hash first → if duplicate, returns existing file immediately.
 export const initUpload = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
-    const { originalname, size, mimetype, folder_id, telegram_chat_id } = req.body;
-    if (!originalname || !size) return res.status(400).json({ success: false, error: 'Missing file info' });
+    const { originalname, size, mimetype, folder_id, telegram_chat_id, hash } = req.body;
 
+    if (!originalname || !size) {
+        return res.status(400).json({ success: false, error: 'Missing file info (originalname, size required)' });
+    }
+
+    // ── Deduplication: check hash in DB ────────────────────────────────────
+    if (hash) {
+        try {
+            const existing = await pool.query(
+                `SELECT * FROM files WHERE sha256_hash = $1 AND user_id = $2 LIMIT 1`,
+                [hash, req.user.id]
+            );
+
+            if (existing.rows.length > 0) {
+                const existingFile = existing.rows[0];
+
+                // If a target folder is different from existing, create a reference row
+                const effectiveFolderId = folder_id || null;
+                if (effectiveFolderId && effectiveFolderId !== existingFile.folder_id) {
+                    // Insert a new DB row that reuses the same telegram_file_id
+                    const newFileRes = await pool.query(
+                        `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+                        [
+                            req.user.id,
+                            effectiveFolderId,
+                            existingFile.file_name,
+                            existingFile.file_size,
+                            existingFile.telegram_file_id,
+                            existingFile.telegram_message_id,
+                            existingFile.telegram_chat_id,
+                            existingFile.mime_type,
+                            hash,
+                        ]
+                    );
+                    console.log(`[Upload] Duplicate detected → inserted reference in folder ${effectiveFolderId}`);
+                    return res.json({
+                        success: true,
+                        duplicate: true,
+                        file: formatFileRow(newFileRes.rows[0]),
+                        message: 'File already exists — reused from library',
+                    });
+                }
+
+                console.log(`[Upload] Duplicate detected → returning existing file id=${existingFile.id}`);
+                return res.json({
+                    success: true,
+                    duplicate: true,
+                    file: formatFileRow(existingFile),
+                    message: 'File already exists — skipped upload',
+                });
+            }
+        } catch (hashCheckErr: any) {
+            console.warn('[Upload] Hash check failed (non-fatal):', hashCheckErr.message);
+            // Continue with normal upload if hash check fails
+        }
+    }
+
+    // ── No duplicate, proceed with upload ──────────────────────────────────
     const uploadId = crypto.randomUUID();
     const tempFilePath = path.join(__dirname, '../../uploads', `${uploadId}.tmp`);
 
@@ -66,23 +144,27 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
         folder_id: folder_id || null,
         telegram_chat_id: telegram_chat_id || 'me',
         userId: req.user.id,
-        sessionString: req.user.sessionString
+        sessionString: req.user.sessionString,
+        clientHash: hash || null,
     });
 
-    res.json({ success: true, uploadId });
+    return res.json({ success: true, uploadId, duplicate: false });
 };
 
+// ─── Step 2: Upload Chunk ───────────────────────────────────────────────────
 export const uploadChunk = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
-    const { uploadId } = req.body;
+    const { uploadId, chunkIndex, chunkBase64 } = req.body;
     if (!uploadId) return res.status(400).json({ success: false, error: 'Missing uploadId' });
 
     const state = uploadState.get(uploadId);
     if (!state) return res.status(404).json({ success: false, error: 'Upload session not found' });
     if (state.userId !== req.user.id) return res.status(403).json({ success: false, error: 'Forbidden' });
 
-    if (!req.file && !req.body.chunkBase64) return res.status(400).json({ success: false, error: 'No chunk data provided' });
+    if (!req.file && !chunkBase64) {
+        return res.status(400).json({ success: false, error: 'No chunk data provided' });
+    }
 
     try {
         let chunkData: Buffer;
@@ -90,19 +172,24 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
             chunkData = fs.readFileSync(req.file.path);
             if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
         } else {
-            chunkData = Buffer.from(req.body.chunkBase64, 'base64');
+            chunkData = Buffer.from(chunkBase64, 'base64');
         }
 
         fs.appendFileSync(state.filePath, chunkData);
         state.receivedBytes += chunkData.length;
 
-        res.json({ success: true, receivedBytes: state.receivedBytes, totalBytes: state.totalBytes });
+        return res.json({
+            success: true,
+            receivedBytes: state.receivedBytes,
+            totalBytes: state.totalBytes,
+        });
     } catch (err: any) {
         if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-        res.status(500).json({ success: false, error: err.message });
+        return res.status(500).json({ success: false, error: err.message });
     }
 };
 
+// ─── Step 3: Complete Upload ────────────────────────────────────────────────
 export const completeUpload = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
@@ -113,36 +200,60 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
     if (!state) return res.status(404).json({ success: false, error: 'Upload session not found' });
     if (state.userId !== req.user.id) return res.status(403).json({ success: false, error: 'Forbidden' });
 
-    // Mark as transitioning to Telegram
+    // Immediate response — Telegram upload runs async
     state.status = 'uploading_to_telegram';
     res.json({ success: true, message: 'Upload finalizing to Telegram in background' });
 
-    // Begin async Telegram upload with chunking & retry logic
+    // Async Telegram upload
     (async () => {
         try {
             const client = await getDynamicClient(state.sessionString);
-
-            // Generate hash for duplicate check (optional, but good for stability)
             const fileBuffer = fs.readFileSync(state.filePath);
-            const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
-            // Handle progress callback
+            // Compute server-side hash (may differ from client MD5 if client sent one)
+            const serverHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+            const finalHash = state.clientHash || serverHash;
+
+            // Secondary server-side dedup (in case client hash was missing)
+            if (!state.clientHash) {
+                const existing = await pool.query(
+                    `SELECT * FROM files WHERE sha256_hash = $1 AND user_id = $2 LIMIT 1`,
+                    [serverHash, state.userId]
+                );
+                if (existing.rows.length > 0) {
+                    if (fs.existsSync(state.filePath)) fs.unlinkSync(state.filePath);
+                    state.status = 'completed';
+                    state.progress = 100;
+                    state.fileResult = formatFileRow(existing.rows[0]);
+                    console.log(`[Upload] Server-side dedup: reused file id=${existing.rows[0].id}`);
+                    setTimeout(() => { uploadState.delete(uploadId); }, 60 * 60 * 1000);
+                    return;
+                }
+            }
+
             const progressCallback = (progress: number) => {
-                // gramjs progress is float from 0 to 1
                 state.progress = Math.round(progress * 100);
             };
 
-            const customFile = new CustomFile(state.originalname, state.totalBytes, state.filePath);
+            const customFile = new CustomFile(
+                state.originalname,
+                state.totalBytes,
+                state.filePath
+            );
 
-            // Upload to telegram with progress & automatic retry logic
-            const uploadedMessage = await uploadWithRetry(client, state.telegram_chat_id, {
-                file: customFile,
-                caption: `[Axya] ${state.originalname}`,
-                workers: 3, // parallel upload workers for MTProto
-                progressCallback,
-            });
+            const uploadedMessage = await uploadToTelegramWithRetry(
+                client,
+                state.telegram_chat_id,
+                {
+                    file: customFile,
+                    caption: `[Axya] ${state.originalname}`,
+                    workers: 4, // parallel MTProto upload workers
+                    progressCallback,
+                }
+            );
 
-            if (!uploadedMessage) throw new Error("Upload failed after retries.");
+            if (!uploadedMessage) throw new Error('Upload failed after all retries.');
+
             const messageId = uploadedMessage.id;
             const fileId = uploadedMessage.document
                 ? uploadedMessage.document.id.toString()
@@ -153,44 +264,59 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
             const result = await pool.query(
                 `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-                [state.userId, state.folder_id, state.originalname, state.totalBytes, fileId, messageId, state.telegram_chat_id, state.mimetype, hash]
+                [
+                    state.userId,
+                    state.folder_id,
+                    state.originalname,
+                    state.totalBytes,
+                    fileId,
+                    messageId,
+                    state.telegram_chat_id,
+                    state.mimetype,
+                    finalHash,
+                ]
             );
 
-            // Cleanup & update state
             if (fs.existsSync(state.filePath)) fs.unlinkSync(state.filePath);
 
             state.status = 'completed';
             state.progress = 100;
             state.fileResult = formatFileRow(result.rows[0]);
 
-            // Clean memory after some time
             setTimeout(() => { uploadState.delete(uploadId); }, 60 * 60 * 1000);
 
         } catch (err: any) {
-            console.error("Telegram Upload Error:", err);
-            if (fs.existsSync(state.filePath)) fs.unlinkSync(state.filePath);
+            console.error('[Telegram] Upload Error:', err);
+            if (fs.existsSync(state.filePath)) {
+                try { fs.unlinkSync(state.filePath); } catch { }
+            }
             state.status = 'error';
-            state.error = err.message;
+            state.error = err.message || 'Unknown error';
         }
     })();
 };
 
+// ─── Step 4: Poll Status ─────────────────────────────────────────────────────
 export const checkUploadStatus = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
     const { uploadId } = req.params;
     const state = uploadState.get(uploadId as string);
 
-    if (!state) return res.status(404).json({ success: false, error: 'Upload not found or expired' });
-    if (state.userId !== req.user.id) return res.status(403).json({ success: false, error: 'Forbidden' });
+    if (!state) {
+        return res.status(404).json({ success: false, error: 'Upload not found or expired' });
+    }
+    if (state.userId !== req.user.id) {
+        return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
 
-    res.json({
+    return res.json({
         success: true,
         progress: state.progress,
         status: state.status,
         file: state.fileResult,
         error: state.error,
         receivedBytes: state.receivedBytes,
-        totalBytes: state.totalBytes
+        totalBytes: state.totalBytes,
     });
 };

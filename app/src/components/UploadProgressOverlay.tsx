@@ -18,7 +18,7 @@ const C = {
 };
 
 export default function UploadProgressOverlay() {
-    const { tasks, cancelUpload } = useUpload();
+    const { tasks, cancelUpload, pauseUpload, resumeUpload, clearCompleted } = useUpload();
     const [expanded, setExpanded] = useState(false);
     const [animation] = useState(new Animated.Value(0));
 
@@ -76,12 +76,15 @@ export default function UploadProgressOverlay() {
                 <View style={s.listContainer}>
                     <View style={s.listHeader}>
                         <Text style={s.listTitle}>Upload Queue</Text>
+                        <TouchableOpacity onPress={clearCompleted}>
+                            <Text style={s.clearBtn}>Clear Completed</Text>
+                        </TouchableOpacity>
                     </View>
                     <FlatList
                         data={tasks}
                         keyExtractor={t => t.id}
                         renderItem={({ item }) => (
-                            <UploadProgress task={item} onCancel={cancelUpload} />
+                            <UploadProgress task={item} onCancel={cancelUpload} onPause={pauseUpload} onResume={resumeUpload} />
                         )}
                         contentContainerStyle={s.list}
                         showsVerticalScrollIndicator={false}
@@ -164,6 +167,11 @@ const s = StyleSheet.create({
         fontSize: 17,
         fontWeight: '800',
         color: C.text,
+    },
+    clearBtn: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: C.primary,
     },
     list: {
         paddingBottom: 20,

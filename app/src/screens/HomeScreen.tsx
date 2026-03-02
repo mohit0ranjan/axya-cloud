@@ -215,9 +215,13 @@ export default function HomeScreen({ navigation }: any) {
     const handleUpload = () => {
         if (!pickedFiles || pickedFiles.length === 0) return;
         setUploadModal(false);
-        pickedFiles.forEach(file => {
-            addUpload(file as any, uploadFolderId, chatTarget);
-        });
+        const fileAssets = pickedFiles.map(f => ({
+            uri: f.uri,
+            name: f.name,
+            size: f.size ?? 0,
+            mimeType: f.mimeType ?? 'application/octet-stream',
+        }));
+        addUpload(fileAssets, uploadFolderId, chatTarget);
         setPickedFiles([]);
     };
 

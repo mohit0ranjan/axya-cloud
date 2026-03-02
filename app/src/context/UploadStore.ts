@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import apiClient, { uploadClient } from '../api/client';
 import * as Notifications from 'expo-notifications';
+import * as FileSystem from 'expo-file-system';
 
 export interface UploadTask {
     id: string;
@@ -57,7 +58,7 @@ export const useUploadStore = create<UploadState>((set, get) => ({
 
     clearCompleted: () => {
         set(state => ({
-            tasks: state.tasks.filter(t => t.status !== 'completed' && t.status !== 'cancelled')
+            tasks: state.tasks.filter(t => t.status === 'uploading' || t.status === 'queued')
         }));
     },
 
@@ -123,14 +124,13 @@ export const useUploadStore = create<UploadState>((set, get) => ({
                         updateTask({ progress: Math.min((offset / fileSize) * 50, 50) });
                     }
                 } else {
-                    const FileSystem = require('expo-file-system');
                     while (offset < fileSize) {
                         // Check if cancelled
                         if (get().tasks.find(t => t.id === task.id)?.status === 'cancelled') throw new Error('Cancelled');
 
                         const length = Math.min(CHUNK_SIZE, fileSize - offset);
                         const chunkBase64 = await FileSystem.readAsStringAsync(file.uri, {
-                            encoding: FileSystem.EncodingType.Base64,
+                            encoding: 'base64',
                             position: offset,
                             length: length
                         });

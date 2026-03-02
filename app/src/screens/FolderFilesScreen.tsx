@@ -191,7 +191,11 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 await apiClient.post('/files/bulk', { ids, action: 'star' });
                 fetchFolderFiles();
             } else if (action === 'move') {
-                // Open folder picker modal — actual move happens in handleBulkMove
+                // Fetch all root-level folders so the Move modal is populated
+                try {
+                    const fRes = await apiClient.get('/files/folders');
+                    if (fRes.data.success) setAllFolders(fRes.data.folders || []);
+                } catch { /* non-critical — modal still opens with empty list */ }
                 setMoveTarget({ ids });
                 setMoveModalVisible(true);
                 return; // don't reset select mode yet
@@ -267,12 +271,13 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             const tagsRes = await apiClient.get(`/files/${item.id}/tags`).catch(() => ({ data: { tags: [] } }));
             setInfoTags(tagsRes.data.tags || []);
 
-            // ✅ Share link: use POST (not GET) to create/fetch the share link
-            // GET /files/:id/share doesn't exist — it's POST /files/:id/share
+            // ✅ Share link: use POST /files/:id/share → returns { token, expires_at }
+            // Server returns `token` not `link` — build full URL from token
             if (item.result_type !== 'folder') {
-                const shareRes = await apiClient.post(`/files/${item.id}/share`, { expiresIn: 72 })
-                    .catch(() => ({ data: { link: null } }));
-                setInfoShareLink(shareRes.data.link);
+                const shareRes = await apiClient.post(`/files/${item.id}/share`, { expires_in_hours: 72 })
+                    .catch(() => ({ data: { token: null } }));
+                const tok = shareRes.data?.token;
+                setInfoShareLink(tok ? `${apiClient.defaults.baseURL?.replace('/api', '')}/share/${tok}` : null);
             } else {
                 setInfoShareLink(null); // Folders don't have share links
             }
@@ -334,7 +339,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                         const last = lastAccessedRef.current.get(item.id) ?? 0;
                         if (now - last > 5 * 60 * 1000) {
                             lastAccessedRef.current.set(item.id, now);
-                            apiClient.patch(`/files/${item.id}/accessed`).catch(() => { });
+                            apiClient.post(`/files/${item.id}/accessed`).catch(() => { });
                         }
                         const previewableFiles = filteredFiles.filter(f => f.mime_type !== 'inode/directory');
                         const idx = previewableFiles.findIndex(f => f.id === item.id);

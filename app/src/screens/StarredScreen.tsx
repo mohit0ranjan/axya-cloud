@@ -97,7 +97,7 @@ export default function StarredScreen({ navigation }: any) {
         const last = lastAccessedRef.current.get(item.id) ?? 0;
         if (now - last > 5 * 60 * 1000) {
             lastAccessedRef.current.set(item.id, now);
-            apiClient.patch(`/files/${item.id}/accessed`).catch(() => { });
+            apiClient.post(`/files/${item.id}/accessed`).catch(() => { });
         }
         navigation.navigate('FilePreview', { files: sortedFiles, initialIndex: index });
     }, [sortedFiles, navigation]);

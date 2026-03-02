@@ -29,8 +29,8 @@ import { useServerKeepAlive } from '../hooks/useServerKeepAlive';
 
 const { width } = Dimensions.get('window');
 
-// ── Color tokens ─────────────────────────────────────────────────────────────
-const C = {
+// ── Static color tokens (used by StyleSheet.create which runs outside render) ──
+const CS = {
     bg: '#F4F6FB',
     card: '#FFFFFF',
     primary: '#4B6EF5',
@@ -42,19 +42,17 @@ const C = {
     text: '#1A1F36',
     muted: '#8892A4',
     border: '#EAEDF3',
-    storageGrad1: '#4B6EF5',
-    storageGrad2: '#2B4FD8',
 };
 
 // ── Helper: file icon config ──────────────────────────────────────────────────
 const getIconConfig = (mime: string) => {
-    if (!mime) return { Icon: FileText, color: C.primary, bg: '#EEF1FD' };
+    if (!mime) return { Icon: FileText, color: CS.primary, bg: '#EEF1FD' };
     if (mime.includes('image')) return { Icon: ImageIcon, color: '#F59E0B', bg: '#FEF3C7' };
-    if (mime.includes('video')) return { Icon: Film, color: C.purple, bg: '#F3E8FF' };
-    if (mime.includes('audio')) return { Icon: Music, color: C.success, bg: '#DCFCE7' };
+    if (mime.includes('video')) return { Icon: Film, color: CS.purple, bg: '#F3E8FF' };
+    if (mime.includes('audio')) return { Icon: Music, color: CS.success, bg: '#DCFCE7' };
     if (mime.includes('pdf')) return { Icon: FileText, color: '#EF4444', bg: '#FEE2E2' };
     if (mime.includes('zip') || mime.includes('compress')) return { Icon: Archive, color: '#F97316', bg: '#FFEDD5' };
-    return { Icon: FileText, color: C.primary, bg: '#EEF1FD' };
+    return { Icon: FileText, color: CS.primary, bg: '#EEF1FD' };
 };
 
 const formatSize = (bytes: number) => {
@@ -330,7 +328,7 @@ export default function HomeScreen({ navigation }: any) {
                 contentContainerStyle={s.scrollContent}
                 refreshControl={
                     <RefreshControl refreshing={refreshing} tintColor={C.primary}
-                        onRefresh={() => { setRefreshing(true); load(); }} />
+                        onRefresh={() => { setRefreshing(true); load(true); }} />
                 }
             >
                 {/* ═══════════════════════════════════════════════════════════
@@ -849,49 +847,49 @@ export default function HomeScreen({ navigation }: any) {
 // STYLES
 // ─────────────────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
-    root: { flex: 1, backgroundColor: C.bg },
+    root: { flex: 1, backgroundColor: CS.bg },
 
     /* Header */
     header: {
         flexDirection: 'row', alignItems: 'center',
         paddingHorizontal: 20,
-        paddingTop: Platform.OS === 'web' ? 44 : 26, // More breathing room for Web & mobile notch
+        paddingTop: Platform.OS === 'web' ? 44 : 26,
         paddingBottom: 16,
-        backgroundColor: C.bg,
+        backgroundColor: CS.bg,
     },
     avatar: {
-        width: 46, height: 46, borderRadius: 23, backgroundColor: C.primary,
+        width: 46, height: 46, borderRadius: 23, backgroundColor: CS.primary,
         justifyContent: 'center', alignItems: 'center',
-        shadowColor: C.primary, shadowOffset: { width: 0, height: 4 },
+        shadowColor: CS.primary, shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.3, shadowRadius: 8, elevation: 6,
     },
-    greeting: { fontSize: 18, fontWeight: '700', color: C.text },
-    subGreeting: { fontSize: 13, color: C.muted, marginTop: 2 },
+    greeting: { fontSize: 18, fontWeight: '700', color: CS.text },
+    subGreeting: { fontSize: 13, color: CS.muted, marginTop: 2 },
     headerIconBtn: {
-        width: 46, height: 46, borderRadius: 23, backgroundColor: C.card,
+        width: 46, height: 46, borderRadius: 23, backgroundColor: CS.card,
         justifyContent: 'center', alignItems: 'center',
         shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
         shadowOpacity: 0.07, shadowRadius: 8, elevation: 3,
     },
     searchBar: {
         flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10,
-        backgroundColor: C.card, borderRadius: 23, paddingHorizontal: 16, height: 48,
+        backgroundColor: CS.card, borderRadius: 23, paddingHorizontal: 16, height: 48,
         shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
         shadowOpacity: 0.07, shadowRadius: 8, elevation: 3,
     },
-    searchInput: { flex: 1, fontSize: 15, color: C.text },
+    searchInput: { flex: 1, fontSize: 15, color: CS.text },
 
-    scrollContent: { paddingTop: 4, paddingBottom: 20 },   // ← tight top so card starts cleanly
+    scrollContent: { paddingTop: 4, paddingBottom: 20 },
 
-    /* Storage Card UPGRADED */
+    /* Storage Card */
     storageCard: {
         marginHorizontal: 20,
         borderRadius: 24,
-        backgroundColor: C.primary,
+        backgroundColor: CS.primary,
         padding: 22,
         marginTop: 4,
         marginBottom: 32,
-        shadowColor: C.primary,
+        shadowColor: CS.primary,
         shadowOffset: { width: 0, height: 10 },
         shadowOpacity: 0.4,
         shadowRadius: 20,
@@ -914,30 +912,29 @@ const s = StyleSheet.create({
     progressTrack: {
         height: 6, backgroundColor: 'rgba(255,255,255,0.25)', borderRadius: 3, marginBottom: 16,
     },
-    progressFill: { height: 6, backgroundColor: C.accent, borderRadius: 3 },
+    progressFill: { height: 6, backgroundColor: CS.accent, borderRadius: 3 },
     storageStats: { flexDirection: 'row', gap: 20 },
     storageStat: { flexDirection: 'row', alignItems: 'center', gap: 7 },
     statDot: { width: 8, height: 8, borderRadius: 4 },
     statStatText: { color: 'rgba(255,255,255,0.85)', fontSize: 13, fontWeight: '500' },
 
-
     /* Section headers */
     sectionRow: {
         flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
         paddingHorizontal: 20,
-        marginBottom: 16,       // ↑ more space before cards
+        marginBottom: 16,
     },
-    sectionLabel: { fontSize: 12, fontWeight: '700', color: C.muted, letterSpacing: 1.2 },
+    sectionLabel: { fontSize: 12, fontWeight: '700', color: CS.muted, letterSpacing: 1.2 },
     seeAllBtn: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-    seeAllText: { fontSize: 13, fontWeight: '600', color: C.primary },
+    seeAllText: { fontSize: 13, fontWeight: '600', color: CS.primary },
 
     /* Folders - 2 column GRID */
     folderGrid: {
-        flexDirection: 'row', flexWrap: 'wrap', gap: 14,   // ↑ wider gutter
-        paddingHorizontal: 20, marginBottom: 28,            // ↑ more space after grid
+        flexDirection: 'row', flexWrap: 'wrap', gap: 14,
+        paddingHorizontal: 20, marginBottom: 28,
     },
     folderGridCard: {
-        width: '47%', borderRadius: 20, padding: 18,        // ↑ more internal padding
+        width: '47%', borderRadius: 20, padding: 18,
         minHeight: 138,
         justifyContent: 'space-between',
         shadowColor: '#96A0B5', shadowOffset: { width: 0, height: 4 },
@@ -948,9 +945,9 @@ const s = StyleSheet.create({
         marginBottom: 'auto' as any,
     },
     folderGridName: { fontSize: 14, fontWeight: '700', marginBottom: 4, marginTop: 12 },
-    folderGridMeta: { fontSize: 12, color: C.muted, fontWeight: '500' },
+    folderGridMeta: { fontSize: 12, color: CS.muted, fontWeight: '500' },
     folderAddCard: {
-        backgroundColor: C.card, borderWidth: 1.5, borderColor: C.border,
+        backgroundColor: CS.card, borderWidth: 1.5, borderColor: CS.border,
         borderStyle: 'dashed', elevation: 0, shadowOpacity: 0,
         alignItems: 'center', justifyContent: 'center',
     },
@@ -961,18 +958,18 @@ const s = StyleSheet.create({
     },
 
     emptyFolder: {
-        marginHorizontal: 20, height: 64, backgroundColor: C.card, borderRadius: 16,
+        marginHorizontal: 20, height: 64, backgroundColor: CS.card, borderRadius: 16,
         flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
-        borderWidth: 1.5, borderColor: C.border, borderStyle: 'dashed', marginBottom: 8,
+        borderWidth: 1.5, borderColor: CS.border, borderStyle: 'dashed', marginBottom: 8,
     },
-    emptyFolderText: { fontSize: 14, fontWeight: '600', color: C.primary },
+    emptyFolderText: { fontSize: 14, fontWeight: '600', color: CS.primary },
 
     /* File list */
     fileList: { paddingHorizontal: 20, gap: 4 },
     fileRow: {
-        flexDirection: 'row', alignItems: 'center', backgroundColor: C.card,
+        flexDirection: 'row', alignItems: 'center', backgroundColor: CS.card,
         paddingVertical: 14, paddingHorizontal: 16, borderRadius: 18,
-        marginBottom: 10,       // ↑ more gap between rows
+        marginBottom: 10,
         shadowColor: '#96A0B5', shadowOffset: { width: 0, height: 3 },
         shadowOpacity: 0.08, shadowRadius: 10, elevation: 2,
     },
@@ -981,111 +978,111 @@ const s = StyleSheet.create({
         justifyContent: 'center', alignItems: 'center',
     },
     fileInfo: { flex: 1, marginHorizontal: 14 },
-    fileName: { fontSize: 14, fontWeight: '600', color: C.text, marginBottom: 4 },
-    fileMeta: { fontSize: 12, color: C.muted, fontWeight: '500' },
+    fileName: { fontSize: 14, fontWeight: '600', color: CS.text, marginBottom: 4 },
+    fileMeta: { fontSize: 12, color: CS.muted, fontWeight: '500' },
 
     /* Empty state */
     emptyFiles: { alignItems: 'center', paddingTop: 40, paddingBottom: 32 },
     emptyFilesIcon: {
         width: 76, height: 76, borderRadius: 24,
-        backgroundColor: C.card, justifyContent: 'center', alignItems: 'center',
+        backgroundColor: CS.card, justifyContent: 'center', alignItems: 'center',
         marginBottom: 18,
         shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 12, elevation: 3,
     },
-    emptyTitle: { fontSize: 17, fontWeight: '700', color: C.text, marginBottom: 8 },
-    emptyBody: { fontSize: 14, color: C.muted, textAlign: 'center', lineHeight: 20 },
+    emptyTitle: { fontSize: 17, fontWeight: '700', color: CS.text, marginBottom: 8 },
+    emptyBody: { fontSize: 14, color: CS.muted, textAlign: 'center', lineHeight: 20 },
 
     /* Bottom nav */
     navBar: {
         position: 'absolute', bottom: 0, left: 0, right: 0,
-        height: 86,                 // ↑ slightly taller for comfort
-        backgroundColor: C.card,
+        height: 86,
+        backgroundColor: CS.card,
         flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around',
-        paddingBottom: 14,          // ↑ more bottom padding
+        paddingBottom: 14,
         paddingHorizontal: 8,
-        borderTopWidth: 1, borderTopColor: C.border,
+        borderTopWidth: 1, borderTopColor: CS.border,
         shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
         shadowOpacity: 0.06, shadowRadius: 12, elevation: 12,
     },
     navItem: { alignItems: 'center', gap: 5, flex: 1 },
-    navLabel: { fontSize: 11, fontWeight: '600', color: C.muted },
+    navLabel: { fontSize: 11, fontWeight: '600', color: CS.muted },
     fab: {
-        width: 60, height: 60, borderRadius: 30, backgroundColor: C.primary,
+        width: 60, height: 60, borderRadius: 30, backgroundColor: CS.primary,
         justifyContent: 'center', alignItems: 'center',
-        shadowColor: C.primary, shadowOffset: { width: 0, height: 6 },
+        shadowColor: CS.primary, shadowOffset: { width: 0, height: 6 },
         shadowOpacity: 0.45, shadowRadius: 14, elevation: 10,
-        marginTop: -20,             // ↑ float higher above nav bar
+        marginTop: -20,
     },
 
     /* Modals / Sheets */
     overlay: { flex: 1, backgroundColor: 'rgba(10,10,30,0.45)', justifyContent: 'flex-end' },
     sheet: {
-        backgroundColor: C.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
+        backgroundColor: CS.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
         padding: 28, paddingBottom: 48,
     },
     sheetHandle: {
-        width: 40, height: 4, backgroundColor: C.border,
+        width: 40, height: 4, backgroundColor: CS.border,
         borderRadius: 2, alignSelf: 'center', marginBottom: 24,
     },
-    sheetTitle: { fontSize: 20, fontWeight: '700', color: C.text, marginBottom: 24 },
+    sheetTitle: { fontSize: 20, fontWeight: '700', color: CS.text, marginBottom: 24 },
     sheetRow: {
         flexDirection: 'row', alignItems: 'center', gap: 16,
-        paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: C.border,
+        paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: CS.border,
     },
     sheetRowIcon: { width: 48, height: 48, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
-    sheetRowTitle: { fontSize: 16, fontWeight: '600', color: C.text, marginBottom: 2 },
-    sheetRowSub: { fontSize: 12, color: C.muted },
+    sheetRowTitle: { fontSize: 16, fontWeight: '600', color: CS.text, marginBottom: 2 },
+    sheetRowSub: { fontSize: 12, color: CS.muted },
 
     centeredOverlay: {
         flex: 1, backgroundColor: 'rgba(10,10,30,0.45)',
         justifyContent: 'center', alignItems: 'center', padding: 24,
     },
     modalCard: {
-        width: '100%', backgroundColor: C.card, borderRadius: 24, padding: 24,
+        width: '100%', backgroundColor: CS.card, borderRadius: 24, padding: 24,
         shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 24, elevation: 16,
     },
-    modalTitle: { fontSize: 20, fontWeight: '700', color: C.text, marginBottom: 16 },
+    modalTitle: { fontSize: 20, fontWeight: '700', color: CS.text, marginBottom: 16 },
     filePill: {
         flexDirection: 'row', alignItems: 'center', gap: 10,
         backgroundColor: '#EEF1FD', borderRadius: 12, paddingHorizontal: 14,
         paddingVertical: 10, marginBottom: 20,
     },
-    filePillText: { flex: 1, fontSize: 14, fontWeight: '600', color: C.primary },
-    modalLabel: { fontSize: 12, fontWeight: '600', color: C.muted, marginBottom: 8, letterSpacing: 0.5 },
+    filePillText: { flex: 1, fontSize: 14, fontWeight: '600', color: CS.primary },
+    modalLabel: { fontSize: 12, fontWeight: '600', color: CS.muted, marginBottom: 8, letterSpacing: 0.5 },
     modalInput: {
-        borderWidth: 1.5, borderColor: C.border, borderRadius: 14,
-        paddingHorizontal: 16, height: 50, fontSize: 15, color: C.text, marginBottom: 24,
-        backgroundColor: C.bg,
+        borderWidth: 1.5, borderColor: CS.border, borderRadius: 14,
+        paddingHorizontal: 16, height: 50, fontSize: 15, color: CS.text, marginBottom: 24,
+        backgroundColor: CS.bg,
     },
     folderChip: {
         paddingHorizontal: 16,
         paddingVertical: 10,
-        backgroundColor: C.bg,
+        backgroundColor: CS.bg,
         borderWidth: 1.5,
-        borderColor: C.border,
+        borderColor: CS.border,
         borderRadius: 20,
         marginRight: 10,
     },
     folderChipSelected: {
         backgroundColor: '#EEF1FD',
-        borderColor: C.primary,
+        borderColor: CS.primary,
     },
     folderChipText: {
         fontSize: 14,
-        color: C.muted,
+        color: CS.muted,
         fontWeight: '600',
     },
     folderChipTextSelected: {
-        color: C.primary,
+        color: CS.primary,
     },
     modalBtns: { flexDirection: 'row', gap: 12, justifyContent: 'flex-end' },
     btnCancel: {
-        paddingHorizontal: 20, paddingVertical: 13, borderRadius: 12, backgroundColor: C.bg,
+        paddingHorizontal: 20, paddingVertical: 13, borderRadius: 12, backgroundColor: CS.bg,
     },
-    btnCancelTxt: { fontWeight: '600', color: C.text, fontSize: 14 },
+    btnCancelTxt: { fontWeight: '600', color: CS.text, fontSize: 14 },
     btnConfirm: {
-        paddingHorizontal: 24, paddingVertical: 13, borderRadius: 12, backgroundColor: C.primary,
-        shadowColor: C.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+        paddingHorizontal: 24, paddingVertical: 13, borderRadius: 12, backgroundColor: CS.primary,
+        shadowColor: CS.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
     },
     btnConfirmTxt: { fontWeight: '700', color: '#fff', fontSize: 14 },
     // Recently Opened chips
@@ -1099,7 +1096,7 @@ const s = StyleSheet.create({
         width: 72, height: 72, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginBottom: 6,
     },
     recentChipName: {
-        fontSize: 11, fontWeight: '600', color: C.text, textAlign: 'center',
+        fontSize: 11, fontWeight: '600', color: CS.text, textAlign: 'center',
     },
 
     // ACTIVITY LIST
@@ -1118,8 +1115,8 @@ const s = StyleSheet.create({
         elevation: 1,
     },
     activityIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(75,110,245,0.08)', justifyContent: 'center', alignItems: 'center' },
-    activityText: { fontSize: 13, color: C.text },
-    activityTime: { fontSize: 11, color: C.muted, marginTop: 2 },
+    activityText: { fontSize: 13, color: CS.text },
+    activityTime: { fontSize: 11, color: CS.muted, marginTop: 2 },
 });
 
 

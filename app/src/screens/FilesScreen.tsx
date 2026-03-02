@@ -130,7 +130,8 @@ export default function FilesScreen({ navigation }: any) {
         const lastAccessed = lastAccessedRef.current.get(item.id) ?? 0;
         if (now - lastAccessed > 5 * 60 * 1000) {
             lastAccessedRef.current.set(item.id, now);
-            apiClient.patch(`/files/${item.id}/accessed`).catch(() => { });
+            // ✅ Fixed: server route is POST /files/:id/accessed (was PATCH → 404)
+            apiClient.post(`/files/${item.id}/accessed`).catch(() => { });
         }
         navigation.navigate('FilePreview', { files: filteredFiles, initialIndex: index });
     }, [filteredFiles, navigation]);

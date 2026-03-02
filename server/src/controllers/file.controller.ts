@@ -782,6 +782,10 @@ export const getStats = async (req: AuthRequest, res: Response) => {
             ),
         ]);
 
+        const byTypeRows = byType.rows;
+        const imageRow = byTypeRows.find((r: any) => r.category === 'image');
+        const videoRow = byTypeRows.find((r: any) => r.category === 'video');
+
         res.json({
             success: true,
             totalFiles: fileStats.rows[0].total_files,
@@ -789,7 +793,10 @@ export const getStats = async (req: AuthRequest, res: Response) => {
             totalFolders: folderCount.rows[0].total,
             trashCount: trashCount.rows[0].total,
             starredCount: starredCount.rows[0].total,
-            storageByType: byType.rows,
+            // Flat convenience fields for mobile storage card
+            image_count: imageRow ? imageRow.count : 0,
+            video_count: videoRow ? videoRow.count : 0,
+            storageByType: byTypeRows,
         });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });

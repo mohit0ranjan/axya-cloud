@@ -263,9 +263,11 @@ export default function FilePreviewScreen({ route, navigation }: any) {
             showToast('Downloading…');
 
             // New expo-file-system API: File.downloadFileAsync is static (SDK 54+)
-            const destFile = await File.downloadFileAsync(`${API_BASE}/files/${file.id}/download`,
+            // File(directory: Directory, filename: string) — Paths.document is a Directory
+            const destFile = await File.downloadFileAsync(
+                `${API_BASE}/files/${file.id}/download`,
                 new File(Paths.document, fileName),
-                { headers: { Authorization: `Bearer ${jwt}` }, idempotent: true }
+                { headers: { Authorization: `Bearer ${jwt}` } }
             );
 
             if (await Sharing.isAvailableAsync()) {

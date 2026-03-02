@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView, Dimensions, ActivityIndicator, Alert, TextInput, Modal, KeyboardAvoidingView, Platform } from 'react-native';
-import { MoreHorizontal, ArrowLeft, Folder as FolderIcon, Plus } from 'lucide-react-native';
+import { MoreHorizontal, ArrowLeft, Folder as FolderIcon, Plus, SortAsc, SortDesc, Filter } from 'lucide-react-native';
 import apiClient from '../services/apiClient';
 import { theme } from '../ui/theme';
 
@@ -13,10 +13,24 @@ const FOLDER_COLORS = [
 ];
 const getFolderColor = (index: number) => FOLDER_COLORS[index % FOLDER_COLORS.length];
 
+// ── Sort configuration ──────────────────────────────────────────────────────
+const SORT_OPTIONS = [
+    { key: 'created_at_DESC', label: 'Newest First', icon: SortDesc, col: 'created_at', order: 'DESC' },
+    { key: 'created_at_ASC', label: 'Oldest First', icon: SortAsc, col: 'created_at', order: 'ASC' },
+    { key: 'name_ASC', label: 'Name A→Z', icon: SortAsc, col: 'name', order: 'ASC' },
+    { key: 'name_DESC', label: 'Name Z→A', icon: SortDesc, col: 'name', order: 'DESC' },
+    { key: 'file_count_DESC', label: 'Most Files', icon: SortDesc, col: 'file_count', order: 'DESC' },
+    { key: 'file_count_ASC', label: 'Fewest Files', icon: SortAsc, col: 'file_count', order: 'ASC' },
+];
+
 export default function FoldersScreen({ navigation }: any) {
     const [isLoading, setIsLoading] = useState(true);
     const [folders, setFolders] = useState<any[]>([]);
     const [searchQuery, setSearchQuery] = useState('');
+
+    // Sort state
+    const [sortKey, setSortKey] = useState('created_at_DESC');
+    const [showSortModal, setShowSortModal] = useState(false);
 
     // Create
     const [isCreateModalVisible, setCreateModalVisible] = useState(false);
@@ -27,16 +41,17 @@ export default function FoldersScreen({ navigation }: any) {
     const [renameTarget, setRenameTarget] = useState<any>(null);
     const [renameValue, setRenameValue] = useState('');
 
-    useEffect(() => { fetchFolders(); }, []);
+    useEffect(() => { fetchFolders(); }, [sortKey]);
 
     const fetchFolders = async () => {
         setIsLoading(true);
         try {
-            const res = await apiClient.get('/files/folders');
+            const sortOpt = SORT_OPTIONS.find(s => s.key === sortKey) ?? SORT_OPTIONS[0];
+            const res = await apiClient.get(`/files/folders?sort=${sortOpt.col}&order=${sortOpt.order}`);
             if (res.data.success) {
                 setFolders(res.data.folders.map((f: any, i: number) => ({
-                    ...f,                              // ✅ preserve file_count + all API fields
-                    color: getFolderColor(i),          // override color with our palette
+                    ...f,
+                    color: getFolderColor(i),
                 })));
             }
         } catch {
@@ -114,6 +129,7 @@ export default function FoldersScreen({ navigation }: any) {
     };
 
     const filtered = folders.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()));
+    const currentSort = SORT_OPTIONS.find(s => s.key === sortKey) ?? SORT_OPTIONS[0];
 
     return (
         <SafeAreaView style={styles.container}>
@@ -121,14 +137,25 @@ export default function FoldersScreen({ navigation }: any) {
                 <TouchableOpacity style={styles.backBtn} onPress={() => navigation?.goBack()}>
                     <ArrowLeft color={theme.colors.textHeading} size={24} />
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.addBtn} onPress={() => setCreateModalVisible(true)}>
-                    <Plus color={theme.colors.textHeading} size={22} />
-                </TouchableOpacity>
+                <View style={styles.headerActions}>
+                    <TouchableOpacity
+                        style={styles.sortBtn}
+                        onPress={() => setShowSortModal(true)}
+                    >
+                        <Filter size={16} color={theme.colors.primary} />
+                        <Text style={styles.sortBtnText} numberOfLines={1}>
+                            {currentSort.label.split(' ').slice(0, 2).join(' ')}
+                        </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.addBtn} onPress={() => setCreateModalVisible(true)}>
+                        <Plus color={theme.colors.textHeading} size={22} />
+                    </TouchableOpacity>
+                </View>
             </View>
 
             <View style={styles.titleSection}>
                 <Text style={styles.pageTitle}>Your <Text style={{ fontWeight: '700' }}>Folders</Text></Text>
-                <Text style={styles.statsSubtitle}>{folders.length} folder{folders.length !== 1 ? 's' : ''}</Text>
+                <Text style={styles.statsSubtitle}>{folders.length} folder{folders.length !== 1 ? 's' : ''} · {currentSort.label}</Text>
             </View>
 
             <ScrollView style={styles.scrollArea} showsVerticalScrollIndicator={false}>
@@ -235,6 +262,48 @@ export default function FoldersScreen({ navigation }: any) {
                     </View>
                 </KeyboardAvoidingView>
             </Modal>
+
+            {/* ── Sort Modal ── */}
+            <Modal visible={showSortModal} transparent animationType="slide">
+                <TouchableOpacity
+                    style={styles.sortModalOverlay}
+                    activeOpacity={1}
+                    onPress={() => setShowSortModal(false)}
+                >
+                    <View style={styles.sortSheet}>
+                        <View style={styles.sortHandle} />
+                        <Text style={styles.sortSheetTitle}>Sort by</Text>
+                        {SORT_OPTIONS.map(opt => {
+                            const OptIcon = opt.icon;
+                            return (
+                                <TouchableOpacity
+                                    key={opt.key}
+                                    style={[styles.sortRow, sortKey === opt.key && { backgroundColor: theme.colors.primary + '18' }]}
+                                    onPress={() => { setSortKey(opt.key); setShowSortModal(false); }}
+                                >
+                                    <OptIcon
+                                        size={18}
+                                        color={sortKey === opt.key ? theme.colors.primary : theme.colors.textBody}
+                                    />
+                                    <Text style={[
+                                        styles.sortRowText,
+                                        { color: sortKey === opt.key ? theme.colors.primary : theme.colors.textHeading },
+                                        sortKey === opt.key && { fontWeight: '700' },
+                                    ]}>
+                                        {opt.label}
+                                    </Text>
+                                    {sortKey === opt.key && (
+                                        <View style={[styles.sortCheck, { backgroundColor: theme.colors.primary }]}>
+                                            <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>✓</Text>
+                                        </View>
+                                    )}
+                                </TouchableOpacity>
+                            );
+                        })}
+                        <View style={{ height: 24 }} />
+                    </View>
+                </TouchableOpacity>
+            </Modal>
         </SafeAreaView>
     );
 }
@@ -243,7 +312,15 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: theme.colors.background },
     header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingTop: 20 },
     backBtn: { padding: 8, marginLeft: -8 },
+    headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     addBtn: { padding: 4 },
+    sortBtn: {
+        flexDirection: 'row', alignItems: 'center', gap: 4,
+        paddingHorizontal: 10, borderRadius: 20, height: 34,
+        backgroundColor: theme.colors.background,
+        maxWidth: 130,
+    },
+    sortBtnText: { fontSize: 12, fontWeight: '600', color: theme.colors.primary },
 
     titleSection: { paddingHorizontal: 24, marginTop: 24, marginBottom: 24 },
     pageTitle: { fontSize: 30, fontWeight: '400', color: theme.colors.textHeading, letterSpacing: -0.5, marginBottom: 6 },
@@ -276,5 +353,32 @@ const styles = StyleSheet.create({
     modalInput: { width: '100%', height: 50, borderWidth: 1.5, borderColor: theme.colors.border, borderRadius: 12, paddingHorizontal: 16, fontSize: 16, marginBottom: 20, color: theme.colors.textHeading },
     modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12 },
     modalBtn: { paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12, backgroundColor: '#f1f5f9' },
-    modalBtnText: { color: theme.colors.textHeading, fontWeight: '600', fontSize: 14 }
+    modalBtnText: { color: theme.colors.textHeading, fontWeight: '600', fontSize: 14 },
+
+    // Sort modal
+    sortModalOverlay: {
+        flex: 1, backgroundColor: 'rgba(0,0,0,0.45)',
+        justifyContent: 'flex-end',
+    },
+    sortSheet: {
+        borderTopLeftRadius: 24, borderTopRightRadius: 24,
+        paddingHorizontal: 20, paddingTop: 12,
+        backgroundColor: '#fff',
+    },
+    sortHandle: {
+        width: 36, height: 4, borderRadius: 2,
+        alignSelf: 'center', marginBottom: 16,
+        backgroundColor: theme.colors.border,
+    },
+    sortSheetTitle: { fontSize: 18, fontWeight: '700', marginBottom: 12, color: theme.colors.textHeading },
+    sortRow: {
+        flexDirection: 'row', alignItems: 'center', gap: 12,
+        paddingVertical: 14, paddingHorizontal: 12,
+        borderRadius: 12, marginBottom: 4,
+    },
+    sortRowText: { flex: 1, fontSize: 15 },
+    sortCheck: {
+        width: 20, height: 20, borderRadius: 10,
+        justifyContent: 'center', alignItems: 'center',
+    },
 });

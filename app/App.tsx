@@ -24,6 +24,8 @@ import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import FilesScreen from './src/screens/FilesScreen';
 import UploadProgressOverlay from './src/components/UploadProgressOverlay';
 import ServerWakingOverlay from './src/components/ServerWakingOverlay';
+import AppErrorBoundary from './src/components/AppErrorBoundary';
+import { logger } from './src/utils/logger';
 
 import { ServerStatusProvider } from './src/context/ServerStatusContext';
 import { UploadProvider } from './src/context/UploadContext';
@@ -82,6 +84,23 @@ function RootNavigator() {
 
 export default function App() {
     useEffect(() => {
+        const globalAny = global as any;
+        const ErrorUtilsRef = globalAny?.ErrorUtils;
+        const existingGlobalHandler = ErrorUtilsRef?.getGlobalHandler?.();
+        if (ErrorUtilsRef?.setGlobalHandler) {
+            ErrorUtilsRef.setGlobalHandler((error: Error, isFatal?: boolean) => {
+                logger.error('frontend.global_error', 'Global JS error', {
+                    name: error?.name,
+                    message: error?.message,
+                    stack: error?.stack,
+                    isFatal: !!isFatal,
+                });
+                if (existingGlobalHandler) {
+                    existingGlobalHandler(error, isFatal);
+                }
+            });
+        }
+
         // Set up Android notification channel for upload progress
         // (required on Android 8+ for notifications to appear)
         if (Platform.OS === 'android') {
@@ -111,21 +130,29 @@ export default function App() {
                 shouldSetBadge: false,
             }),
         });
+
+        return () => {
+            if (ErrorUtilsRef?.setGlobalHandler && existingGlobalHandler) {
+                ErrorUtilsRef.setGlobalHandler(existingGlobalHandler);
+            }
+        };
     }, []);
 
     return (
-        <GestureHandlerRootView style={{ flex: 1 }}>
-            <ThemeProvider>
-                <ServerStatusProvider>
-                    <UploadProvider>
-                        <AuthProvider>
-                            <ToastProvider>
-                                <RootNavigator />
-                            </ToastProvider>
-                        </AuthProvider>
-                    </UploadProvider>
-                </ServerStatusProvider>
-            </ThemeProvider>
-        </GestureHandlerRootView>
+        <AppErrorBoundary>
+            <GestureHandlerRootView style={{ flex: 1 }}>
+                <ThemeProvider>
+                    <ServerStatusProvider>
+                        <UploadProvider>
+                            <AuthProvider>
+                                <ToastProvider>
+                                    <RootNavigator />
+                                </ToastProvider>
+                            </AuthProvider>
+                        </UploadProvider>
+                    </ServerStatusProvider>
+                </ThemeProvider>
+            </GestureHandlerRootView>
+        </AppErrorBoundary>
     );
 }

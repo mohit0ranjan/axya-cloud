@@ -382,7 +382,12 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                         </View>
                         <View style={styles.fileDetails}>
                             <Text style={styles.fileName} numberOfLines={1}>{item.name || item.file_name}</Text>
-                            <Text style={styles.fileMeta}>{isFolder ? 'Folder' : `${formatSize(item.size)} · ${new Date(item.created_at).toLocaleDateString()}`}</Text>
+                            <Text style={styles.fileMeta}>
+                                {isFolder
+                                    ? `Folder${item.file_count != null ? ` · ${item.file_count} items` : ''}`
+                                    : `${formatSize(item.size)} · ${new Date(item.created_at).toLocaleDateString()}`
+                                }
+                            </Text>
                         </View>
                         {!selectMode && (
                             <TouchableOpacity
@@ -554,6 +559,70 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                             >
                                 <Folder color="#D97706" size={20} />
                                 <Text style={[styles.modalBtnText, { color: theme.colors.textHeading }]}>{f.name}</Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                </TouchableOpacity>
+            </Modal>
+
+            {/* ── Rename Modal ────────────────────────────────────── */}
+            <Modal visible={isRenameModalVisible} transparent animationType="fade">
+                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.centeredModal}>
+                    <View style={styles.modalCard}>
+                        <Text style={styles.modalTitle}>✏️ Rename</Text>
+                        <TextInput
+                            style={styles.modalInput}
+                            placeholder="New name"
+                            value={renameValue}
+                            onChangeText={setRenameValue}
+                            autoFocus
+                            onSubmitEditing={handleRename}
+                        />
+                        <View style={styles.modalActions}>
+                            <TouchableOpacity style={styles.modalBtn} onPress={() => { setRenameModalVisible(false); setRenameTarget(null); }}>
+                                <Text style={styles.modalBtnText}>Cancel</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[styles.modalBtn, { backgroundColor: staticTheme.colors.primary }]} onPress={handleRename}>
+                                <Text style={[styles.modalBtnText, { color: '#fff' }]}>Rename</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </KeyboardAvoidingView>
+            </Modal>
+
+            {/* ── Sort Modal ─────────────────────────────────────── */}
+            <Modal visible={showSortModal} transparent animationType="slide">
+                <TouchableOpacity
+                    style={[styles.centeredModal, { justifyContent: 'flex-end', padding: 0 }]}
+                    activeOpacity={1}
+                    onPress={() => setShowSortModal(false)}
+                >
+                    <View style={[styles.modalCard, { borderRadius: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40 }]}>
+                        <View style={{ width: 36, height: 4, backgroundColor: staticTheme.colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: 16 }} />
+                        <Text style={[styles.modalTitle, { marginBottom: 12 }]}>Sort by</Text>
+                        {SORT_OPTIONS.map(opt => (
+                            <TouchableOpacity
+                                key={opt.key}
+                                style={{
+                                    flexDirection: 'row', alignItems: 'center', gap: 12,
+                                    paddingVertical: 14, paddingHorizontal: 12,
+                                    borderRadius: 12, marginBottom: 4,
+                                    backgroundColor: sortKey === opt.key ? staticTheme.colors.primary + '18' : 'transparent',
+                                }}
+                                onPress={() => { setSortKey(opt.key); setShowSortModal(false); }}
+                            >
+                                <Text style={{
+                                    flex: 1, fontSize: 15,
+                                    color: sortKey === opt.key ? staticTheme.colors.primary : staticTheme.colors.textHeading,
+                                    fontWeight: sortKey === opt.key ? '700' : '400',
+                                }}>
+                                    {opt.label}
+                                </Text>
+                                {sortKey === opt.key && (
+                                    <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: staticTheme.colors.primary, justifyContent: 'center', alignItems: 'center' }}>
+                                        <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>✓</Text>
+                                    </View>
+                                )}
                             </TouchableOpacity>
                         ))}
                     </View>

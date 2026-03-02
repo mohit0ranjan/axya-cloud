@@ -68,6 +68,8 @@ export default function UploadProgressOverlay() {
 
     const allDone = tasks.every(t => t.status === 'completed' || t.status === 'cancelled');
     const hasFailed = tasks.some(t => t.status === 'failed');
+    const queuedCount = tasks.filter(t => t.status === 'queued').length;
+    const queuedPct = activeCount > 0 ? Math.round((queuedCount / activeCount) * 100) : 0;
 
     const headerTitle = activeCount > 0
         ? `Uploading ${activeCount} file${activeCount > 1 ? 's' : ''}…`
@@ -80,19 +82,19 @@ export default function UploadProgressOverlay() {
     return (
         <Animated.View style={[s.container, { height: overlayHeight }]}>
             {/* ── Header ──────────────────────────────────────────────────── */}
-            <TouchableOpacity
-                activeOpacity={0.9}
-                onPress={toggleExpand}
-                style={s.header}
-            >
-                <View style={s.headerInfo}>
+            <View style={s.header}>
+                <TouchableOpacity
+                    activeOpacity={0.9}
+                    onPress={toggleExpand}
+                    style={s.headerInfo}
+                >
                     <Text style={s.headerTitle} numberOfLines={1}>
                         {headerTitle}
                     </Text>
                     <Text style={s.headerSub}>
-                        {overallProgress}% overall · {tasks.length} total
+                        {overallProgress}% overall � {queuedCount} queued ({queuedPct}%) � {tasks.length} total
                     </Text>
-                </View>
+                </TouchableOpacity>
 
                 <View style={s.headerActions}>
                     {hasFailed && (
@@ -111,7 +113,7 @@ export default function UploadProgressOverlay() {
                             : <ChevronUp color={C.text} size={22} />}
                     </TouchableOpacity>
                 </View>
-            </TouchableOpacity>
+            </View>
 
             {/* ── Overall progress strip ────────────────────────────────── */}
             <View style={s.mainProgressTrack}>
@@ -264,3 +266,5 @@ const s = StyleSheet.create({
         paddingBottom: 20,
     },
 });
+
+

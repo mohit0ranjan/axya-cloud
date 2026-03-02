@@ -198,21 +198,26 @@ function ImagePreviewItem({
 // Main Screen
 // ─────────────────────────────────────────────────────────────
 export default function FilePreviewScreen({ route, navigation }: any) {
-
-    const allFiles: any[] = useMemo(() =>
-        (route.params.files || []).filter((f: any) => f.mime_type !== 'inode/directory'),
-        [route.params.files]
+    const routeFiles = Array.isArray(route?.params?.files) ? route.params.files : [];
+    const fallbackFile = route?.params?.file ?? null;
+    const initialIndex: number = Number.isInteger(route?.params?.initialIndex) ? route.params.initialIndex : 0;
+    const allFiles: any[] = useMemo(
+        () => routeFiles.filter((f: any) => f?.mime_type !== 'inode/directory'),
+        [routeFiles]
     );
-    const initialIndex: number = route.params.initialIndex ?? 0;
+    const previewData = allFiles.length > 0 ? allFiles : (fallbackFile ? [fallbackFile] : []);
 
     const { showToast } = useToast();
 
     const [currentIndex, setCurrentIndex] = useState(initialIndex);
     const [isZoomed, setIsZoomed] = useState(false); // ✅ track zoom to toggle FlatList scroll
-    const file = useMemo(() => allFiles[currentIndex] || route.params.file, [currentIndex, allFiles]);
+    const file = useMemo(
+        () => previewData[currentIndex] || previewData[0] || null,
+        [currentIndex, previewData]
+    );
     const [jwt, setJwt] = useState('');
     const [downloading, setDownloading] = useState(false);
-    const [isStarred, setIsStarred] = useState(file?.is_starred || false);
+    const [isStarred, setIsStarred] = useState(false);
 
     // Share link
     const [shareModalVisible, setShareModalVisible] = useState(false);
@@ -226,13 +231,19 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
     // Rename
     const [renameModalVisible, setRenameModalVisible] = useState(false);
-    const [newName, setNewName] = useState(file.name || file.file_name || '');
+    const [newName, setNewName] = useState('');
 
     useEffect(() => {
         AsyncStorage.getItem('jwtToken').then(t => setJwt(t || ''));
     }, []);
 
+    useEffect(() => {
+        setIsStarred(!!file?.is_starred);
+        setNewName(file?.name || file?.file_name || '');
+    }, [file?.id, file?.is_starred, file?.name, file?.file_name]);
+
     const handleStar = useCallback(async () => {
+        if (!file?.id) return;
         try {
             await apiClient.patch(`/files/${file.id}/star`);
             setIsStarred((prev: boolean) => !prev);
@@ -241,6 +252,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     }, [file, isStarred]);
 
     const handleTrash = useCallback(() => {
+        if (!file?.id) return;
         Alert.alert('Move to Trash', `Move "${file.name || file.file_name}" to trash?`, [
             { text: 'Cancel', style: 'cancel' },
             {
@@ -256,6 +268,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     }, [file]);
 
     const handleDownload = useCallback(async () => {
+        if (!file?.id) return;
         if (!jwt) return;
         setDownloading(true);
         try {
@@ -281,6 +294,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     }, [file, jwt]);
 
     const handleCreateShare = async () => {
+        if (!file?.id) return;
         setIsCreatingShare(true);
         try {
             const res = await apiClient.post(`/files/${file.id}/share`, { expires_in_hours: 72 });
@@ -298,6 +312,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     };
 
     const handleRename = async () => {
+        if (!file?.id) return;
         if (!newName.trim()) return;
         try {
             await apiClient.patch(`/files/${file.id}`, { file_name: newName.trim() });
@@ -307,6 +322,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     };
 
     const handleMove = async (folderId: string | null) => {
+        if (!file?.id) return;
         try {
             await apiClient.patch(`/files/${file.id}`, { folder_id: folderId });
             showToast('File moved!');
@@ -364,7 +380,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         if (viewableItems.length > 0) {
             const idx = viewableItems[0].index ?? 0;
             setCurrentIndex(idx);
-            setIsStarred(allFiles[idx]?.is_starred || false);
+            setIsStarred(!!previewData[idx]?.is_starred);
         }
     }).current;
 
@@ -403,19 +419,19 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     </View>
                 ) : (
                     <FlatList
-                        data={allFiles.length > 0 ? allFiles : [file]}
+                        data={previewData}
                         horizontal
                         pagingEnabled
                         showsHorizontalScrollIndicator={false}
-                        initialScrollIndex={allFiles.length > 0 ? Math.min(initialIndex, allFiles.length - 1) : 0}
+                        initialScrollIndex={previewData.length > 0 ? Math.min(initialIndex, previewData.length - 1) : 0}
                         getItemLayout={(_, index) => ({ length: width, offset: width * index, index })}
                         scrollEventThrottle={16}
-                        keyExtractor={(item) => String(item.id)}
+                        keyExtractor={(item, index) => String(item?.id || index)}
                         renderItem={renderItem}
                         onViewableItemsChanged={onViewableItemsChanged}
                         viewabilityConfig={viewabilityConfig}
                         // ✅ Disable FlatList swiping when user is zoomed in on an image
-                        scrollEnabled={allFiles.length > 1 && !isZoomed}
+                        scrollEnabled={previewData.length > 1 && !isZoomed}
                         decelerationRate="fast"
                         snapToInterval={width}
                         snapToAlignment="start"
@@ -424,9 +440,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
             </View>
 
             {/* Slide indicator */}
-            {allFiles.length > 1 && (
+            {previewData.length > 1 && (
                 <View style={styles.dotRow}>
-                    {allFiles.map((_, i) => (
+                    {previewData.map((_, i) => (
                         <View key={i} style={[styles.dot, i === currentIndex && styles.dotActive]} />
                     ))}
                 </View>
@@ -434,9 +450,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
             {/* Details Bottom Sheet */}
             <View style={styles.detailSheet}>
-                <Text style={styles.fileName} numberOfLines={2}>{file.name || file.file_name}</Text>
+                <Text style={styles.fileName} numberOfLines={2}>{file?.name || file?.file_name || 'Unknown file'}</Text>
                 <Text style={styles.fileMeta}>
-                    {formatSize(file.size)} · {new Date(file.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                    {formatSize(file?.size || 0)} · {file?.created_at ? new Date(file.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'Unknown date'}
                 </Text>
 
                 {/* Action Row */}

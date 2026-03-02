@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import { shouldRetry, sleep } from '../utils/retry';
 import { serverStatusManager } from '../context/ServerStatusContext';
+import { logger } from '../utils/logger';
 
 const PRODUCTION_URL = 'https://axya-cloud.onrender.com';
 const PORT = '3000';
@@ -16,6 +17,7 @@ interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
     reqId?: string;
     _retryCount?: number;
     _maxRetries?: number;
+    _startedAt?: number;
 }
 
 const apiClient = axios.create({
@@ -46,6 +48,13 @@ const injectTokenAndLog = async (config: CustomAxiosRequestConfig) => {
 
     const reqId = Math.random().toString(36).substring(7);
     config.reqId = reqId;
+    config._startedAt = Date.now();
+    logger.info('frontend.api', 'request.start', {
+        reqId,
+        method: config.method,
+        url: config.url,
+        timeout: config.timeout,
+    });
 
     // Show server waking UI if a request takes longer than 2 seconds
     const timer = setTimeout(() => {
@@ -69,12 +78,29 @@ uploadClient.interceptors.request.use(injectTokenAndLog as any, Promise.reject);
 
 apiClient.interceptors.response.use(
     (response: any) => {
-        clearWakingTimer((response.config as CustomAxiosRequestConfig)?.reqId);
+        const cfg = response.config as CustomAxiosRequestConfig;
+        clearWakingTimer(cfg?.reqId);
+        logger.info('frontend.api', 'request.success', {
+            reqId: cfg?.reqId,
+            method: cfg?.method,
+            url: cfg?.url,
+            status: response.status,
+            durationMs: cfg?._startedAt ? Date.now() - cfg._startedAt : undefined,
+        });
         return response;
     },
     async (error: AxiosError): Promise<any> => {
         const config = error.config as CustomAxiosRequestConfig;
         clearWakingTimer(config?.reqId);
+        logger.error('frontend.api', 'request.error', {
+            reqId: config?.reqId,
+            method: config?.method,
+            url: config?.url,
+            code: error.code,
+            status: error.response?.status,
+            message: error.message,
+            durationMs: config?._startedAt ? Date.now() - config._startedAt : undefined,
+        });
 
         if (!config) return Promise.reject(error);
 
@@ -99,11 +125,29 @@ apiClient.interceptors.response.use(
 
 uploadClient.interceptors.response.use(
     (res) => {
-        clearWakingTimer((res.config as CustomAxiosRequestConfig)?.reqId);
+        const cfg = res.config as CustomAxiosRequestConfig;
+        clearWakingTimer(cfg?.reqId);
+        logger.info('frontend.upload', 'request.success', {
+            reqId: cfg?.reqId,
+            method: cfg?.method,
+            url: cfg?.url,
+            status: res.status,
+            durationMs: cfg?._startedAt ? Date.now() - cfg._startedAt : undefined,
+        });
         return res;
     },
     (e) => {
-        clearWakingTimer((e.config as CustomAxiosRequestConfig)?.reqId);
+        const cfg = e.config as CustomAxiosRequestConfig;
+        clearWakingTimer(cfg?.reqId);
+        logger.error('frontend.upload', 'request.error', {
+            reqId: cfg?.reqId,
+            method: cfg?.method,
+            url: cfg?.url,
+            code: e.code,
+            status: e.response?.status,
+            message: e.message,
+            durationMs: cfg?._startedAt ? Date.now() - cfg._startedAt : undefined,
+        });
         return Promise.reject(e);
     }
 );

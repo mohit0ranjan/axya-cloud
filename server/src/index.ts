@@ -8,6 +8,7 @@ import pool from './config/db';
 import authRoutes from './routes/auth.routes';
 import fileRoutes from './routes/file.routes';
 import shareRoutes from './routes/share.routes';
+import { logger } from './utils/logger';
 
 dotenv.config();
 
@@ -16,9 +17,16 @@ const port = process.env.PORT || 3000;
 
 // Logging all incoming requests (less verbose in production)
 app.use((req, res, next) => {
-    if (process.env.NODE_ENV !== 'production') {
-        console.log(`📥 [Request] ${req.method} ${req.url}`);
-    }
+    const startedAt = Date.now();
+    res.on('finish', () => {
+        logger.info('backend.http', 'request.complete', {
+            method: req.method,
+            url: req.originalUrl || req.url,
+            status: res.statusCode,
+            durationMs: Date.now() - startedAt,
+            ip: req.ip,
+        });
+    });
     next();
 });
 
@@ -94,7 +102,7 @@ app.get('/', (req: Request, res: Response) => {
 
 // ── Global Error Handler ────────────────────────────────────────────────────
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-    console.error('[UnhandledError]', err.message);
+    logger.error('backend.http', 'unhandled_error', { method: req.method, url: req.originalUrl || req.url, message: err.message, stack: err.stack });
     if (res.headersSent) return next(err);
 
     // Handle multer errors
@@ -120,12 +128,12 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 // ── Uncaught exception handler (prevent Render dyno crash) ──────────────────
 process.on('uncaughtException', (err) => {
-    console.error('💥 [UncaughtException]', err.message, err.stack);
+    logger.error('backend.process', 'uncaught_exception', { message: err.message, stack: err.stack });
     // Don't exit — let Render restart if needed via health check
 });
 
 process.on('unhandledRejection', (reason) => {
-    console.error('💥 [UnhandledRejection]', reason);
+    logger.error('backend.process', 'unhandled_rejection', { reason });
 });
 
 // ── Startup ──────────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@
 
 import { File } from 'expo-file-system';
 import { Platform } from 'react-native';
+import { Buffer } from 'buffer';
 import apiClient, { uploadClient } from './apiClient';
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
@@ -25,12 +26,7 @@ export type ProgressCallback = (progress: number, bytesUploaded: number) => void
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function uint8ArrayToBase64(bytes: Uint8Array): string {
-    let binary = '';
-    const chunkSize = 8192;
-    for (let i = 0; i < bytes.byteLength; i += chunkSize) {
-        binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)) as number[]);
-    }
-    return btoa(binary);
+    return Buffer.from(bytes).toString('base64');
 }
 
 /**

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
-import { Play, Pause, RotateCcw, Maximize, Volume2, VolumeX } from 'lucide-react-native';
+import { Play, Pause, Volume2, VolumeX } from 'lucide-react-native';
 
 interface VideoPlayerProps {
     url: string;
@@ -14,18 +14,29 @@ export default function VideoPlayer({ url, token, width: w, onError }: VideoPlay
     const [loading, setLoading] = useState(true);
     const [muted, setMuted] = useState(false);
     const [isPlaying, setIsPlaying] = useState(true);
+    const [loadError, setLoadError] = useState<string | null>(null);
 
     const player = useVideoPlayer({ uri: url, headers: { Authorization: `Bearer ${token}` } }, p => {
         p.loop = false;
+        p.muted = muted;
         p.play();
     });
 
     useEffect(() => {
-        const sub = player.addListener('statusChange', (payload) => {
-            if (payload.status === 'readyToPlay') setLoading(false);
+        setLoading(true);
+        setLoadError(null);
+        const sub = player.addListener('statusChange', (payload: any) => {
+            if (payload?.error) {
+                const message = payload.error?.message || 'Video failed to load';
+                setLoadError(message);
+                setLoading(false);
+                onError?.(payload.error);
+                return;
+            }
+            if (payload?.status === 'readyToPlay') setLoading(false);
         });
         return () => sub.remove();
-    }, [player]);
+    }, [player, onError]);
 
     useEffect(() => {
         const sub = player.addListener('playingChange', (payload) => {
@@ -34,6 +45,9 @@ export default function VideoPlayer({ url, token, width: w, onError }: VideoPlay
         return () => sub.remove();
     }, [player]);
 
+    useEffect(() => {
+        player.muted = muted;
+    }, [muted, player]);
 
     const togglePlay = () => {
         if (isPlaying) player.pause();
@@ -41,7 +55,6 @@ export default function VideoPlayer({ url, token, width: w, onError }: VideoPlay
     };
 
     const toggleMute = () => {
-        player.muted = !muted;
         setMuted(!muted);
     };
 
@@ -51,12 +64,19 @@ export default function VideoPlayer({ url, token, width: w, onError }: VideoPlay
                 player={player}
                 style={StyleSheet.absoluteFill}
                 contentFit="contain"
+                nativeControls
                 onPointerEnter={() => { }} // dummy
             />
 
             {loading && (
                 <View style={s.overlay}>
                     <ActivityIndicator size="large" color="#4B6EF5" />
+                </View>
+            )}
+
+            {loadError && (
+                <View style={s.errorOverlay}>
+                    <Text style={s.errorText} numberOfLines={3}>{loadError}</Text>
                 </View>
             )}
 
@@ -99,6 +119,18 @@ const s = StyleSheet.create({
         justifyContent: 'center',
         alignItems: 'center',
         backgroundColor: 'rgba(0,0,0,0.3)',
+    },
+    errorOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        justifyContent: 'center',
+        alignItems: 'center',
+        backgroundColor: 'rgba(0,0,0,0.55)',
+        paddingHorizontal: 16,
+    },
+    errorText: {
+        color: '#fff',
+        fontSize: 13,
+        textAlign: 'center',
     },
     controlsOverlay: {
         ...StyleSheet.absoluteFillObject,

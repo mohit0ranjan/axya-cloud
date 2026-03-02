@@ -92,7 +92,13 @@ export default function FileCard({ item, onPress, onTrash, onStar, onRestore, sh
             {/* Actions */}
             <View style={styles.actions}>
                 {onStar && !showRestore && (
-                    <TouchableOpacity style={styles.actionBtn} onPress={onStar}>
+                    <TouchableOpacity
+                        style={styles.actionBtn}
+                        onPress={(e) => {
+                            e.stopPropagation();
+                            onStar();
+                        }}
+                    >
                         <Star
                             color={item.is_starred ? '#FCBD0B' : theme.colors.textBody}
                             size={18}
@@ -101,12 +107,24 @@ export default function FileCard({ item, onPress, onTrash, onStar, onRestore, sh
                     </TouchableOpacity>
                 )}
                 {showRestore && onRestore && (
-                    <TouchableOpacity style={[styles.actionBtn, { backgroundColor: 'rgba(31,212,90,0.1)' }]} onPress={onRestore}>
+                    <TouchableOpacity
+                        style={[styles.actionBtn, { backgroundColor: 'rgba(31,212,90,0.1)' }]}
+                        onPress={(e) => {
+                            e.stopPropagation();
+                            onRestore();
+                        }}
+                    >
                         <Text style={{ fontSize: 11, fontWeight: '700', color: '#1FD45A' }}>Restore</Text>
                     </TouchableOpacity>
                 )}
                 {onTrash && (
-                    <TouchableOpacity style={[styles.actionBtn, { backgroundColor: 'rgba(239,68,68,0.08)' }]} onPress={onTrash}>
+                    <TouchableOpacity
+                        style={[styles.actionBtn, { backgroundColor: 'rgba(239,68,68,0.08)' }]}
+                        onPress={(e) => {
+                            e.stopPropagation();
+                            onTrash();
+                        }}
+                    >
                         <Trash2 color={theme.colors.danger} size={18} />
                     </TouchableOpacity>
                 )}

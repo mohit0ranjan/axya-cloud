@@ -17,6 +17,7 @@ import { File, Paths } from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import { Buffer } from 'buffer';
 import apiClient, { uploadClient } from './apiClient';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -58,12 +59,7 @@ export interface UploadTask {
 
 /** Convert a Uint8Array to a Base64 string (used for native chunk uploads) */
 function uint8ArrayToBase64(bytes: Uint8Array): string {
-    let binary = '';
-    const chunkSize = 8192;
-    for (let i = 0; i < bytes.byteLength; i += chunkSize) {
-        binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)) as number[]);
-    }
-    return btoa(binary);
+    return Buffer.from(bytes).toString('base64');
 }
 
 /**
@@ -194,14 +190,18 @@ class UploadManager {
         );
 
         if (active.length > 0) {
-            const overallProgress = Math.round(
-                active.reduce((acc, t) => acc + t.progress, 0) / active.length
+            const totalWeight = active.reduce((acc, t) => acc + Math.max(t.file.size || 1, 1), 0);
+            const weightedProgress = active.reduce(
+                (acc, t) => acc + (Math.max(t.file.size || 1, 1) * Math.max(0, Math.min(100, t.progress))),
+                0
             );
+            const overallProgress = Math.round(weightedProgress / totalWeight);
             const uploadingNow = this.tasks.filter(t => t.status === 'uploading').length;
             const queuedCount = this.tasks.filter(t => t.status === 'queued').length;
+            const queuedPct = Math.round((queuedCount / active.length) * 100);
             const parts: string[] = [];
             if (uploadingNow > 0) parts.push(`${uploadingNow} uploading`);
-            if (queuedCount > 0) parts.push(`${queuedCount} queued`);
+            if (queuedCount > 0) parts.push(`${queuedCount} queued (${queuedPct}%)`);
 
             try {
                 await Notifications.scheduleNotificationAsync({

@@ -523,7 +523,7 @@ export default function HomeScreen({ navigation }: any) {
                                         key={f.id}
                                         style={s.recentChip}
                                         activeOpacity={0.75}
-                                        onPress={() => navigation.navigate('FilePreview', { file: f })}
+                                        onPress={() => navigation.navigate('FilePreview', { files: [f], initialIndex: 0 })}
                                     >
                                         {isMedia && token ? (
                                             <Image

@@ -6,12 +6,33 @@ import crypto from 'crypto';
 import pool from '../config/db';
 import { getDynamicClient } from '../services/telegram.service';
 import { CustomFile } from 'telegram/client/uploads';
+import { logger } from '../utils/logger';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 const randomDelay = (min = 300, max = 800) =>
     sleep(Math.floor(Math.random() * (max - min + 1)) + min);
+
+const computeFileHashes = async (filePath: string): Promise<{ sha256: string; md5: string }> => {
+    return new Promise((resolve, reject) => {
+        const sha256 = crypto.createHash('sha256');
+        const md5 = crypto.createHash('md5');
+        const stream = fs.createReadStream(filePath);
+
+        stream.on('data', (chunk) => {
+            sha256.update(chunk);
+            md5.update(chunk);
+        });
+        stream.on('end', () => {
+            resolve({
+                sha256: sha256.digest('hex'),
+                md5: md5.digest('hex'),
+            });
+        });
+        stream.on('error', reject);
+    });
+};
 
 // Max retries for Telegram upload, with exponential backoff + FLOOD_WAIT handling
 const uploadToTelegramWithRetry = async (
@@ -179,6 +200,7 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
     // ── No duplicate, proceed with upload ──────────────────────────────────
     const uploadId = crypto.randomUUID();
     const filePath = path.join(__dirname, '../../uploads', `${uploadId}.tmp`);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
     // Mark upload session
     uploadState.set(uploadId, {
@@ -262,19 +284,12 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
         try {
             const client = await getDynamicClient(state.sessionString);
 
-            // ✅ Use createReadStream instead of readFileSync to avoid loading full file into memory
-            const fileSize = state.totalBytes || fs.statSync(state.filePath).size;
-            const fileStream = fs.createReadStream(state.filePath);
-            const fileBuffer = await new Promise<Buffer>((resolve, reject) => {
-                const chunks: Buffer[] = [];
-                fileStream.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-                fileStream.on('end', () => resolve(Buffer.concat(chunks)));
-                fileStream.on('error', reject);
-            });
+            if (!fs.existsSync(state.filePath)) {
+                throw new Error('Upload temp file missing before Telegram upload');
+            }
 
-            // Compute server-side hashes
-            const serverHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-            const serverMd5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
+            // Compute hashes with a stream to avoid loading large files into RAM.
+            const { sha256: serverHash, md5: serverMd5 } = await computeFileHashes(state.filePath);
 
             // Secondary server-side dedup (in case client hash was missing or mismatched)
             if (true) { // Always check at the end to be completely safe
@@ -349,7 +364,13 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
             setTimeout(() => { uploadState.delete(uploadId); }, 60 * 60 * 1000);
 
         } catch (err: any) {
-            console.error('[Telegram] Upload Error:', err.message);
+            logger.error('backend.upload', 'telegram_upload_failed', {
+                uploadId,
+                userId: state.userId,
+                fileName: state.fileName,
+                message: err.message,
+                stack: err.stack,
+            });
             if (fs.existsSync(state.filePath)) {
                 try { fs.unlinkSync(state.filePath); } catch { }
             }

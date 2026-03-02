@@ -6,7 +6,9 @@ import pool from '../config/db';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import os from 'os';
 import sharp from 'sharp';
+import { logger } from '../utils/logger';
 
 // ── Allowed MIME types ─────────────────────────────────────────────────────
 const ALLOWED_TYPES = [
@@ -433,7 +435,7 @@ export const downloadFile = async (req: AuthRequest, res: Response) => {
 // THUMBNAIL (MTProto) — with disk cache to avoid re-downloading per request
 // ✅ Fix #16: was re-downloading full image every request. Now caches to /tmp disk.
 // ─────────────────────────────────────────────────────────────────────────────
-const THUMB_CACHE_DIR = '/tmp/axya_thumbs';
+const THUMB_CACHE_DIR = path.join(os.tmpdir(), 'axya_thumbs');
 const THUMB_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // Ensure cache dir exists
@@ -519,7 +521,12 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
         }
 
     } catch (err: any) {
-        console.error(`❌ [Thumbnail Error]`, err.message);
+        logger.error('backend.thumbnail', 'thumbnail_failed', {
+            fileId: id,
+            userId: req.user.id,
+            message: err.message,
+            stack: err.stack,
+        });
         if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
     }
 };
@@ -552,7 +559,7 @@ export const streamFile = async (req: AuthRequest, res: Response) => {
         }
 
         // ✅ Download to /tmp file — keeps Node.js heap flat regardless of file size
-        tempFilePath = path.join('/tmp', `stream_${crypto.randomUUID()}`);
+        tempFilePath = path.join(os.tmpdir(), `stream_${crypto.randomUUID()}`);
         const outputPath = await client.downloadMedia(messages[0] as any, {
             outputFile: tempFilePath,
         } as any);
@@ -574,6 +581,13 @@ export const streamFile = async (req: AuthRequest, res: Response) => {
             const [startStr, endStr] = rangeHeader.replace(/bytes=/, '').split('-');
             const start = parseInt(startStr, 10);
             const end = endStr ? parseInt(endStr, 10) : fileBytes - 1;
+            if (Number.isNaN(start) || Number.isNaN(end) || start < 0 || end < start || end >= fileBytes) {
+                res.status(416).set({
+                    'Content-Range': `bytes */${fileBytes}`,
+                });
+                cleanup();
+                return res.end();
+            }
             const chunkSize = end - start + 1;
 
             res.status(206).set({
@@ -601,7 +615,12 @@ export const streamFile = async (req: AuthRequest, res: Response) => {
         return stream.pipe(res);
 
     } catch (err: any) {
-        console.error('❌ [Stream Error]', err.message);
+        logger.error('backend.stream', 'stream_failed', {
+            fileId: id,
+            userId: req.user.id,
+            message: err.message,
+            stack: err.stack,
+        });
         if (tempFilePath && fs.existsSync(tempFilePath)) try { fs.unlinkSync(tempFilePath); } catch { }
         if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
     }
@@ -641,7 +660,16 @@ export const createFolder = async (req: AuthRequest, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 export const fetchFolders = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
-    const { parent_id } = req.query;
+    const { parent_id, sort, order } = req.query;
+
+    // Whitelist allowed sort columns to prevent SQL injection
+    const ALLOWED_SORT: Record<string, string> = {
+        name: 'f.name',
+        created_at: 'f.created_at',
+        file_count: 'file_count',
+    };
+    const sortCol = ALLOWED_SORT[sort as string] || 'f.created_at';
+    const sortOrder = (order as string)?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
     try {
         let query = `
@@ -659,7 +687,7 @@ export const fetchFolders = async (req: AuthRequest, res: Response) => {
             query += ` AND f.parent_id IS NULL`;
         }
 
-        query += ` GROUP BY f.id ORDER BY f.created_at DESC`;
+        query += ` GROUP BY f.id ORDER BY ${sortCol} ${sortOrder}`;
 
         const result = await pool.query(query, params);
         res.json({ success: true, folders: result.rows });

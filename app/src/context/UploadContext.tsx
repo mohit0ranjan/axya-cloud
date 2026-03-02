@@ -67,9 +67,14 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const activeTasks = tasks.filter(
         t => t.status === 'uploading' || t.status === 'queued' || t.status === 'retrying'
     );
+    const totalWeight = activeTasks.reduce((acc, t) => acc + Math.max(t.file.size || 1, 1), 0);
+    const weightedProgress = activeTasks.reduce(
+        (acc, t) => acc + (Math.max(t.file.size || 1, 1) * Math.max(0, Math.min(100, t.progress))),
+        0
+    );
     const overallProgress =
         activeTasks.length > 0
-            ? Math.round(activeTasks.reduce((acc, t) => acc + t.progress, 0) / activeTasks.length)
+            ? Math.round(weightedProgress / totalWeight)
             : tasks.every(t => t.status === 'completed') && tasks.length > 0
                 ? 100
                 : 0;

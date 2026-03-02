@@ -70,7 +70,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
         if (isCompleted) return 'Upload complete';
         if (isFailed) return error || 'Upload failed';
         if (isCancelled) return 'Cancelled';
-        if (isRetrying) return `Retrying… (${retryCount}/${3})`;
+        if (isRetrying) return `Retrying� (${retryCount}/5)`;
         if (isPaused) return `Paused · ${formatFileSize(bytesUploaded ?? 0)} / ${formatFileSize(file.size)}`;
         if (isQueued) return 'Waiting in queue…';
         if (isUploading) {
@@ -281,3 +281,5 @@ const styles = StyleSheet.create({
 });
 
 export default React.memo(UploadProgress);
+
+

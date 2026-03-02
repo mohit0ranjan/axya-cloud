@@ -4,6 +4,7 @@ import { CustomFile } from 'telegram/client/uploads';
 import NodeCache from 'node-cache';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 dotenv.config();
 
 const getApiConfig = () => {
@@ -13,6 +14,9 @@ const getApiConfig = () => {
     return { apiId, apiHash };
 };
 const clientPool = new NodeCache({ stdTTL: 600, checkperiod: 120, useClones: false });
+clientPool.on('expired', async (_key, val: TelegramClient) => {
+    try { await val.disconnect(); } catch { }
+});
 
 const sessionKey = (s: string) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
 
@@ -34,10 +38,6 @@ export const getDynamicClient = async (sessionString: string) => {
     await client.connect();
 
     clientPool.set(key, client);
-
-    clientPool.on('expired', async (_key, val: TelegramClient) => {
-        try { await val.disconnect(); } catch { }
-    });
 
     return client;
 };
@@ -65,7 +65,7 @@ export const generateOTP = async (phoneNumber: string) => {
         await client.disconnect();
         return { phoneCodeHash, tempSession };
     } catch (e: any) {
-        console.error(`🧨 [Telegram Error]`, e.message);
+        logger.error('backend.telegram', 'otp_generate_failed', { message: e.message, stack: e.stack });
         try { await client.disconnect(); } catch (sh) { }
         throw e;
     }

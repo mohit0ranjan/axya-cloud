@@ -25,7 +25,10 @@ const apiClient = axios.create({
 
 export const uploadClient = axios.create({
     baseURL: API_BASE,
-    timeout: 0, // No timeout for uploads (handled manually)
+    // ✅ Was 0 (infinite) — a stalled upload would hang forever.
+    // 10 min is generous for a 100MB file on slow connections.
+    // UploadManager will retry via its own MAX_RETRIES logic.
+    timeout: 10 * 60 * 1000,
 });
 
 const requestTimers = new Map<string, NodeJS.Timeout>();

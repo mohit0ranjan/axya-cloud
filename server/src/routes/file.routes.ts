@@ -60,14 +60,35 @@ import {
 
 const uploadLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 100, // 100 uploads per 15 minutes limit
-    message: { success: false, error: 'Upload limit reached. Please wait.' },
+    // ✅ 100 photos = 100 init + ~200 chunks + 100 complete = 400+ requests
+    // Raised from 100 to 500 to accommodate batch uploads
+    max: 500,
+    keyGenerator: (req) => {
+        // Rate limit per user (JWT sub) not per IP — fairer for mobile users
+        const auth = req.headers.authorization || '';
+        if (auth.startsWith('Bearer ')) {
+            const token = auth.slice(7);
+            try {
+                const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+                return payload.id || req.ip || 'unknown';
+            } catch { }
+        }
+        return req.ip || 'unknown';
+    },
+    message: { success: false, error: 'Upload rate limit reached. Please wait 15 minutes.' },
+});
+
+// Separate, more lenient limiter for chunk uploads (many chunks per file)
+const chunkLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 2000,  // 100 files × 20 chunks each = 2000 chunk requests
+    message: { success: false, error: 'Chunk upload rate limit reached.' },
 });
 
 // ── File Upload & List ───────────────────────────────────────────────────────
 router.post('/upload/init', uploadLimiter, initUpload);
-router.post('/upload/chunk', upload.single('chunk'), uploadChunk);
-router.post('/upload/complete', completeUpload);
+router.post('/upload/chunk', chunkLimiter, upload.single('chunk'), uploadChunk);
+router.post('/upload/complete', uploadLimiter, completeUpload);
 router.get('/upload/status/:uploadId', checkUploadStatus);
 
 router.post('/upload', upload.single('file'), uploadFile); // Legacy fallback

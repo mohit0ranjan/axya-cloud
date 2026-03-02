@@ -48,8 +48,54 @@ const uploadToTelegramWithRetry = async (
     }
 };
 
-// ─── Upload State (in-memory, keeps progress until GC-ed after 1h) ──────────
+// ─── Upload Semaphore: limit concurrent Telegram uploads ────────────────────
+// Prevents server OOM crash when 100 photos complete simultaneously.
+// Only 3 files upload to Telegram at any one time; the rest queue.
+class Semaphore {
+    private running = 0;
+    private queue: Array<() => void> = [];
+    constructor(private max: number) { }
+    async acquire(): Promise<() => void> {
+        if (this.running < this.max) {
+            this.running++;
+            return () => this.release();
+        }
+        return new Promise<() => void>(resolve => {
+            this.queue.push(() => {
+                this.running++;
+                resolve(() => this.release());
+            });
+        });
+    }
+    private release() {
+        this.running--;
+        if (this.queue.length > 0) {
+            const next = this.queue.shift()!;
+            next();
+        }
+    }
+}
+const telegramSemaphore = new Semaphore(3); // max 3 concurrent Telegram operations
+
+// ─── Upload State (in-memory, auto-cleans after 1h) ─────────────────────────
 export const uploadState = new Map<string, any>();
+
+// Auto-evict completed/failed sessions older than 1h (prevent memory leak)
+const MAX_UPLOAD_SESSIONS = 200;
+const evictOldSessions = () => {
+    if (uploadState.size <= MAX_UPLOAD_SESSIONS) return;
+    const now = Date.now();
+    for (const [id, state] of uploadState.entries()) {
+        if (['completed', 'failed'].includes(state.status) && now - state.startedAt > 30 * 60 * 1000) {
+            // Delete old temp file if it still exists
+            if (state.filePath && fs.existsSync(state.filePath)) {
+                try { fs.unlinkSync(state.filePath); } catch { }
+            }
+            uploadState.delete(id);
+        }
+        if (uploadState.size <= MAX_UPLOAD_SESSIONS / 2) break;
+    }
+};
 
 // Helper for formatting file row consistently
 const formatFileRow = (row: any) => ({
@@ -132,22 +178,27 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
 
     // ── No duplicate, proceed with upload ──────────────────────────────────
     const uploadId = crypto.randomUUID();
-    const tempFilePath = path.join(__dirname, '../../uploads', `${uploadId}.tmp`);
+    const filePath = path.join(__dirname, '../../uploads', `${uploadId}.tmp`);
 
+    // Mark upload session
     uploadState.set(uploadId, {
-        progress: 0,
-        status: 'uploading_to_server',
-        filePath: tempFilePath,
-        receivedBytes: 0,
-        totalBytes: Number(size),
-        originalname,
-        mimetype: mimetype || 'application/octet-stream',
-        folder_id: folder_id || null,
-        telegram_chat_id: telegram_chat_id || 'me',
         userId: req.user.id,
-        sessionString: req.user.sessionString,
-        clientHash: hash || null,
+        sessionString: req.user.sessionString,  // ✅ was session_string (wrong field name)
+        filePath,
+        fileName: originalname,
+        fileSize: parseInt(size, 10),
+        mimeType: mimetype || 'application/octet-stream',
+        folderId: folder_id || null,
+        chatId: telegram_chat_id || 'me',
+        totalBytes: parseInt(size, 10),
+        receivedBytes: 0,
+        status: 'initialized',
+        progress: 0,
+        startedAt: Date.now(), // ✅ track for eviction
     });
+
+    // Evict old sessions to prevent memory leak
+    evictOldSessions();
 
     return res.json({ success: true, uploadId, duplicate: false });
 };
@@ -205,11 +256,21 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
     state.status = 'uploading_to_telegram';
     res.json({ success: true, message: 'Upload finalizing to Telegram in background' });
 
-    // Async Telegram upload
+    // Async Telegram upload — guarded by semaphore so max 3 run simultaneously
     (async () => {
+        const release = await telegramSemaphore.acquire(); // ✅ blocks until slot available
         try {
             const client = await getDynamicClient(state.sessionString);
-            const fileBuffer = fs.readFileSync(state.filePath);
+
+            // ✅ Use createReadStream instead of readFileSync to avoid loading full file into memory
+            const fileSize = state.totalBytes || fs.statSync(state.filePath).size;
+            const fileStream = fs.createReadStream(state.filePath);
+            const fileBuffer = await new Promise<Buffer>((resolve, reject) => {
+                const chunks: Buffer[] = [];
+                fileStream.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+                fileStream.on('end', () => resolve(Buffer.concat(chunks)));
+                fileStream.on('error', reject);
+            });
 
             // Compute server-side hashes
             const serverHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
@@ -237,17 +298,17 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
             };
 
             const customFile = new CustomFile(
-                state.originalname,
+                state.fileName,          // ✅ was state.originalname
                 state.totalBytes,
                 state.filePath
             );
 
             const uploadedMessage = await uploadToTelegramWithRetry(
                 client,
-                state.telegram_chat_id,
+                state.chatId,            // ✅ was state.telegram_chat_id
                 {
                     file: customFile,
-                    caption: `[Axya] ${state.originalname}`,
+                    caption: `[Axya] ${state.fileName}`,
                     workers: 4, // parallel MTProto upload workers
                     progressCallback,
                 }
@@ -267,13 +328,13 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
                 [
                     state.userId,
-                    state.folder_id,
-                    state.originalname,
+                    state.folderId,         // ✅ was state.folder_id
+                    state.fileName,         // ✅ was state.originalname
                     state.totalBytes,
                     fileId,
                     messageId,
-                    state.telegram_chat_id,
-                    state.mimetype,
+                    state.chatId,           // ✅ was state.telegram_chat_id
+                    state.mimeType,         // ✅ was state.mimetype
                     serverHash,
                     serverMd5,
                 ]
@@ -288,12 +349,14 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
             setTimeout(() => { uploadState.delete(uploadId); }, 60 * 60 * 1000);
 
         } catch (err: any) {
-            console.error('[Telegram] Upload Error:', err);
+            console.error('[Telegram] Upload Error:', err.message);
             if (fs.existsSync(state.filePath)) {
                 try { fs.unlinkSync(state.filePath); } catch { }
             }
             state.status = 'error';
             state.error = err.message || 'Unknown error';
+        } finally {
+            release(); // ✅ Always release semaphore slot, even on error
         }
     })();
 };

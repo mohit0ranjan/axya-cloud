@@ -35,9 +35,8 @@ export default function FoldersScreen({ navigation }: any) {
             const res = await apiClient.get('/files/folders');
             if (res.data.success) {
                 setFolders(res.data.folders.map((f: any, i: number) => ({
-                    id: f.id,
-                    name: f.name,
-                    color: getFolderColor(i)
+                    ...f,                              // ✅ preserve file_count + all API fields
+                    color: getFolderColor(i),          // override color with our palette
                 })));
             }
         } catch {
@@ -173,7 +172,9 @@ export default function FoldersScreen({ navigation }: any) {
                                 </View>
                                 <View style={styles.cardFooter}>
                                     <Text style={styles.folderName} numberOfLines={1}>{folder.name}</Text>
-                                    <Text style={styles.folderMeta}>Directory</Text>
+                                    <Text style={styles.folderMeta}>
+                                        {folder.file_count != null ? `${folder.file_count} file${folder.file_count !== 1 ? 's' : ''}` : 'Empty'}
+                                    </Text>
                                 </View>
                             </TouchableOpacity>
                         ))}

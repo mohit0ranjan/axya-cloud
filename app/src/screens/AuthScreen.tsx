@@ -108,7 +108,7 @@ export default function AuthScreen({ navigation }: any) {
 
     const handleVerifyOtp = async (inputOtp?: string) => {
         const otpToVerify = inputOtp || otp;
-        if (!otpToVerify || otpToVerify.length < 5) return;
+        if (!otpToVerify || otpToVerify.length < 5) return; // ✅ Telegram 5-digit codes
 
         setError(undefined);
         setIsLoading(true);
@@ -186,7 +186,8 @@ export default function AuthScreen({ navigation }: any) {
             </View>
 
             <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'position' : undefined}
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
                 style={styles.kavWrapper}
             >
                 <Animated.View style={[styles.sheet, {
@@ -243,8 +244,9 @@ export default function AuthScreen({ navigation }: any) {
                                 value={otp}
                                 onChange={(val) => {
                                     setOtp(val);
-                                    if (val.length === 6) handleVerifyOtp(val);
+                                    if (val.length === 5) handleVerifyOtp(val); // ✅ Telegram sends 5-digit codes
                                 }}
+                                length={5}
                                 onResend={handleSendCode}
                                 loading={isLoading}
                                 error={error}
@@ -254,7 +256,7 @@ export default function AuthScreen({ navigation }: any) {
                                 style={[styles.ctaBtn, (isLoading || otp.length < 5) && styles.ctaDisabled]}
                                 onPress={() => handleVerifyOtp()}
                                 activeOpacity={0.85}
-                                disabled={isLoading || otp.length < 5}
+                                disabled={isLoading || otp.length < 5}  // ✅ 5-digit codes
                             >
                                 {isLoading ? <ActivityIndicator color="#fff" /> : (
                                     <>

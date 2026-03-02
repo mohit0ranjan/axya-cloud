@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useContext, useCallback } from 'react';
+﻿import React, { useState, useEffect, useContext, useCallback, useRef } from 'react';
 import {
     View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView,
     ActivityIndicator, Alert, Platform, Modal, TextInput, KeyboardAvoidingView,
@@ -62,6 +62,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     const { theme } = useTheme();
     const { token } = useContext(AuthContext);
 
+    // ✅ Fix #29: debounce markAccessed — max 1 DB write per file per 5 min
+    const lastAccessedRef = useRef<Map<string, number>>(new Map());
+
     // Core data
     const [isLoading, setIsLoading] = useState(true);
     const [files, setFiles] = useState<any[]>([]);
@@ -107,9 +110,17 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     const fetchFolderFiles = async () => {
         setIsLoading(true);
         try {
-            const [sortCol, sortOrder] = sortKey.split('_').length === 3
-                ? [sortKey.split('_')[0] + '_' + sortKey.split('_')[1], sortKey.split('_')[2]]
-                : [sortKey.split('_')[0], sortKey.split('_')[1]];
+            // ✅ Robust sort key parsing using a lookup table
+            // Avoids brittle split('_') logic that breaks on keys like 'created_at_DESC'
+            const SORT_MAP: Record<string, { col: string; order: string }> = {
+                'created_at_DESC': { col: 'created_at', order: 'DESC' },
+                'created_at_ASC': { col: 'created_at', order: 'ASC' },
+                'file_name_ASC': { col: 'file_name', order: 'ASC' },
+                'file_name_DESC': { col: 'file_name', order: 'DESC' },
+                'file_size_DESC': { col: 'file_size', order: 'DESC' },
+                'file_size_ASC': { col: 'file_size', order: 'ASC' },
+            };
+            const { col: sortCol, order: sortOrder } = SORT_MAP[sortKey] ?? { col: 'created_at', order: 'DESC' };
 
             const [filesRes, foldersRes] = await Promise.all([
                 apiClient.get(`/files?folder_id=${encodeURIComponent(folderId)}&sort=${sortCol}&order=${sortOrder}&limit=1000`),
@@ -252,12 +263,19 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     const openInfoSheet = async (item: any) => {
         setInfoFile(item);
         try {
-            const [tagsRes, shareRes] = await Promise.all([
-                apiClient.get(`/files/${item.id}/tags`),
-                apiClient.get(`/files/${item.id}/share`),
-            ]);
+            // Tags always available
+            const tagsRes = await apiClient.get(`/files/${item.id}/tags`).catch(() => ({ data: { tags: [] } }));
             setInfoTags(tagsRes.data.tags || []);
-            setInfoShareLink(shareRes.data.link);
+
+            // ✅ Share link: use POST (not GET) to create/fetch the share link
+            // GET /files/:id/share doesn't exist — it's POST /files/:id/share
+            if (item.result_type !== 'folder') {
+                const shareRes = await apiClient.post(`/files/${item.id}/share`, { expiresIn: 72 })
+                    .catch(() => ({ data: { link: null } }));
+                setInfoShareLink(shareRes.data.link);
+            } else {
+                setInfoShareLink(null); // Folders don't have share links
+            }
         } catch { }
     };
 
@@ -311,7 +329,13 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     if (selectMode) toggleSelect(item.id);
                     else if (isFolder) navigation.push('FolderFiles', { folderId: item.id, folderName: item.name, breadcrumb: currentBreadcrumb });
                     else {
-                        apiClient.patch(`/files/${item.id}/accessed`).catch(() => { });
+                        // Debounced markAccessed: only write once per 5 min per file
+                        const now = Date.now();
+                        const last = lastAccessedRef.current.get(item.id) ?? 0;
+                        if (now - last > 5 * 60 * 1000) {
+                            lastAccessedRef.current.set(item.id, now);
+                            apiClient.patch(`/files/${item.id}/accessed`).catch(() => { });
+                        }
                         const previewableFiles = filteredFiles.filter(f => f.mime_type !== 'inode/directory');
                         const idx = previewableFiles.findIndex(f => f.id === item.id);
                         navigation.navigate('FilePreview', { files: previewableFiles, initialIndex: idx === -1 ? 0 : idx });
@@ -449,21 +473,32 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 </View>
             </View>
 
-            <ScrollView style={styles.scrollArea} showsVerticalScrollIndicator={false}>
-                {isLoading ? (
-                    <ActivityIndicator style={{ marginTop: 40 }} size="large" color={theme.colors.primary} />
-                ) : filteredFiles.length === 0 ? (
-                    <View style={styles.emptyState}>
-                        <Folder color="#cbd5e1" size={48} />
-                        <Text style={styles.emptyText}>{searchQuery ? 'No results found' : 'Folder is empty'}</Text>
-                    </View>
-                ) : isGridView ? (
-                    <View style={styles.gridContainer}>{filteredFiles.map(item => renderCard(item))}</View>
-                ) : (
-                    <View style={{ marginTop: 12 }}>{filteredFiles.map(item => renderCard(item))}</View>
-                )}
-                <View style={{ height: 100 }} />
-            </ScrollView>
+            {/* ✅ FlatList replaces ScrollView+map — virtualises large file lists */}
+            <FlatList
+                style={styles.scrollArea}
+                data={isLoading ? [] : filteredFiles}
+                keyExtractor={(item) => String(item.id)}
+                renderItem={({ item }) => renderCard(item)}
+                numColumns={isGridView ? 2 : 1}
+                key={isGridView ? 'grid' : 'list'}  // force re-layout on view toggle
+                columnWrapperStyle={isGridView ? styles.gridContainer : undefined}
+                contentContainerStyle={{ paddingBottom: 100, marginTop: isGridView ? 12 : 0 }}
+                showsVerticalScrollIndicator={false}
+                windowSize={10}
+                maxToRenderPerBatch={20}
+                initialNumToRender={15}
+                removeClippedSubviews
+                ListEmptyComponent={
+                    isLoading ? (
+                        <ActivityIndicator style={{ marginTop: 40 }} size="large" color={theme.colors.primary} />
+                    ) : (
+                        <View style={styles.emptyState}>
+                            <Folder color="#cbd5e1" size={48} />
+                            <Text style={styles.emptyText}>{searchQuery ? 'No results found' : 'Folder is empty'}</Text>
+                        </View>
+                    )
+                }
+            />
 
             {!selectMode && (
                 <TouchableOpacity style={styles.fab} onPress={handleUploadInit}>

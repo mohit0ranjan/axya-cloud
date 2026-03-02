@@ -41,7 +41,15 @@ const SPRING_CFG = { damping: 20, stiffness: 200 };
 // ImagePreviewItem — pinch-zoom, pan, double-tap reset
 // GestureHandlerRootView is at App.tsx root, not needed here.
 // ─────────────────────────────────────────────────────────────
-function ImagePreviewItem({ item, jwt }: { item: any; jwt: string }) {
+// ─────────────────────────────────────────────────────────────
+// ImagePreviewItem — pinch-zoom, pan, double-tap reset
+// GestureHandlerRootView is at App.tsx root, not needed here.
+// ─────────────────────────────────────────────────────────────
+function ImagePreviewItem({
+    item,
+    jwt,
+    onZoomChange,
+}: { item: any; jwt: string; onZoomChange?: (zoomed: boolean) => void }) {
     const [loading, setLoading] = useState(true);
     const [useFallback, setUseFallback] = useState(false);
     const [errored, setErrored] = useState(false);
@@ -86,15 +94,20 @@ function ImagePreviewItem({ item, jwt }: { item: any; jwt: string }) {
                 savedTransX.value = cx;
                 savedTransY.value = cy;
             }
+            // Notify parent when zoom state changes
+            if (onZoomChange) {
+                onZoomChange(scale.value > 1.05);
+            }
         });
 
-    // ── Pan (only active while zoomed; minDistance avoids FlatList conflict) ──
+    // ── Pan (only active while zoomed in — lets FlatList handle swipe at 1x) ──
     const pan = Gesture.Pan()
         .averageTouches(true)
-        .minDistance(4)              // short threshold so it activates fast
+        .minDistance(8)              // Higher threshold to avoid swallow at 1x
         .onUpdate(e => {
             'worklet';
-            if (scale.value <= 1) return; // don't steal from FlatList when at 1x
+            if (scale.value <= 1.05) return; // ✅ at 1x = don't consume, let FlatList swipe
+
             const maxX = (width * (scale.value - 1)) / 2;
             const maxY = (IMG_H * (scale.value - 1)) / 2;
             translateX.value = Math.max(-maxX, Math.min(maxX, savedTransX.value + e.translationX));
@@ -195,6 +208,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const { showToast } = useToast();
 
     const [currentIndex, setCurrentIndex] = useState(initialIndex);
+    const [isZoomed, setIsZoomed] = useState(false); // ✅ track zoom to toggle FlatList scroll
     const file = useMemo(() => allFiles[currentIndex] || route.params.file, [currentIndex, allFiles]);
     const [jwt, setJwt] = useState('');
     const [downloading, setDownloading] = useState(false);
@@ -317,7 +331,13 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         const streamUrl = `${API_BASE}/files/${item.id}/stream`;
 
         if (isImage) {
-            return <ImagePreviewItem item={item} jwt={jwt} />;
+            return (
+                <ImagePreviewItem
+                    item={item}
+                    jwt={jwt}
+                    onZoomChange={setIsZoomed}  // ✅ dynamically lock/unlock FlatList scroll
+                />
+            );
         }
         if (isVideo) {
             return (
@@ -385,15 +405,15 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                         horizontal
                         pagingEnabled
                         showsHorizontalScrollIndicator={false}
-                        initialScrollIndex={Math.min(initialIndex, Math.max(0, allFiles.length - 1))}
+                        initialScrollIndex={allFiles.length > 0 ? Math.min(initialIndex, allFiles.length - 1) : 0}
                         getItemLayout={(_, index) => ({ length: width, offset: width * index, index })}
                         scrollEventThrottle={16}
                         keyExtractor={(item) => String(item.id)}
                         renderItem={renderItem}
                         onViewableItemsChanged={onViewableItemsChanged}
                         viewabilityConfig={viewabilityConfig}
-                        // Disable scroll if there's only 1 file
-                        scrollEnabled={allFiles.length > 1}
+                        // ✅ Disable FlatList swiping when user is zoomed in on an image
+                        scrollEnabled={allFiles.length > 1 && !isZoomed}
                         decelerationRate="fast"
                         snapToInterval={width}
                         snapToAlignment="start"

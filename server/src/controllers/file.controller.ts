@@ -5,6 +5,7 @@ import { CustomFile } from 'telegram/client/uploads';
 import pool from '../config/db';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import sharp from 'sharp';
 
 // ── Allowed MIME types ─────────────────────────────────────────────────────
@@ -429,13 +430,33 @@ export const downloadFile = async (req: AuthRequest, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// THUMBNAIL (MTProto)
+// THUMBNAIL (MTProto) — with disk cache to avoid re-downloading per request
+// ✅ Fix #16: was re-downloading full image every request. Now caches to /tmp disk.
 // ─────────────────────────────────────────────────────────────────────────────
+const THUMB_CACHE_DIR = '/tmp/axya_thumbs';
+const THUMB_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// Ensure cache dir exists
+try { fs.mkdirSync(THUMB_CACHE_DIR, { recursive: true }); } catch { }
+
 export const getThumbnail = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
     const { id } = req.params;
 
     try {
+        // ✅ Check disk cache first — avoid Telegram download on repeated requests
+        const cacheFile = path.join(THUMB_CACHE_DIR, `${id}.webp`);
+        if (fs.existsSync(cacheFile)) {
+            const stat = fs.statSync(cacheFile);
+            const age = Date.now() - stat.mtimeMs;
+            if (age < THUMB_CACHE_TTL_MS && stat.size > 0) {
+                res.setHeader('Content-Type', 'image/webp');
+                res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+                res.setHeader('X-Cache', 'HIT');
+                return fs.createReadStream(cacheFile).pipe(res);
+            }
+        }
+
         const fileResult = await pool.query(
             'SELECT telegram_message_id, telegram_chat_id, file_name, mime_type FROM files WHERE id = $1 AND user_id = $2 AND is_trashed = false',
             [id, req.user.id]
@@ -449,6 +470,7 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
         if (!messages || messages.length === 0) return res.status(404).json({ success: false, error: 'File no longer exists' });
 
         res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+        res.setHeader('X-Cache', 'MISS');
 
         const message = messages[0];
         let buffer: Buffer | undefined;
@@ -463,16 +485,13 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
                     thumbIndex = thumbs.length > 3 ? 2 : thumbs.length - 1;
                 }
             }
-            console.log(`🖼️ [Thumbnail] Fetching native thumb for ${file_name}`);
             buffer = (await client.downloadMedia(message as any, { thumb: thumbIndex })) as Buffer | undefined;
         } catch (e: any) {
             console.warn(`[Thumbnail] Native thumb fetch rejected: ${e.message}`);
         }
 
-        // 2. Fallback: If Telegram failed to generate a thumb (common for documents/original photos)
-        // Let's directly fetch the full photo, compress it with Sharp so it renders instantly in the app
+        // 2. Fallback: download full image and compress
         if (!buffer || buffer.length === 0) {
-            console.log(`🖼️ [Thumbnail] No native thumb available. Downloading full image for edge-compression...`);
             buffer = (await client.downloadMedia(message as any)) as Buffer | undefined;
         }
 
@@ -480,20 +499,20 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
             return res.status(404).json({ success: false, error: 'Failed to extract any media data for thumbnail.' });
         }
 
-        // 3. Compress with Sharp before sending (Extremely important so Expo Image doesn't crash/timeout on big >3MB payloads!)
+        // 3. Compress with Sharp
         try {
-            console.log(`[Thumbnail] Compressing buffer of size: ${buffer.length}`);
-            // Use extremely safe default settings to render high-res visually but tiny filesize
             const optimizedBuffer = await sharp(buffer, { failOnError: false })
                 .resize(1080, 1080, { fit: 'inside', withoutEnlargement: true })
                 .toFormat('webp', { quality: 85, effort: 3 })
                 .toBuffer();
 
+            // ✅ Save to disk cache for next request
+            fs.writeFileSync(cacheFile, optimizedBuffer);
+
             res.setHeader('Content-Type', 'image/webp');
             return res.send(optimizedBuffer);
 
         } catch (sharpError: any) {
-            // Wait, what if it's a PDF or DOCX file? Sharp will fail. So we just send raw bytes.
             console.warn(`[Thumbnail] Sharp compression failed/skipped:`, sharpError.message);
             res.setHeader('Content-Type', mime_type || 'application/octet-stream');
             return res.send(buffer);
@@ -506,12 +525,16 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
 };
 
 
+
 // ─────────────────────────────────────────────────────────────────────────────
-// STREAM MEDIA (MTProto direct — Bot API removed, was broken without BOT_TOKEN)
+// STREAM MEDIA — Download to /tmp then stream with Range support
+// ✅ Fix #30: was downloadMedia()→RAM buffer → OOM on large videos
+// Now: download to temp disk file, stream with createReadStream, delete after.
 // ─────────────────────────────────────────────────────────────────────────────
 export const streamFile = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
     const { id } = req.params;
+    let tempFilePath: string | null = null;
 
     try {
         const fileResult = await pool.query(
@@ -520,27 +543,66 @@ export const streamFile = async (req: AuthRequest, res: Response) => {
         );
         if (fileResult.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
 
-        const { telegram_message_id, telegram_chat_id, mime_type, file_name, file_size } = fileResult.rows[0];
-
-        // For large video files (>50MB), Telegram Bot API cannot download them anyway.
-        // MTProto (GramJS) works for all sizes, so we use it directly here.
-        console.log(`🎬 [Stream] Starting MTProto stream for: ${file_name} (${file_size} bytes)`);
+        const { telegram_message_id, telegram_chat_id, mime_type, file_name } = fileResult.rows[0];
         const client = await getDynamicClient(req.user.sessionString);
 
         const messages = await client.getMessages(telegram_chat_id, { ids: parseInt(telegram_message_id, 10) });
-        if (!messages || messages.length === 0) return res.status(404).json({ success: false, error: 'File no longer exists in Telegram' });
+        if (!messages || messages.length === 0) {
+            return res.status(404).json({ success: false, error: 'File no longer exists in Telegram' });
+        }
 
-        const buffer = await client.downloadMedia(messages[0] as any);
-        if (!buffer) return res.status(500).json({ success: false, error: 'Failed to download from Telegram' });
+        // ✅ Download to /tmp file — keeps Node.js heap flat regardless of file size
+        tempFilePath = path.join('/tmp', `stream_${crypto.randomUUID()}`);
+        const outputPath = await client.downloadMedia(messages[0] as any, {
+            outputFile: tempFilePath,
+        } as any);
+        const diskPath = (typeof outputPath === 'string' ? outputPath : tempFilePath);
 
-        res.set('Content-Type', mime_type || 'video/mp4');
-        res.set('Content-Disposition', `inline; filename="${encodeURIComponent(file_name)}"`);
-        res.set('Content-Length', buffer.length.toString());
-        res.set('Cache-Control', 'private, max-age=3600');
-        res.set('Accept-Ranges', 'bytes');
-        res.send(buffer);
+        if (!fs.existsSync(diskPath)) {
+            return res.status(500).json({ success: false, error: 'Download to disk failed' });
+        }
+
+        const stat = fs.statSync(diskPath);
+        const fileBytes = stat.size;
+        const mimeType = mime_type || 'application/octet-stream';
+
+        const cleanup = () => { try { fs.unlinkSync(diskPath); } catch { } };
+
+        // ── HTTP Range (required for video seeking in mobile players) ──────────
+        const rangeHeader = req.headers.range;
+        if (rangeHeader) {
+            const [startStr, endStr] = rangeHeader.replace(/bytes=/, '').split('-');
+            const start = parseInt(startStr, 10);
+            const end = endStr ? parseInt(endStr, 10) : fileBytes - 1;
+            const chunkSize = end - start + 1;
+
+            res.status(206).set({
+                'Content-Range': `bytes ${start}-${end}/${fileBytes}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': String(chunkSize),
+                'Content-Type': mimeType,
+                'Cache-Control': 'private, max-age=3600',
+            });
+            const stream = fs.createReadStream(diskPath, { start, end });
+            stream.on('end', cleanup).on('error', cleanup);
+            return stream.pipe(res);
+        }
+
+        // ── Full file stream ───────────────────────────────────────────────────
+        res.set({
+            'Content-Type': mimeType,
+            'Content-Disposition': `inline; filename="${encodeURIComponent(file_name)}"`,
+            'Content-Length': String(fileBytes),
+            'Cache-Control': 'private, max-age=3600',
+            'Accept-Ranges': 'bytes',
+        });
+        const stream = fs.createReadStream(diskPath);
+        stream.on('end', cleanup).on('error', cleanup);
+        return stream.pipe(res);
+
     } catch (err: any) {
         console.error('❌ [Stream Error]', err.message);
+        if (tempFilePath && fs.existsSync(tempFilePath)) try { fs.unlinkSync(tempFilePath); } catch { }
         if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
     }
 };

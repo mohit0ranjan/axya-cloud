@@ -25,6 +25,7 @@ import { useTheme } from '../context/ThemeContext';
 
 
 import AxyaLogo from '../components/AxyaLogo';
+import { useServerKeepAlive } from '../hooks/useServerKeepAlive';
 
 const { width } = Dimensions.get('window');
 
@@ -79,6 +80,7 @@ export default function HomeScreen({ navigation }: any) {
     const { logout, user, token } = useContext(AuthContext);
     const { showToast } = useToast();
     const { theme, isDark } = useTheme();
+    useServerKeepAlive(); // ✅ keeps Render from sleeping every 10 minutes
 
     // Dynamic color tokens — react to dark/light mode
     const C = {
@@ -162,16 +164,37 @@ export default function HomeScreen({ navigation }: any) {
         load();
     }, []);
 
-    const load = async () => {
-        if (!homeData) setLoading(true);
+    const load = async (isRefresh = false) => {
+        if (!homeData && !isRefresh) setLoading(true);
         try {
-            const [statsRes, filesRes, foldersRes, recentAccessedRes, activityRes] = await Promise.all([
-                apiClient.get('/files/stats'),
-                apiClient.get('/files?limit=10&sort=created_at&order=DESC'),
-                apiClient.get('/files/folders'),
-                apiClient.get('/files/recent-accessed').catch(() => ({ data: { files: [] } })),
-                apiClient.get('/files/activity?limit=5').catch(() => ({ data: { success: true, activity: [] } })),
-            ]);
+            // ✅ Fix #14: stagger requests on cold start to avoid bursting Render
+            // When cache exists user already sees data, so fire all in parallel (fast refresh)
+            // When cache is empty (first load), stagger by 150ms each to not wake server with 5 simultaneous hits
+            let statsRes, filesRes, foldersRes, recentAccessedRes, activityRes;
+
+            if (homeData) {
+                // Cache warm — parallel is fine, user already sees content
+                [statsRes, filesRes, foldersRes, recentAccessedRes, activityRes] = await Promise.all([
+                    apiClient.get('/files/stats'),
+                    apiClient.get('/files?limit=10&sort=created_at&order=DESC'),
+                    apiClient.get('/files/folders'),
+                    apiClient.get('/files/recent-accessed').catch(() => ({ data: { files: [] } })),
+                    apiClient.get('/files/activity?limit=5').catch(() => ({ data: { success: true, activity: [] } })),
+                ]);
+            } else {
+                // Cold start — stagger to avoid 5-request burst hitting Render wake-up
+                const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+                statsRes = await apiClient.get('/files/stats');
+                await delay(150);
+                filesRes = await apiClient.get('/files?limit=10&sort=created_at&order=DESC');
+                await delay(150);
+                foldersRes = await apiClient.get('/files/folders');
+                // These two are non-critical, fire together after core data
+                [recentAccessedRes, activityRes] = await Promise.all([
+                    apiClient.get('/files/recent-accessed').catch(() => ({ data: { files: [] } })),
+                    apiClient.get('/files/activity?limit=5').catch(() => ({ data: { success: true, activity: [] } })),
+                ]);
+            }
 
             const newStats = statsRes.data.success ? statsRes.data : {};
             const newFiles = filesRes.data.success ? filesRes.data.files : [];

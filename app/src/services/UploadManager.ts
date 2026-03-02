@@ -115,9 +115,11 @@ async function readFileChunkAsBase64(
 
 class UploadManager {
     public tasks: UploadTask[] = [];
-    private readonly MAX_CONCURRENT = 2;
-    private readonly MAX_RETRIES = 3;
-    private readonly CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
+    // ✅ 3 concurrent uploads — matches server semaphore. Raised from 2 → 3 for throughput.
+    private readonly MAX_CONCURRENT = 3;
+    // ✅ 5 retries — handles Telegram FLOOD_WAIT and Render cold starts gracefully
+    private readonly MAX_RETRIES = 5;
+    private readonly CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB chunks
 
     private activeUploads = 0;
     private listeners: ((tasks: UploadTask[]) => void)[] = [];

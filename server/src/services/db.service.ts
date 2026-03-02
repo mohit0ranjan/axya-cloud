@@ -111,6 +111,10 @@ export const initSchema = async () => {
     `CREATE INDEX IF NOT EXISTS idx_files_user_hash ON files (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_files_md5 ON files (md5_hash) WHERE md5_hash IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_files_user_md5 ON files (user_id, md5_hash) WHERE md5_hash IS NOT NULL`,
+    // ✅ Composite index for fast sort queries (name, date, size) per user+folder
+    `CREATE INDEX IF NOT EXISTS idx_files_sort_date ON files (user_id, folder_id, created_at DESC) WHERE is_trashed = false`,
+    `CREATE INDEX IF NOT EXISTS idx_files_sort_name ON files (user_id, folder_id, file_name ASC) WHERE is_trashed = false`,
+    `CREATE INDEX IF NOT EXISTS idx_files_sort_size ON files (user_id, folder_id, file_size DESC) WHERE is_trashed = false`,
   ];
 
   try {

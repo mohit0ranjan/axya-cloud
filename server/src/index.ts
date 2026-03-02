@@ -14,14 +14,15 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Logging all incoming requests
+// Logging all incoming requests (less verbose in production)
 app.use((req, res, next) => {
-    console.log(`📥 [Request] ${req.method} ${req.url}`);
+    if (process.env.NODE_ENV !== 'production') {
+        console.log(`📥 [Request] ${req.method} ${req.url}`);
+    }
     next();
 });
 
 // Enable trust proxy for cloud platforms (Railway, Render, etc.)
-// This prevents express-rate-limit validation errors
 app.set('trust proxy', 1);
 
 // ── Security Middleware ─────────────────────────────────────────────────────
@@ -32,7 +33,7 @@ console.log(`🔒 [CORS] Configured origins:`, allowedOrigins);
 
 app.use(cors({
     origin: (origin, callback) => {
-        // Allow requests with no origin (mobile apps, curl)
+        // Allow requests with no origin (mobile apps, curl, Expo Go)
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
@@ -44,23 +45,29 @@ app.use(cors({
 }));
 
 // ── Body Parsing ────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// ⚠️ Reduced from 50mb to 10mb — chunks are sent individually, not whole file
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ── Global Rate Limiting ───────────────────────────────────────────────────
+// ✅ Raised from 200 to 1000 — 100 photos × (init + chunks + complete) = 400+ requests
 const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 200,
+    max: 1000,                 // ✅ was 200 — too strict for batch uploads
     standardHeaders: true,
     legacyHeaders: false,
-    message: { success: false, error: 'Too many requests, please try again later.' },
+    skip: (req) => {
+        // ✅ Skip rate limiting for health check endpoint
+        return req.path === '/health';
+    },
+    message: { success: false, error: 'Too many requests, please try again in 15 minutes.' },
 });
 app.use(globalLimiter);
 
-// Strict limiter for auth endpoints
+// Strict limiter for auth endpoints — prevent OTP brute force
 const authLimiter = rateLimit({
     windowMs: 10 * 60 * 1000,
-    max: 10,
+    max: 15,  // ✅ was 10, slightly raised to allow 5 phone numbers + retries
     message: { success: false, error: 'Too many auth attempts, please wait 10 minutes.' },
 });
 
@@ -69,31 +76,57 @@ app.use('/auth', authLimiter, authRoutes);
 app.use('/files', fileRoutes);
 app.use('/share', shareRoutes);
 
-// ── Health Check ────────────────────────────────────────────────────────────
+// ── Health Check (Render keep-alive friendly) ────────────────────────────────
 app.get('/health', (req: Request, res: Response) => {
-    res.json({ status: 'OK', service: 'Axya API', timestamp: new Date() });
+    res.json({
+        status: 'OK',
+        service: 'Axya API',
+        timestamp: new Date(),
+        uptime: Math.floor(process.uptime()),
+        memory: process.memoryUsage().heapUsed,
+    });
+});
+
+// ── Root route (prevents 404 on cold-start probe) ───────────────────────────
+app.get('/', (req: Request, res: Response) => {
+    res.json({ status: 'OK', service: 'Axya Cloud API', version: '1.0.0' });
 });
 
 // ── Global Error Handler ────────────────────────────────────────────────────
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     console.error('[UnhandledError]', err.message);
     if (res.headersSent) return next(err);
+
+    // Handle multer errors
+    if ((err as any).code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ success: false, error: 'File too large' });
+    }
+
     res.status(500).json({ success: false, error: 'Internal Server Error' });
 });
 
 // ── Graceful Shutdown ────────────────────────────────────────────────────────
 const shutdown = async (signal: string) => {
     console.log(`\n🛑 ${signal} received. Cleaning up...`);
-    if (signal === 'SIGINT') console.trace('Signal origin:');
     try {
         await pool.end();
-        console.log('✅ Connections closed. Process exit.');
+        console.log('✅ Database connections closed.');
     } catch (e) { }
     process.exit(0);
 };
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+// ── Uncaught exception handler (prevent Render dyno crash) ──────────────────
+process.on('uncaughtException', (err) => {
+    console.error('💥 [UncaughtException]', err.message, err.stack);
+    // Don't exit — let Render restart if needed via health check
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('💥 [UnhandledRejection]', reason);
+});
 
 // ── Startup ──────────────────────────────────────────────────────────────────
 const start = async () => {
@@ -104,6 +137,7 @@ const start = async () => {
         app.listen(port, () => {
             console.log(`🚀 Axya Server is READY!`);
             console.log(`🔗 Interface: http://localhost:${port}`);
+            console.log(`📊 Node: ${process.version} | Env: ${process.env.NODE_ENV || 'development'}`);
         });
     } catch (error: any) {
         console.error('❌ Failed to start server:', error.message);

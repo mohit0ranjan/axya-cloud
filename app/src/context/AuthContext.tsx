@@ -41,12 +41,26 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
                 if (userToken) {
                     setToken(userToken);
                     // Pre-verify token & fetch user identity here ONCE
+                    // Custom fetch with retry since Render.com goes to sleep
+                    const fetchWithRetry = async (url: string, retries = 5, delay = 2000): Promise<any> => {
+                        for (let i = 0; i < retries; i++) {
+                            try {
+                                const res = await fetch(url, { headers: { Authorization: `Bearer ${userToken}` } });
+                                if (res.ok) return await res.json();
+                                // if 502 Bad Gateway (Render waking), throw to trigger retry
+                                if (res.status === 502) throw new Error('Bad Gateway');
+                                // if not ok but not 502, just return json if possible (like 401 authorized error)
+                                return await res.json().catch(() => ({ success: false }));
+                            } catch (e) {
+                                if (i === retries - 1) throw e;
+                                await new Promise(r => setTimeout(r, delay));
+                            }
+                        }
+                    };
+
                     try {
-                        const res = await fetch(`${API_BASE}/auth/me`, {
-                            headers: { Authorization: `Bearer ${userToken}` }
-                        });
-                        const data = await res.json();
-                        if (data.success && data.user) {
+                        const data = await fetchWithRetry(`${API_BASE}/auth/me`);
+                        if (data && data.success && data.user) {
                             setUser(data.user);
                             setIsAuthenticated(true);
                         } else {
@@ -57,6 +71,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
                         }
                     } catch (e) {
                         // Network error on load - still admit user with cached session to persist state offline
+                        console.warn('Axya server might be off, offline mode fallback...', e);
                         setIsAuthenticated(true);
                     }
                 }

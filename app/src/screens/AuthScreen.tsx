@@ -32,6 +32,7 @@ export default function AuthScreen({ navigation }: any) {
 
     const [step, setStep] = useState<'phone' | 'otp'>('phone');
     const [isLoading, setIsLoading] = useState(false);
+    const [isWaking, setIsWaking] = useState(false);
     const [phone, setPhone] = useState('+');
     const [tempSession, setTempSession] = useState('');
     const [phoneCodeHash, setPhoneCodeHash] = useState('');
@@ -77,23 +78,37 @@ export default function AuthScreen({ navigation }: any) {
     const handleSendCode = async () => {
         if (!phone || phone.length < 5) return Alert.alert('Error', 'Please enter a valid phone number.');
         setIsLoading(true);
-        try {
-            console.log(`📡 [Auth] Attempting to reach: ${apiClient.defaults.baseURL}/auth/send-code`);
-            const res = await apiClient.post('/auth/send-code', { phoneNumber: phone });
-            if (res.data.success) {
-                setTempSession(res.data.tempSession);
-                setPhoneCodeHash(res.data.phoneCodeHash);
-                animateStep();
-                setStep('otp');
-            } else Alert.alert('Error', res.data.error || 'Failed to send code');
-        } catch (e: any) {
-            const errorMsg = e?.response?.data?.error || e.message || 'Unknown network error';
-            Alert.alert(
-                'Connection Error',
-                `URL: ${apiClient.defaults.baseURL}\n\nError: ${errorMsg}\n\nPlease ensure your backend is online and the URL is correct.`
-            );
-        }
-        finally { setIsLoading(false); }
+
+        const trySend = async (retries = 3): Promise<void> => {
+            try {
+                console.log(`📡 [Auth] Attempting to reach: ${apiClient.defaults.baseURL}/auth/send-code`);
+                const res = await apiClient.post('/auth/send-code', { phoneNumber: phone });
+                setIsWaking(false);
+                if (res.data.success) {
+                    setTempSession(res.data.tempSession);
+                    setPhoneCodeHash(res.data.phoneCodeHash);
+                    animateStep();
+                    setStep('otp');
+                } else Alert.alert('Error', res.data.error || 'Failed to send code');
+            } catch (e: any) {
+                // Determine if this is a cold-start sleep response (502 usually) or network timeout
+                if (retries > 0 && (!e.response || e.response.status === 502)) {
+                    setIsWaking(true);
+                    await new Promise(r => setTimeout(r, 4000));
+                    return trySend(retries - 1);
+                }
+
+                setIsWaking(false);
+                const errorMsg = e?.response?.data?.error || e.message || 'Unknown network error';
+                Alert.alert(
+                    'Connection Error',
+                    `Error: ${errorMsg}\n\nThe Axya Cloud server might be waking up (Render free tier). Please try again in 30 seconds.`
+                );
+            }
+        };
+
+        await trySend();
+        setIsLoading(false);
     };
 
     const handleVerifyOtp = async () => {
@@ -226,13 +241,17 @@ export default function AuthScreen({ navigation }: any) {
                                 activeOpacity={0.85}
                                 disabled={isLoading}
                             >
-                                {isLoading
-                                    ? <ActivityIndicator color="#fff" />
-                                    : <>
+                                {isLoading ? (
+                                    <>
+                                        <ActivityIndicator color="#fff" style={{ marginRight: 8 }} />
+                                        {isWaking && <Text style={styles.ctaText}>Waking server...</Text>}
+                                    </>
+                                ) : (
+                                    <>
                                         <Text style={styles.ctaText}>Send Code</Text>
                                         <ArrowRight color="#fff" size={20} />
                                     </>
-                                }
+                                )}
                             </TouchableOpacity>
                         </>
                     ) : (

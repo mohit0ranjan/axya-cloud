@@ -1,7 +1,8 @@
-import React, { useContext, useState } from 'react';
+import React, { useContext, useState, useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, Platform, View } from 'react-native';
+import * as Notifications from 'expo-notifications';
 
 import { AuthProvider, AuthContext } from './src/context/AuthContext';
 import { ToastProvider } from './src/context/ToastContext';
@@ -79,6 +80,38 @@ function RootNavigator() {
 }
 
 export default function App() {
+    useEffect(() => {
+        // Set up Android notification channel for upload progress
+        // (required on Android 8+ for notifications to appear)
+        if (Platform.OS === 'android') {
+            Notifications.setNotificationChannelAsync('upload_channel', {
+                name: 'File Uploads',
+                importance: Notifications.AndroidImportance.LOW, // LOW = no sound, non-intrusive
+                description: 'Shows file upload progress',
+                enableVibrate: false,
+                showBadge: false,
+            });
+        }
+
+        // Request notification permissions
+        Notifications.requestPermissionsAsync().then(({ status }) => {
+            if (status !== 'granted') {
+                console.warn('[Notifications] Permission not granted');
+            }
+        });
+
+        // Configure how notifications appear when app is in foreground
+        Notifications.setNotificationHandler({
+            handleNotification: async () => ({
+                shouldShowAlert: false,
+                shouldShowBanner: false, // SDK 55 required
+                shouldShowList: true,    // SDK 55 required — appears in notification drawer
+                shouldPlaySound: false,
+                shouldSetBadge: false,
+            }),
+        });
+    }, []);
+
     return (
         <ThemeProvider>
             <ServerStatusProvider>

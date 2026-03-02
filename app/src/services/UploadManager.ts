@@ -81,31 +81,71 @@ class UploadManager {
     }
 
     private async updateNotification() {
-        const activeTasks = this.tasks.filter(t => t.status === 'uploading' || t.status === 'queued' || t.status === 'retrying');
-        if (activeTasks.length > 0) {
-            const overallProgress = Math.round(activeTasks.reduce((acc, t) => acc + t.progress, 0) / activeTasks.length);
+        const activeTasks = this.tasks.filter(
+            t => t.status === 'uploading' || t.status === 'queued' || t.status === 'retrying'
+        );
+        const uploadingNow = this.tasks.filter(t => t.status === 'uploading').length;
+        const queuedCount = this.tasks.filter(t => t.status === 'queued').length;
 
-            Notifications.scheduleNotificationAsync({
+        if (activeTasks.length > 0) {
+            const allProgress = activeTasks.reduce((acc, t) => acc + t.progress, 0);
+            const overallProgress = Math.round(allProgress / activeTasks.length);
+
+            // Build status line — e.g. "2 uploading · 3 queued"
+            const parts: string[] = [];
+            if (uploadingNow > 0) parts.push(`${uploadingNow} uploading`);
+            if (queuedCount > 0) parts.push(`${queuedCount} queued`);
+            const statusLine = parts.join(' · ');
+
+            await Notifications.scheduleNotificationAsync({
                 identifier: 'upload_progress',
                 content: {
-                    title: 'Axya File Sync',
-                    body: `Uploading ${activeTasks.length} files... (${overallProgress}%)`,
-                    sticky: true,
-                    autoDismiss: false,
+                    title: `Axya · ${overallProgress}%`,
+                    body: statusLine || `${activeTasks.length} file(s) in progress...`,
+                    // Android-specific: shows a real determinate progress bar
+                    // (like Google Drive) when using expo-notifications ≥ SDK 51
+                    data: { type: 'upload_progress', progress: overallProgress },
+                    android: {
+                        channelId: 'upload_channel',
+                        ongoing: true,          // Cannot be swiped away while uploading
+                        onlyAlertOnce: true,    // Don't re-play sound on each update
+                        progress: {
+                            max: 100,
+                            current: overallProgress,
+                            indeterminate: overallProgress === 0,
+                        },
+                        smallIcon: 'notification_icon',
+                        color: '#4B6EF5',
+                        priority: Notifications.AndroidNotificationPriority.LOW,
+                    },
                 } as any,
                 trigger: null,
             });
         } else {
-            Notifications.dismissNotificationAsync('upload_progress');
+            // Upload session ended — dismiss progress, show result
+            await Notifications.dismissNotificationAsync('upload_progress');
+
             const completed = this.tasks.filter(t => t.status === 'completed').length;
             const failed = this.tasks.filter(t => t.status === 'failed').length;
 
             if (completed > 0 || failed > 0) {
-                Notifications.scheduleNotificationAsync({
+                const title = failed > 0
+                    ? `Upload finished ⚠️`
+                    : `Upload complete ✅`;
+                const body = failed > 0
+                    ? `${completed} done · ${failed} failed — tap to retry`
+                    : `${completed} file${completed > 1 ? 's' : ''} synced to Axya`;
+
+                await Notifications.scheduleNotificationAsync({
                     content: {
-                        title: 'Sync Finished ✅',
-                        body: `${completed} successful, ${failed} failed.`,
-                    },
+                        title,
+                        body,
+                        android: {
+                            channelId: 'upload_channel',
+                            color: failed > 0 ? '#EF4444' : '#1FD45A',
+                            priority: Notifications.AndroidNotificationPriority.DEFAULT,
+                        },
+                    } as any,
                     trigger: null,
                 });
             }
@@ -195,9 +235,10 @@ class UploadManager {
             nextTask.status = 'completed';
             nextTask.progress = 100;
         } catch (e: any) {
-            if (e.message === 'Cancelled' || nextTask.status === 'cancelled') {
+            const currentStatus = nextTask.status as UploadTask['status'];
+            if (e.message === 'Cancelled' || currentStatus === 'cancelled') {
                 nextTask.status = 'cancelled';
-            } else if (nextTask.status === 'paused') {
+            } else if (currentStatus === 'paused') {
                 // Keep it paused
             } else {
                 nextTask.retryCount++;

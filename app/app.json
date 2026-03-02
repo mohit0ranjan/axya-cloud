@@ -5,22 +5,36 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/axya_logo.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "splash": {
       "image": "./assets/axya_logo.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mohit.axya",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Axya needs access to save files to your library.",
+        "NSPhotoLibraryAddUsageDescription": "Axya saves downloaded files to your Photos.",
+        "NSDocumentPickerUsageDescription": "Axya needs to access files you want to upload."
+      }
     },
     "android": {
       "package": "com.mohit.axya",
+      "versionCode": 1,
+      "permissions": [
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "CAMERA",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE",
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/axya_logo.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/axya_logo.png"
+        "foregroundImage": "./assets/axya_logo.png"
       }
     },
     "web": {
@@ -29,7 +43,21 @@
     "plugins": [
       "expo-sharing",
       "expo-image",
-      "expo-video"
+      "expo-video",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/axya_logo.png",
+          "color": "#4B6EF5",
+          "sounds": []
+        }
+      ],
+      [
+        "expo-document-picker",
+        {
+          "iCloudContainerEnvironment": "Production"
+        }
+      ]
     ],
     "extra": {
       "eas": {

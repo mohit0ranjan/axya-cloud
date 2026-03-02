@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "4dca5509-f1ab-4894-9b61-d3e562e74477"
+      }
+    },
+    "android": {
+      "package": "com.mohit010.teledrive"
+    }
+  }
+}

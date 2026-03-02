@@ -8,7 +8,7 @@ import { Platform } from 'react-native';
 // - Physical device (iOS/Android): must use LAN IP
 //   Your WiFi IP: 192.168.1.47  — update if network changes
 // ─────────────────────────────────────────────────────────────────────────────
-const PRODUCTION_URL = 'https://axya-cloud-production.up.railway.app';
+const PRODUCTION_URL = 'https://axya-cloud.onrender.com';
 const LAN_IP = '192.168.1.47';
 const PORT = '3000';
 

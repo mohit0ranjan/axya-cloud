@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView, Dimensions, Alert, TextInput, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { MoreHorizontal, ArrowLeft, Folder as FolderIcon, Plus, SortAsc, SortDesc, Filter } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '../services/apiClient';
 import { theme } from '../ui/theme';
 import { EmptyState } from '../ui/EmptyState';
@@ -9,11 +10,14 @@ import { FolderCardSkeleton } from '../ui/Skeleton';
 const { width } = Dimensions.get('window');
 const CARD_MARGIN = 12;
 const CARD_WIDTH = (width - 48 - CARD_MARGIN) / 2;
+const HOME_FOLDER_PREVIEW_LIMIT = 4;
+const HOME_PINNED_FOLDERS_KEY = '@home_pinned_folder_ids_v1';
 
 const FOLDER_COLORS = [
     '#4B6EF5', '#1fd45a', '#FCBD0B', '#EF4444', '#9333EA', '#0D9488'
 ];
 const getFolderColor = (index: number) => FOLDER_COLORS[index % FOLDER_COLORS.length];
+const asArray = <T,>(value: any): T[] => (Array.isArray(value) ? value : []);
 
 // ── Sort configuration ──────────────────────────────────────────────────────
 const SORT_OPTIONS = [
@@ -42,8 +46,25 @@ export default function FoldersScreen({ navigation }: any) {
     const [isRenameModalVisible, setRenameModalVisible] = useState(false);
     const [renameTarget, setRenameTarget] = useState<any>(null);
     const [renameValue, setRenameValue] = useState('');
+    const [pinnedFolderIds, setPinnedFolderIds] = useState<string[]>([]);
 
     useEffect(() => { fetchFolders(); }, [sortKey]);
+    useEffect(() => {
+        const loadPinned = async () => {
+            try {
+                const raw = await AsyncStorage.getItem(HOME_PINNED_FOLDERS_KEY);
+                if (!raw) {
+                    setPinnedFolderIds([]);
+                    return;
+                }
+                const parsed = JSON.parse(raw);
+                setPinnedFolderIds(Array.isArray(parsed) ? parsed.map((id: any) => String(id)) : []);
+            } catch {
+                setPinnedFolderIds([]);
+            }
+        };
+        void loadPinned();
+    }, []);
 
     const fetchFolders = async () => {
         setIsLoading(true);
@@ -51,7 +72,8 @@ export default function FoldersScreen({ navigation }: any) {
             const sortOpt = SORT_OPTIONS.find(s => s.key === sortKey) ?? SORT_OPTIONS[0];
             const res = await apiClient.get(`/files/folders?sort=${sortOpt.col}&order=${sortOpt.order}`);
             if (res.data.success) {
-                setFolders(res.data.folders.map((f: any, i: number) => ({
+                const safeFolders = asArray(res.data.folders);
+                setFolders(safeFolders.map((f: any, i: number) => ({
                     ...f,
                     color: getFolderColor(i),
                 })));
@@ -91,12 +113,39 @@ export default function FoldersScreen({ navigation }: any) {
         }
     };
 
+    const persistPinnedFolders = async (ids: string[]) => {
+        setPinnedFolderIds(ids);
+        try {
+            await AsyncStorage.setItem(HOME_PINNED_FOLDERS_KEY, JSON.stringify(ids));
+        } catch {
+            Alert.alert('Error', 'Could not save Home folder selection');
+        }
+    };
+
+    const togglePinnedOnHome = async (folder: any) => {
+        const folderId = String(folder?.id ?? '');
+        if (!folderId) return;
+        if (pinnedFolderIds.includes(folderId)) {
+            await persistPinnedFolders(pinnedFolderIds.filter(id => id !== folderId));
+            return;
+        }
+        if (pinnedFolderIds.length >= HOME_FOLDER_PREVIEW_LIMIT) {
+            Alert.alert('Limit reached', `You can pin up to ${HOME_FOLDER_PREVIEW_LIMIT} folders on Home.`);
+            return;
+        }
+        await persistPinnedFolders([...pinnedFolderIds, folderId]);
+    };
+
     const openFolderMenu = (folder: any) => {
         Alert.alert(
             'Folder Options',
             `Manage "${folder.name}"`,
             [
                 { text: 'Cancel', style: 'cancel' },
+                {
+                    text: pinnedFolderIds.includes(String(folder.id)) ? 'Remove from Home' : 'Pin to Home',
+                    onPress: () => { void togglePinnedOnHome(folder); }
+                },
                 {
                     text: 'Rename',
                     onPress: () => {

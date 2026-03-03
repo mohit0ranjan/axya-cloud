@@ -31,6 +31,8 @@ import { useServerKeepAlive } from '../hooks/useServerKeepAlive';
 const { width } = Dimensions.get('window');
 const HOME_RECENT_FILES_PREVIEW_LIMIT = 3;
 const HOME_ACTIVITY_PREVIEW_LIMIT = 3;
+const HOME_FOLDER_PREVIEW_LIMIT = 4;
+const HOME_PINNED_FOLDERS_KEY = '@home_pinned_folder_ids_v1';
 
 // ── Static color tokens (used by StyleSheet.create which runs outside render) ──
 const CS = {
@@ -76,6 +78,8 @@ const formatDate = (d: string) => {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
+const asArray = <T,>(value: any): T[] => (Array.isArray(value) ? value : []);
+
 // ──────────────────────────────────────────────────────────────────────────────
 export default function HomeScreen({ navigation }: any) {
     const { logout, user, token } = useContext(AuthContext);
@@ -108,6 +112,9 @@ export default function HomeScreen({ navigation }: any) {
     const [folders, setFolders] = useState<any[]>([]);
     const [recentlyAccessed, setRecentlyAccessed] = useState<any[]>([]);
     const [activity, setActivity] = useState<any[]>([]);
+    const [pinnedFolderIds, setPinnedFolderIds] = useState<string[]>([]);
+    const [allFolders, setAllFolders] = useState<any[]>([]);
+    const [uploadFolderId, setUploadFolderId] = useState<string | null>(null);
 
 
     // Search
@@ -155,15 +162,26 @@ export default function HomeScreen({ navigation }: any) {
     useEffect(() => {
         if (homeData) { // Instantiate instantly from cache to prevent empty screen flashes
             setStats(homeData.stats);
-            setRecentFiles(homeData.files);
-            setFolders(homeData.folders.slice(0, 6));
-            setAllFolders(homeData.folders);
-            setRecentlyAccessed(homeData.recent);
-            setActivity(homeData.activity);
+            setRecentFiles(asArray(homeData.files));
+            setAllFolders(asArray(homeData.folders));
+            setRecentlyAccessed(asArray(homeData.recent));
+            setActivity(asArray(homeData.activity));
             setLoading(false);
         }
+        void hydratePinnedFolderIds();
         load();
     }, []);
+
+    useEffect(() => {
+        const unsubscribe = navigation?.addListener?.('focus', () => {
+            void hydratePinnedFolderIds();
+        });
+        return unsubscribe;
+    }, [navigation]);
+
+    useEffect(() => {
+        setFolders(buildHomeFolders(allFolders, pinnedFolderIds));
+    }, [allFolders, pinnedFolderIds]);
 
     const load = async (isRefresh = false) => {
         if (!homeData && !isRefresh) setLoading(true);
@@ -198,16 +216,15 @@ export default function HomeScreen({ navigation }: any) {
             }
 
             const newStats = statsRes.data.success ? statsRes.data : {};
-            const newFiles = filesRes.data.success ? filesRes.data.files : [];
-            const newFolders = foldersRes.data.success ? foldersRes.data.folders : [];
-            const newRecent = recentAccessedRes.data.files || [];
-            const newActivity = activityRes.data.success ? activityRes.data.activity : [];
+            const newFiles = filesRes.data.success ? asArray(filesRes.data.files) : [];
+            const newFolders = foldersRes.data.success ? asArray(foldersRes.data.folders) : [];
+            const newRecent = asArray(recentAccessedRes.data.files);
+            const newActivity = activityRes.data.success ? asArray(activityRes.data.activity) : [];
 
             setHomeData({ stats: newStats, files: newFiles, folders: newFolders, recent: newRecent, activity: newActivity });
 
             setStats(newStats);
             setRecentFiles(newFiles);
-            setFolders(newFolders.slice(0, 6));
             setAllFolders(newFolders);
             setRecentlyAccessed(newRecent);
             setActivity(newActivity);
@@ -222,8 +239,66 @@ export default function HomeScreen({ navigation }: any) {
 
     const { tasks, addUpload } = useUpload();
     const globalUploading = tasks.some(t => t.status === 'uploading' || t.status === 'queued');
-    const [allFolders, setAllFolders] = useState<any[]>([]);
-    const [uploadFolderId, setUploadFolderId] = useState<string | null>(null);
+
+    const normalizeFolderId = (value: any) => String(value ?? '').trim();
+
+    const buildHomeFolders = useCallback((sourceFolders: any[], pinnedIds: string[]) => {
+        if (!Array.isArray(sourceFolders) || sourceFolders.length === 0) return [];
+        const byId = new Map(sourceFolders.map((f) => [normalizeFolderId(f?.id), f]));
+        const pinnedExisting = pinnedIds
+            .map((id) => byId.get(id))
+            .filter(Boolean) as any[];
+        const pinnedSet = new Set(pinnedExisting.map((f) => normalizeFolderId(f?.id)));
+        const fallback = sourceFolders.filter((f) => !pinnedSet.has(normalizeFolderId(f?.id)));
+        return [...pinnedExisting, ...fallback].slice(0, HOME_FOLDER_PREVIEW_LIMIT);
+    }, []);
+
+    const persistPinnedFolderIds = useCallback(async (ids: string[]) => {
+        try {
+            await AsyncStorage.setItem(HOME_PINNED_FOLDERS_KEY, JSON.stringify(ids));
+        } catch {
+            showToast('Could not save Home folders', 'error');
+        }
+    }, [showToast]);
+
+    const hydratePinnedFolderIds = useCallback(async () => {
+        try {
+            const raw = await AsyncStorage.getItem(HOME_PINNED_FOLDERS_KEY);
+            if (!raw) {
+                setPinnedFolderIds([]);
+                return;
+            }
+            const parsed = JSON.parse(raw);
+            const next = Array.isArray(parsed)
+                ? parsed.map((id: any) => normalizeFolderId(id)).filter(Boolean)
+                : [];
+            setPinnedFolderIds(next);
+        } catch {
+            setPinnedFolderIds([]);
+        }
+    }, []);
+
+    const toggleFolderPinned = useCallback((folder: any) => {
+        const id = normalizeFolderId(folder?.id);
+        if (!id) return;
+        const isPinned = pinnedFolderIds.includes(id);
+        let nextIds: string[] = [];
+
+        if (isPinned) {
+            nextIds = pinnedFolderIds.filter((x) => x !== id);
+            showToast('Removed from Home folders');
+        } else {
+            if (pinnedFolderIds.length >= HOME_FOLDER_PREVIEW_LIMIT) {
+                showToast(`Only ${HOME_FOLDER_PREVIEW_LIMIT} folders can be pinned`, 'error');
+                return;
+            }
+            nextIds = [...pinnedFolderIds, id];
+            showToast('Pinned to Home folders');
+        }
+
+        setPinnedFolderIds(nextIds);
+        void persistPinnedFolderIds(nextIds);
+    }, [persistPinnedFolderIds, pinnedFolderIds, showToast]);
 
     const handlePickFile = async () => {
         setFabOpen(false);
@@ -494,6 +569,12 @@ export default function HomeScreen({ navigation }: any) {
                                                             [
                                                                 { text: "Cancel", style: "cancel" },
                                                                 {
+                                                                    text: pinnedFolderIds.includes(normalizeFolderId(folder.id))
+                                                                        ? "Remove from Home"
+                                                                        : "Pin to Home",
+                                                                    onPress: () => toggleFolderPinned(folder)
+                                                                },
+                                                                {
                                                                     text: "Rename",
                                                                     onPress: () => {
                                                                         setRenameFolderTarget(folder);
@@ -532,17 +613,19 @@ export default function HomeScreen({ navigation }: any) {
                                         </TouchableOpacity>
                                     );
                                 })}
-                                {/* Add folder card */}
-                                <TouchableOpacity
-                                    style={[s.folderGridCard, s.folderAddCard]}
-                                    onPress={() => setFolderModal(true)}
-                                    activeOpacity={0.75}
-                                >
-                                    <View style={s.folderAddIcon}>
-                                        <Plus color={C.primary} size={22} />
-                                    </View>
-                                    <Text style={[s.folderGridName, { color: C.primary }]}>New Folder</Text>
-                                </TouchableOpacity>
+                                {/* Keep Home folder area compact; create remains available via FAB */}
+                                {folders.length < HOME_FOLDER_PREVIEW_LIMIT && (
+                                    <TouchableOpacity
+                                        style={[s.folderGridCard, s.folderAddCard]}
+                                        onPress={() => setFolderModal(true)}
+                                        activeOpacity={0.75}
+                                    >
+                                        <View style={s.folderAddIcon}>
+                                            <Plus color={C.primary} size={22} />
+                                        </View>
+                                        <Text style={[s.folderGridName, { color: C.primary }]}>New Folder</Text>
+                                    </TouchableOpacity>
+                                )}
                             </View>
                         )}
                     </>

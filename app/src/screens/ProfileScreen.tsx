@@ -134,6 +134,17 @@ export default function ProfileScreen({ navigation }: any) {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + s[i];
     };
 
+    /** Split storage into { value, unit } with clean rounding */
+    const formatStorageSplit = (bytes: number): { value: string; unit: string } => {
+        if (!bytes) return { value: '0', unit: 'B' };
+        const mb = bytes / (1024 * 1024);
+        if (mb >= 1024) {
+            const gb = mb / 1024;
+            return { value: gb >= 10 ? Math.round(gb).toString() : gb.toFixed(1), unit: 'GB' };
+        }
+        return { value: Math.round(mb).toString(), unit: 'MB' };
+    };
+
     const formatDate = (d: string) =>
         new Date(d).toLocaleString('en-US', {
             month: 'short', day: 'numeric',
@@ -199,11 +210,17 @@ export default function ProfileScreen({ navigation }: any) {
                             color={C.primary}
                         />
                         <View style={[st.statDivider, { backgroundColor: C.border }]} />
-                        <StatItem
-                            label="Storage"
-                            value={loading ? '—' : formatSize(stats.totalBytes || 0)}
-                            color={C.success}
-                        />
+                        {(() => {
+                            const storage = loading ? { value: '—', unit: '' } : formatStorageSplit(stats.totalBytes || 0);
+                            return (
+                                <StatItem
+                                    label="Storage Used"
+                                    value={storage.value}
+                                    unit={storage.unit}
+                                    color={C.textHeading}
+                                />
+                            );
+                        })()}
                         <View style={[st.statDivider, { backgroundColor: C.border }]} />
                         <StatItem
                             label="Starred"
@@ -354,11 +371,14 @@ export default function ProfileScreen({ navigation }: any) {
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
-function StatItem({ label, value, color }: { label: string; value: string; color: string }) {
+function StatItem({ label, value, unit, color }: { label: string; value: string; unit?: string; color: string }) {
     return (
         <View style={st.statItem}>
-            <Text style={[st.statValue, { color }]}>{value}</Text>
-            <Text style={[st.statLabel]}>{label}</Text>
+            <View style={st.statValueRow}>
+                <Text style={[st.statValue, { color }]}>{value}</Text>
+                {unit ? <Text style={st.statUnit}>{unit}</Text> : null}
+            </View>
+            <Text style={st.statLabel}>{label}</Text>
         </View>
     );
 }
@@ -484,17 +504,28 @@ const st = StyleSheet.create({
     statsRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        paddingVertical: 20,
+        paddingVertical: 22,
         paddingHorizontal: 8,
     },
     statItem: {
         flex: 1,
         alignItems: 'center',
-        gap: 4,
+        justifyContent: 'center',
+    },
+    statValueRow: {
+        flexDirection: 'row',
+        alignItems: 'baseline',
+        gap: 3,
     },
     statValue: {
-        fontSize: 20,
-        fontWeight: '600',
+        fontSize: 28,
+        fontWeight: '700',
+        letterSpacing: -0.5,
+    },
+    statUnit: {
+        fontSize: 14,
+        fontWeight: '500',
+        color: '#94A3B8',
     },
     statLabel: {
         fontSize: 12,

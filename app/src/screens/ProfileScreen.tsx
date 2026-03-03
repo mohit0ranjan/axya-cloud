@@ -494,14 +494,13 @@ const st = StyleSheet.create({
     },
     statValue: {
         fontSize: 20,
-        fontWeight: '800',
-        letterSpacing: -0.3,
+        fontWeight: '600',
     },
     statLabel: {
-        fontSize: 11,
-        fontWeight: '600',
+        fontSize: 12,
+        fontWeight: '500',
         color: '#94A3B8',
-        letterSpacing: 0.3,
+        marginTop: 4,
     },
     statDivider: {
         width: 1,

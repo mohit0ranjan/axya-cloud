@@ -77,42 +77,7 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // ── Derived aggregate stats ──────────────────────────────────────────────
     // Computed from tasks snapshot so they stay in sync with React state
 
-    const stats: UploadStats = useMemo(() => {
-        const totalFiles = tasks.length;
-        const uploadedCount = tasks.filter(t => t.status === 'completed').length;
-        const queuedCount = tasks.filter(t => t.status === 'queued').length;
-        const failedCount = tasks.filter(t => t.status === 'failed').length;
-        const activeCount = tasks.filter(
-            t => t.status === 'uploading' || t.status === 'queued' || t.status === 'retrying'
-        ).length;
-        const uploadingCount = tasks.filter(t => t.status === 'uploading').length;
-        const pausedCount = tasks.filter(t => t.status === 'paused').length;
-        const cancelledCount = tasks.filter(t => t.status === 'cancelled').length;
-
-        const totalBytes = tasks.reduce((acc, t) => acc + Math.max(t.file.size || 1, 1), 0);
-        const uploadedBytes = tasks.reduce((acc, t) => {
-            if (t.status === 'completed') return acc + Math.max(t.file.size || 1, 1);
-            return acc + (t.bytesUploaded || 0);
-        }, 0);
-
-        const overallProgress = totalBytes > 0
-            ? Math.round(Math.min((uploadedBytes / totalBytes) * 100, 100))
-            : 0;
-
-        return {
-            totalFiles,
-            uploadedCount,
-            queuedCount,
-            failedCount,
-            activeCount,
-            uploadingCount,
-            pausedCount,
-            cancelledCount,
-            totalBytes,
-            uploadedBytes,
-            overallProgress,
-        };
-    }, [tasks]);
+    const stats: UploadStats = useMemo(() => uploadManager.getStats(), [tasks]);
 
     return (
         <UploadContext.Provider

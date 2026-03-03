@@ -183,7 +183,7 @@ async function ensureCached(
     telegramMessageId: string,
     telegramChatId: string,
     fileSize: number,
-): Promise<string> {
+): Promise<{ path: string; isComplete: boolean }> {
     const cachePath = getCachePath(fileId);
     const partialPath = getPartialPath(fileId);
 
@@ -194,12 +194,12 @@ async function ensureCached(
             downloadedBytes: fileSize || fs.statSync(cachePath).size,
             complete: true,
         });
-        return cachePath;
+        return { path: cachePath, isComplete: true };
     }
 
-    // 2. Already downloading? Wait on the same promise
+    // 2. Already downloading? Return partial immediately (non-blocking)
     if (downloadLocks.has(fileId)) {
-        return downloadLocks.get(fileId)!;
+        return { path: partialPath, isComplete: false };
     }
 
     // 3. Start new download with progress tracking
@@ -259,7 +259,8 @@ async function ensureCached(
     })();
 
     downloadLocks.set(fileId, downloadPromise);
-    return downloadPromise;
+    // Return immediately, progressive streaming relies on this not blocking
+    return { path: partialPath, isComplete: false };
 }
 
 // ─── Stream Status Endpoint ──────────────────────────────────────────────────
@@ -334,9 +335,9 @@ export const streamMedia = async (req: AuthRequest, res: Response) => {
         const fileSize = parseInt((fileRow as any).file_size, 10) || 0;
 
         // ── 2. Ensure file is cached on disk ────────────────────────────────────
-        let cachePath: string;
+        let cacheInfo: { path: string; isComplete: boolean };
         try {
-            cachePath = await ensureCached(
+            cacheInfo = await ensureCached(
                 String(fileId),
                 req.user.sessionString,
                 String(telegram_message_id),
@@ -351,9 +352,10 @@ export const streamMedia = async (req: AuthRequest, res: Response) => {
             return res.status(status).json({ success: false, error: e.message });
         }
 
+        const { path: activePath, isComplete } = cacheInfo;
+
         // ── 3. Get actual file size from disk ───────────────────────────────────
-        const stat = fs.statSync(cachePath);
-        const totalSize = stat.size;
+        const totalSize = isComplete ? fs.statSync(activePath).size : fileSize;
         const mimeType = mime_type || 'application/octet-stream';
 
         // ── 4. Parse Range header ───────────────────────────────────────────────
@@ -369,12 +371,44 @@ export const streamMedia = async (req: AuthRequest, res: Response) => {
                 end = match[2] ? parseInt(match[2], 10) : totalSize - 1;
                 isRangeRequest = true;
             }
+        }
 
-            if (start < 0 || end < start || start >= totalSize) {
-                res.status(416).set({ 'Content-Range': `bytes */${totalSize}` });
-                return res.end();
+        // ── Wait for partial file to have enough bytes (Progressive) ───────────
+        let availableBytes = totalSize;
+        if (!isComplete) {
+            const maxWaitTime = Date.now() + 30000; // 30s timeout
+            while (Date.now() < maxWaitTime) {
+                const prog = downloadProgress.get(String(fileId));
+                if (!prog || prog.error || prog.complete) break;
+
+                // If we have downloaded enough past the start offset to serve a small chunk (512KB)
+                if (prog.downloadedBytes > start + 512 * 1024 || prog.downloadedBytes === totalSize) {
+                    break;
+                }
+                // If we are near the end of the file
+                if (prog.downloadedBytes > start && (totalSize - start) < 512 * 1024) {
+                    break;
+                }
+                await new Promise(r => setTimeout(r, 500));
             }
-            end = Math.min(end, totalSize - 1);
+
+            const prog = downloadProgress.get(String(fileId));
+            if (prog && prog.error) {
+                throw new Error('Background download failed: ' + prog.error);
+            }
+            if (prog) {
+                availableBytes = prog.downloadedBytes;
+            }
+        }
+
+        // Limit the end offset to the bytes we physically have on disk right now
+        // This causes HTTP 206 Partial Content to return strictly what's ready,
+        // and mobile players will naturally loop back for the rest instantly!
+        end = Math.min(end, Math.max(0, availableBytes - 1));
+
+        if (start < 0 || end < start || start >= totalSize || availableBytes <= start) {
+            res.status(416).set({ 'Content-Range': `bytes */${totalSize}` });
+            return res.end();
         }
 
         const chunkLength = end - start + 1;
@@ -396,7 +430,7 @@ export const streamMedia = async (req: AuthRequest, res: Response) => {
         }
 
         // ── 6. Stream from disk cache ───────────────────────────────────────────
-        const stream = fs.createReadStream(cachePath, { start, end });
+        const stream = fs.createReadStream(activePath, { start, end });
 
         // FIX M1: Destroy read stream when client disconnects to free I/O
         req.on('close', () => stream.destroy());

@@ -102,21 +102,19 @@ const telegramSemaphore = new Semaphore(3); // max 3 concurrent Telegram operati
 export const uploadState = new Map<string, any>();
 
 // Auto-evict completed/failed sessions older than 1h (prevent memory leak)
-const MAX_UPLOAD_SESSIONS = 200;
-const evictOldSessions = () => {
-    if (uploadState.size <= MAX_UPLOAD_SESSIONS) return;
+setInterval(() => {
+    if (uploadState.size === 0) return;
     const now = Date.now();
     for (const [id, state] of uploadState.entries()) {
-        if (['completed', 'failed'].includes(state.status) && now - state.startedAt > 30 * 60 * 1000) {
-            // Delete old temp file if it still exists
-            if (state.filePath && fs.existsSync(state.filePath)) {
-                try { fs.unlinkSync(state.filePath); } catch { }
+        // Evict after 1 hour
+        if (['completed', 'error', 'failed'].includes(state.status) && now - state.startedAt > 60 * 60 * 1000) {
+            if (state.filePath) {
+                try { fs.rmSync(path.dirname(state.filePath), { recursive: true, force: true }); } catch { }
             }
             uploadState.delete(id);
         }
-        if (uploadState.size <= MAX_UPLOAD_SESSIONS / 2) break;
     }
-};
+}, 10 * 60 * 1000); // Run garbage collection every 10 minutes
 
 // Helper for formatting file row consistently
 const formatFileRow = (row: any) => ({
@@ -139,17 +137,30 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
 
     const { originalname, size, mimetype, folder_id, telegram_chat_id, hash } = req.body;
 
-    if (!originalname || !size) {
+    if (!originalname || size === undefined || size === null) {
         return res.status(400).json({ success: false, error: 'Missing file info (originalname, size required)' });
     }
 
     // ── Deduplication: check hash in DB ────────────────────────────────────
     if (hash) {
         try {
-            const existing = await pool.query(
-                `SELECT * FROM files WHERE (sha256_hash = $1 OR md5_hash = $1) AND user_id = $2 LIMIT 1`,
-                [hash, req.user.id]
-            );
+            let existing;
+            if (hash.length === 64) {
+                existing = await pool.query(
+                    `SELECT * FROM files WHERE sha256_hash = $1 AND user_id = $2 AND is_trashed = false LIMIT 1`,
+                    [hash, req.user.id]
+                );
+            } else if (hash.length === 32) {
+                existing = await pool.query(
+                    `SELECT * FROM files WHERE md5_hash = $1 AND user_id = $2 AND is_trashed = false LIMIT 1`,
+                    [hash, req.user.id]
+                );
+            } else {
+                existing = await pool.query(
+                    `SELECT * FROM files WHERE (sha256_hash = $1 OR md5_hash = $1) AND user_id = $2 AND is_trashed = false LIMIT 1`,
+                    [hash, req.user.id]
+                );
+            }
 
             if (existing.rows.length > 0) {
                 const existingFile = existing.rows[0];
@@ -199,8 +210,12 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
 
     // ── No duplicate, proceed with upload ──────────────────────────────────
     const uploadId = crypto.randomUUID();
-    const filePath = path.join(__dirname, '../../uploads', `${uploadId}.tmp`);
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const uploadDir = path.join(__dirname, '../../uploads', uploadId);
+    const filePath = path.join(uploadDir, originalname);
+    fs.mkdirSync(uploadDir, { recursive: true });
+
+    // Eagerly guarantee file existence to fix 0-byte missing file errors
+    fs.closeSync(fs.openSync(filePath, 'w'));
 
     // Mark upload session
     uploadState.set(uploadId, {
@@ -214,13 +229,11 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
         chatId: telegram_chat_id || 'me',
         totalBytes: parseInt(size, 10),
         receivedBytes: 0,
+        nextExpectedChunk: 0, // ✅ Fix 4: chunk ordering guard
         status: 'initialized',
         progress: 0,
         startedAt: Date.now(), // ✅ track for eviction
     });
-
-    // Evict old sessions to prevent memory leak
-    evictOldSessions();
 
     return res.json({ success: true, uploadId, duplicate: false });
 };
@@ -240,6 +253,13 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
         return res.status(400).json({ success: false, error: 'No chunk data provided' });
     }
 
+    // ✅ Fix 4: Validate chunk arrives in expected order
+    const idx = parseInt(chunkIndex, 10);
+    if (state.nextExpectedChunk !== undefined && idx !== state.nextExpectedChunk) {
+        if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        return res.status(409).json({ success: false, error: `Expected chunk ${state.nextExpectedChunk}, got ${idx}` });
+    }
+
     try {
         let chunkData: Buffer;
         if (req.file) {
@@ -251,6 +271,7 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
 
         fs.appendFileSync(state.filePath, chunkData);
         state.receivedBytes += chunkData.length;
+        state.nextExpectedChunk = idx + 1; // ✅ advance expected index
 
         return res.json({
             success: true,
@@ -273,6 +294,18 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
     const state = uploadState.get(uploadId);
     if (!state) return res.status(404).json({ success: false, error: 'Upload session not found' });
     if (state.userId !== req.user.id) return res.status(403).json({ success: false, error: 'Forbidden' });
+
+    // ✅ Fix 1: Idempotency guard — prevent duplicate Telegram uploads on retried /complete
+    if (state.status !== 'initialized') {
+        return res.json({ success: true, message: 'Already processing' });
+    }
+
+    // ✅ Reject 0-byte uploads — prevents FILE_PARTS_INVALID from Telegram
+    if (state.receivedBytes === 0) {
+        state.status = 'error';
+        state.error = 'No data received — file is 0 bytes';
+        return res.status(400).json({ success: false, error: 'No data received — cannot upload an empty file' });
+    }
 
     // Immediate response — Telegram upload runs async
     state.status = 'uploading_to_telegram';
@@ -298,7 +331,7 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                 [serverHash, serverMd5, state.userId]
             );
             if (preCheck.rows.length > 0) {
-                if (fs.existsSync(state.filePath)) fs.unlinkSync(state.filePath);
+                try { fs.rmSync(path.dirname(state.filePath), { recursive: true, force: true }); } catch (cleanupErr) { console.error('[Cleanup] Failed:', cleanupErr); }
                 state.status = 'completed';
                 state.progress = 100;
                 state.fileResult = formatFileRow(preCheck.rows[0]);
@@ -355,7 +388,7 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                 ]
             );
 
-            if (fs.existsSync(state.filePath)) fs.unlinkSync(state.filePath);
+            try { fs.rmSync(path.dirname(state.filePath), { recursive: true, force: true }); } catch (cleanupErr) { console.error('[Cleanup] Failed:', cleanupErr); }
 
             if (result.rows.length === 0) {
                 // Concurrent upload won the race — return the winning row
@@ -383,8 +416,8 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                 message: err.message,
                 stack: err.stack,
             });
-            if (fs.existsSync(state.filePath)) {
-                try { fs.unlinkSync(state.filePath); } catch { }
+            if (state.filePath) {
+                try { fs.rmSync(path.dirname(state.filePath), { recursive: true, force: true }); } catch (cleanupErr) { console.error('[Cleanup] Failed:', cleanupErr); }
             }
             state.status = 'error';
             state.error = err.message || 'Unknown error';

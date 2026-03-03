@@ -150,13 +150,13 @@ export const uploadFile = async (
     await uploadClient.post('/files/upload/complete', { uploadId }, { signal: abortSignal });
 
     // ── Step 5: Poll ──────────────────────────────────────────────────────
+    // ✅ Fix 5: Recursive setTimeout prevents overlapping poll requests
     await new Promise<void>((resolve, reject) => {
         const maxWait = Date.now() + 10 * 60 * 1000;
 
-        const timer = setInterval(async () => {
+        const poll = async () => {
             if (isCancelled() || abortSignal?.aborted || Date.now() > maxWait) {
-                clearInterval(timer);
-                reject(new Error('Cancelled'));
+                reject(new Error(Date.now() > maxWait ? 'Upload timed out' : 'Cancelled'));
                 return;
             }
 
@@ -165,26 +165,34 @@ export const uploadFile = async (
                 const { status, progress: tgProgress, error: tgError } = res.data;
 
                 if (status === 'completed') {
-                    clearInterval(timer);
                     onProgress(100, size);
                     resolve();
+                    return;
                 } else if (status === 'error') {
-                    clearInterval(timer);
                     reject(new Error(tgError || 'Telegram upload failed'));
+                    return;
                 } else {
                     onProgress(Math.round(50 + ((tgProgress || 0) * 0.5)), size * 0.5);
                 }
             } catch (e: any) {
                 if (e.name === 'CanceledError' || e.name === 'AbortError') {
-                    clearInterval(timer);
                     reject(new Error('Cancelled'));
+                    return;
                 }
+                if (e.response?.status === 404 || e.response?.status === 403) {
+                    reject(new Error(e.response?.data?.error || `Upload fatal error ${e.response?.status}`));
+                    return;
+                }
+                // Transient poll errors → keep polling
             }
-        }, 2000);
+
+            setTimeout(poll, 2000);
+        };
 
         abortSignal?.addEventListener('abort', () => {
-            clearInterval(timer);
             reject(new Error('Cancelled'));
         });
+
+        poll(); // Start loop
     });
 };

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { View, Text, TextInput, StyleSheet, Animated, Platform } from 'react-native';
 import { Phone } from 'lucide-react-native';
 
@@ -7,11 +7,27 @@ interface PhoneInputProps {
     onChangeText: (text: string) => void;
     error?: string;
     editable?: boolean;
+    autoFocus?: boolean;
+    onSubmitEditing?: () => void;
 }
 
-const PhoneInput: React.FC<PhoneInputProps> = ({ value, onChangeText, error, editable = true }) => {
+const PhoneInput: React.FC<PhoneInputProps> = ({
+    value,
+    onChangeText,
+    error,
+    editable = true,
+    autoFocus = false,
+    onSubmitEditing,
+}) => {
     const [isFocused, setIsFocused] = useState(false);
     const borderAnim = useRef(new Animated.Value(0)).current;
+    const inputRef = useRef<TextInput>(null);
+
+    useEffect(() => {
+        if (!autoFocus || !editable) return;
+        const t = setTimeout(() => inputRef.current?.focus(), 120);
+        return () => clearTimeout(t);
+    }, [autoFocus, editable]);
 
     const handleFocus = useCallback(() => {
         setIsFocused(true);
@@ -75,16 +91,23 @@ const PhoneInput: React.FC<PhoneInputProps> = ({ value, onChangeText, error, edi
                     error ? { backgroundColor: '#EF4444', opacity: 0.3 } : {},
                 ]} />
                 <TextInput
+                    ref={inputRef}
                     style={styles.input}
                     placeholder="98765 43210"
                     placeholderTextColor="#94A3B8"
                     keyboardType="phone-pad"
+                    inputMode="numeric"
                     value={value}
                     onChangeText={handleChange}
                     onFocus={handleFocus}
                     onBlur={handleBlur}
                     editable={editable}
                     maxLength={10}
+                    showSoftInputOnFocus
+                    returnKeyType="done"
+                    onSubmitEditing={onSubmitEditing}
+                    allowFontScaling={false}
+                    selectionColor="#4B6EF5"
                 />
                 <View style={[
                     styles.iconBox,

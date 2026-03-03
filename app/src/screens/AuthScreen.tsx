@@ -226,7 +226,7 @@ export default function AuthScreen({ navigation }: any) {
     const floatY = floatAnim.interpolate({ inputRange: [0, 1], outputRange: [0, -10] });
     const stepFadeIn = stepAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
     const stepSlide = stepAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] });
-    const keyboardOffset = Platform.OS === 'ios' ? 24 : 12;
+    const keyboardOffset = Platform.OS === 'ios' ? 24 : 0;
 
     return (
         <SafeAreaView style={styles.root}>
@@ -251,14 +251,14 @@ export default function AuthScreen({ navigation }: any) {
             </TouchableOpacity>
 
             <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
                 keyboardVerticalOffset={keyboardOffset}
                 style={{ flex: 1 }}
             >
                 <ScrollView
                     bounces={false}
                     showsVerticalScrollIndicator={false}
-                    keyboardShouldPersistTaps="always"
+                    keyboardShouldPersistTaps="handled"
                     keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
                     contentInsetAdjustmentBehavior="always"
                     onScrollBeginDrag={Keyboard.dismiss}
@@ -308,7 +308,6 @@ export default function AuthScreen({ navigation }: any) {
                         <Animated.View style={[styles.sheet, {
                             opacity: sheetOpacity,
                             transform: [{ translateY: sheetY }],
-                            maxHeight: isKeyboardVisible ? height * 0.86 : height * 0.76,
                         }]}>
                             <View style={styles.sheetHandle} />
 
@@ -337,6 +336,8 @@ export default function AuthScreen({ navigation }: any) {
                                             onChangeText={setPhone}
                                             error={error}
                                             editable={!isLoading}
+                                            autoFocus={step === 'phone' && !isLoading}
+                                            onSubmitEditing={handleSendCode}
                                         />
 
                                         <CTAButton
@@ -445,6 +446,7 @@ const styles = StyleSheet.create({
 
     // Sheet
     sheet: {
+        width: '100%',
         backgroundColor: '#fff',
         borderTopLeftRadius: 28, borderTopRightRadius: 28,
         paddingHorizontal: 24, paddingTop: 14, paddingBottom: 32,

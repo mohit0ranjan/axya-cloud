@@ -67,17 +67,17 @@
         }
       ]
     ],
-    "extra": {
-      "eas": {
-        "projectId": "efb34d25-0768-4aeb-af26-e35693c0eed8"
-      }
-    },
-    "owner": "mohit020202",
     "runtimeVersion": {
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/efb34d25-0768-4aeb-af26-e35693c0eed8"
-    }
+      "url": "https://u.expo.dev/9ccda867-5b6b-40b2-8c59-bec205538bba"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "9ccda867-5b6b-40b2-8c59-bec205538bba"
+      }
+    },
+    "owner": "mohit342"
   }
 }

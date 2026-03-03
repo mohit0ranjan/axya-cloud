@@ -31,7 +31,8 @@ import { useServerKeepAlive } from '../hooks/useServerKeepAlive';
 const { width } = Dimensions.get('window');
 const HOME_RECENT_FILES_PREVIEW_LIMIT = 3;
 const HOME_ACTIVITY_PREVIEW_LIMIT = 3;
-const HOME_FOLDER_PREVIEW_LIMIT = 4;
+const HOME_TOTAL_FOLDER_CARDS_LIMIT = 4; // includes "All Files" card
+const HOME_USER_FOLDER_PREVIEW_LIMIT = Math.max(0, HOME_TOTAL_FOLDER_CARDS_LIMIT - 1);
 const HOME_PINNED_FOLDERS_KEY = '@home_pinned_folder_ids_v1';
 
 // ── Static color tokens (used by StyleSheet.create which runs outside render) ──
@@ -250,7 +251,7 @@ export default function HomeScreen({ navigation }: any) {
             .filter(Boolean) as any[];
         const pinnedSet = new Set(pinnedExisting.map((f) => normalizeFolderId(f?.id)));
         const fallback = sourceFolders.filter((f) => !pinnedSet.has(normalizeFolderId(f?.id)));
-        return [...pinnedExisting, ...fallback].slice(0, HOME_FOLDER_PREVIEW_LIMIT);
+        return [...pinnedExisting, ...fallback].slice(0, HOME_USER_FOLDER_PREVIEW_LIMIT);
     }, []);
 
     const persistPinnedFolderIds = useCallback(async (ids: string[]) => {
@@ -288,8 +289,8 @@ export default function HomeScreen({ navigation }: any) {
             nextIds = pinnedFolderIds.filter((x) => x !== id);
             showToast('Removed from Home folders');
         } else {
-            if (pinnedFolderIds.length >= HOME_FOLDER_PREVIEW_LIMIT) {
-                showToast(`Only ${HOME_FOLDER_PREVIEW_LIMIT} folders can be pinned`, 'error');
+            if (pinnedFolderIds.length >= HOME_USER_FOLDER_PREVIEW_LIMIT) {
+                showToast(`Only ${HOME_USER_FOLDER_PREVIEW_LIMIT} folders can be pinned`, 'error');
                 return;
             }
             nextIds = [...pinnedFolderIds, id];
@@ -613,19 +614,7 @@ export default function HomeScreen({ navigation }: any) {
                                         </TouchableOpacity>
                                     );
                                 })}
-                                {/* Keep Home folder area compact; create remains available via FAB */}
-                                {folders.length < HOME_FOLDER_PREVIEW_LIMIT && (
-                                    <TouchableOpacity
-                                        style={[s.folderGridCard, s.folderAddCard]}
-                                        onPress={() => setFolderModal(true)}
-                                        activeOpacity={0.75}
-                                    >
-                                        <View style={s.folderAddIcon}>
-                                            <Plus color={C.primary} size={22} />
-                                        </View>
-                                        <Text style={[s.folderGridName, { color: C.primary }]}>New Folder</Text>
-                                    </TouchableOpacity>
-                                )}
+                                {/* Keep Home folder area fixed at 4 cards total; create remains available via FAB */}
                             </View>
                         )}
                     </>

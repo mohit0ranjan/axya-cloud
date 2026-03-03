@@ -14,7 +14,7 @@ import { logger } from './utils/logger';
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = Number(process.env.PORT) || 3000;
 
 // Logging all incoming requests (less verbose in production)
 app.use((req, res, next) => {
@@ -43,13 +43,7 @@ console.log(`🔒 [CORS] Configured origins:`, allowedOrigins);
 app.use(cors({
     origin: (origin, callback) => {
         // Allow requests with no origin (mobile apps, curl, Expo Go)
-        // Also allow local network and Expo dev origins dynamically
-        if (
-            !origin ||
-            allowedOrigins.includes(origin) ||
-            origin.startsWith('http://192.168.') ||
-            origin.startsWith('exp://')
-        ) {
+        if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
             console.error(`🛑 [CORS Error] Origin rejected: ${origin}`);
@@ -150,7 +144,7 @@ const start = async () => {
         console.log(`⏳ Starting Axya on Port ${port}...`);
         await initSchema();
 
-        app.listen(port as number, '0.0.0.0', () => {
+        app.listen(port, '0.0.0.0', () => {
             console.log(`🚀 Axya Server is READY!`);
             console.log(`🔗 Interface: http://0.0.0.0:${port}`);
             console.log(`📊 Node: ${process.version} | Env: ${process.env.NODE_ENV || 'development'}`);

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, TouchableOpacity,
     Animated, Dimensions, FlatList,
@@ -13,26 +13,36 @@ import { theme } from '../ui/theme';
 const { height } = Dimensions.get('window');
 
 function formatBytes(bytes: number): string {
-    if (bytes === 0) return '0 B';
+    if (bytes <= 0) return '0 B';
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(1024));
     return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${sizes[i]}`;
 }
 
+function formatSpeed(bytesPerSecond: number, isIdle: boolean): string {
+    if (isIdle) return '0 B/s';
+    if (!bytesPerSecond || bytesPerSecond <= 0) return '--';
+    return `${formatBytes(bytesPerSecond)}/s`;
+}
+
 function UploadProgressOverlay() {
     const {
         tasks,
-        cancelUpload, pauseUpload, resumeUpload, retryFailed, clearCompleted,
+        cancelUpload, pauseUpload, resumeUpload, clearCompleted,
         totalFiles, uploadedCount, queuedCount, failedCount,
         activeCount, overallProgress, totalBytes, uploadedBytes,
+        avgUploadSpeedBps,
     } = useUpload();
 
     const [isExpanded, setIsExpanded] = useState(false);
     const [isDismissed, setIsDismissed] = useState(false);
-    const animHeight = useRef(new Animated.Value(0)).current; // 0 = collapsed, 1 = expanded
-    const animFade = useRef(new Animated.Value(0)).current; // 0 = hidden, 1 = visible
+    const animExpand = useRef(new Animated.Value(0)).current;
 
-    // Un-dismiss when new files are added
+    const visibleTasks = useMemo(
+        () => tasks.filter(t => t.status !== 'cancelled'),
+        [tasks]
+    );
+
     const prevTotal = useRef(totalFiles);
     useEffect(() => {
         if (totalFiles > prevTotal.current) {
@@ -41,16 +51,12 @@ function UploadProgressOverlay() {
         prevTotal.current = totalFiles;
     }, [totalFiles]);
 
-    // Auto-hide when everything is completely done without errors
     const allDone = totalFiles > 0 && activeCount === 0 && queuedCount === 0;
     const isPerfectSuccess = allDone && failedCount === 0;
 
     useEffect(() => {
         if (isPerfectSuccess) {
-            // Auto dismiss after a short delay on perfect success
-            const timer = setTimeout(() => {
-                setIsDismissed(true);
-            }, 3000);
+            const timer = setTimeout(() => setIsDismissed(true), 3000);
             return () => clearTimeout(timer);
         }
     }, [isPerfectSuccess]);
@@ -58,50 +64,9 @@ function UploadProgressOverlay() {
     if (tasks.length === 0 || isDismissed) return null;
 
     const hasFailed = failedCount > 0;
-    const dedupCount = tasks.filter(t => t.duplicate).length;
-    const isErrorState = allDone && hasFailed;
-
-    const toggleExpand = () => {
-        const MIN_HEIGHT = 0;
-        const MAX_HEIGHT = Math.min(tasks.length * 110 + 80, height * 0.55); // Max height for list
-        if (isExpanded) {
-            Animated.parallel([
-                Animated.timing(animHeight, {
-                    toValue: MIN_HEIGHT,
-                    duration: theme.motion.duration,
-                    useNativeDriver: false,
-                }),
-                Animated.timing(animFade, {
-                    toValue: 0,
-                    duration: theme.motion.duration,
-                    useNativeDriver: false,
-                }),
-            ]).start(() => setIsExpanded(false));
-        } else {
-            setIsExpanded(true);
-            Animated.parallel([
-                Animated.timing(animHeight, {
-                    toValue: MAX_HEIGHT,
-                    duration: theme.motion.duration,
-                    useNativeDriver: false,
-                }),
-                Animated.timing(animFade, {
-                    toValue: 1,
-                    duration: theme.motion.duration,
-                    useNativeDriver: false,
-                }),
-            ]).start();
-        }
-    };
-
-    const handleDismiss = () => {
-        setIsDismissed(true);
-    };
-
-    // Derived Display Logic
+    const isIdle = activeCount === 0;
     const progressColor = hasFailed ? theme.colors.error : (allDone ? theme.colors.success : theme.colors.primary);
 
-    // Status text in banner
     let bannerTitle = '';
     let bannerIcon = null;
 
@@ -115,14 +80,39 @@ function UploadProgressOverlay() {
         bannerTitle = `Uploading ${activeCount} item${activeCount > 1 ? 's' : ''}`;
     }
 
-    const animProgressUI = animHeight.interpolate({
+    const expandedHeight = Math.min(
+        (visibleTasks.length > 0 ? 170 + (visibleTasks.length * 105) : 170),
+        height * 0.56
+    );
+
+    const animatedContentHeight = animExpand.interpolate({
         inputRange: [0, 1],
-        outputRange: [`${overallProgress}%`, `${overallProgress}%`],
+        outputRange: [0, expandedHeight],
     });
 
+    const animatedContentOpacity = animExpand.interpolate({
+        inputRange: [0, 0.2, 1],
+        outputRange: [0, 0.15, 1],
+    });
+
+    const toggleExpand = () => {
+        const nextValue = isExpanded ? 0 : 1;
+        if (!isExpanded) setIsExpanded(true);
+        Animated.timing(animExpand, {
+            toValue: nextValue,
+            duration: theme.motion.duration,
+            useNativeDriver: false,
+        }).start(() => {
+            if (nextValue === 0) setIsExpanded(false);
+        });
+    };
+
+    const handleDismiss = () => {
+        setIsDismissed(true);
+    };
+
     return (
-        <Animated.View style={s.container}>
-            {/* ── Banner Header ─────────────────────────────────────────────────── */}
+        <View style={s.container}>
             <View style={s.bannerRow}>
                 <View style={s.bannerLeft}>
                     {bannerIcon}
@@ -140,66 +130,69 @@ function UploadProgressOverlay() {
                 </View>
             </View>
 
-            {/* ── Main Progress Bar ── */}
-            <View style={[s.mainProgressTrack, isExpanded && s.mainProgressHidden]}>
-                <Animated.View
+            <View style={s.mainProgressTrack}>
+                <View
                     style={[
                         s.mainProgressFill,
-                        {
-                            width: animProgressUI,
-                            backgroundColor: hasFailed ? theme.colors.error : allDone ? theme.colors.success : theme.colors.primary,
-                        },
+                        { width: `${overallProgress}%`, backgroundColor: progressColor },
                     ]}
                 />
             </View>
 
-            {/* ── Collapsible Content ── */}
-            <Animated.View style={[s.contentBox, { opacity: animFade }]}>
-                <View style={s.statsRow}>
-                    <StatPill label="Uploaded" value={uploadedCount} />
-                    <StatPill label="Queued" value={queuedCount} />
-                    <StatPill label="Failed" value={failedCount} color={theme.colors.error} />
-                    <StatPill label="Avg speed" value="-- MB/s" />
-                </View>
-
-                <View style={s.actionsRow}>
-                    <Text style={s.speedTxt}>{formatBytes(uploadedBytes)} / {formatBytes(totalBytes)} ({overallProgress}%)</Text>
-                    <TouchableOpacity style={s.clearBtn} onPress={clearCompleted}>
-                        <Text style={s.clearBtnTxt}>Clear completed</Text>
-                    </TouchableOpacity>
-                </View>
-
-                {/* ── Expanded: file list ────────────────────────────────────── */}
-                <Animated.View style={{ height: animHeight, overflow: 'hidden' }}>
-                    <View style={s.listContainer}>
-                        <FlatList
-                            data={tasks}
-                            keyExtractor={t => t.id}
-                            removeClippedSubviews={true}
-                            initialNumToRender={10}
-                            maxToRenderPerBatch={5}
-                            windowSize={5}
-                            nestedScrollEnabled={true}
-                            renderItem={({ item }) => (
-                                <UploadProgress
-                                    task={item}
-                                    onCancel={cancelUpload}
-                                    onPause={pauseUpload}
-                                    onResume={resumeUpload}
-                                    onRetry={resumeUpload} // Map retry action directly to resume
-                                />
-                            )}
-                            contentContainerStyle={s.list}
-                            showsVerticalScrollIndicator={false}
-                        />
+            <Animated.View
+                style={[
+                    s.contentWrap,
+                    { height: animatedContentHeight, opacity: animatedContentOpacity },
+                ]}
+            >
+                <View style={s.contentInner}>
+                    <View style={s.statsRow}>
+                        <StatPill label="Uploaded" value={uploadedCount} />
+                        <StatPill label="Queued" value={queuedCount} />
+                        <StatPill label="Failed" value={failedCount} color={theme.colors.error} />
+                        <StatPill label="Avg speed" value={formatSpeed(avgUploadSpeedBps, isIdle)} />
                     </View>
-                </Animated.View>
+
+                    <View style={s.actionsRow}>
+                        <Text style={s.speedTxt}>{formatBytes(uploadedBytes)} / {formatBytes(totalBytes)} ({overallProgress}%)</Text>
+                        <TouchableOpacity style={s.clearBtn} onPress={clearCompleted}>
+                            <Text style={s.clearBtnTxt}>Clear completed</Text>
+                        </TouchableOpacity>
+                    </View>
+
+                    {visibleTasks.length > 0 ? (
+                        <View style={s.listContainer}>
+                            <FlatList
+                                data={visibleTasks}
+                                keyExtractor={t => t.id}
+                                removeClippedSubviews
+                                initialNumToRender={8}
+                                maxToRenderPerBatch={5}
+                                windowSize={4}
+                                nestedScrollEnabled
+                                renderItem={({ item }) => (
+                                    <UploadProgress
+                                        task={item}
+                                        onCancel={cancelUpload}
+                                        onPause={pauseUpload}
+                                        onResume={resumeUpload}
+                                        onRetry={resumeUpload}
+                                    />
+                                )}
+                                contentContainerStyle={s.list}
+                                showsVerticalScrollIndicator={false}
+                            />
+                        </View>
+                    ) : (
+                        <View style={s.emptyUpdates}>
+                            <Text style={s.emptyUpdatesTxt}>No upload updates available.</Text>
+                        </View>
+                    )}
+                </View>
             </Animated.View>
-        </Animated.View>
+        </View>
     );
 }
-
-// ── Stat pill sub-component ──────────────────────────────────────────────────
 
 const StatPill = React.memo(function StatPill({
     label, value, color
@@ -214,8 +207,6 @@ const StatPill = React.memo(function StatPill({
     );
 });
 
-// ── Styles ───────────────────────────────────────────────────────────────────
-
 const s = StyleSheet.create({
     container: {
         position: 'absolute',
@@ -223,22 +214,25 @@ const s = StyleSheet.create({
         left: theme.spacing.lg,
         right: theme.spacing.lg,
         backgroundColor: theme.colors.card,
-        borderRadius: theme.radius.modal, // Premium edge curves
+        borderRadius: theme.radius.modal,
         overflow: 'hidden',
-        ...theme.shadows.elevation2, // SaaS drop-shadow
+        ...theme.shadows.elevation2,
     },
     bannerRow: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingHorizontal: theme.spacing.lg,
-        paddingTop: theme.spacing.lg,
+        paddingTop: theme.spacing.md,
         paddingBottom: theme.spacing.md,
+        minHeight: 54,
     },
     bannerLeft: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: theme.spacing.sm,
+        flex: 1,
+        minWidth: 0,
     },
     bannerTitle: {
         fontSize: theme.typography.subtitle.fontSize,
@@ -256,25 +250,23 @@ const s = StyleSheet.create({
     },
     closeBox: {
         padding: theme.spacing.xs,
-        backgroundColor: theme.colors.neutral[50], // Muted close
+        backgroundColor: theme.colors.neutral[50],
         borderRadius: theme.radius.sm,
     },
-    contentBox: {
-        flex: 1,
-    },
-    // ── Main Header line progress ────────────────────────────────────────────
     mainProgressTrack: {
         height: 3,
         backgroundColor: theme.colors.neutral[100],
         width: '100%',
     },
-    mainProgressHidden: {
-        opacity: 0,
-    },
     mainProgressFill: {
         height: 3,
     },
-    // ── Stats row ────────────────────────────────────────────────────────────
+    contentWrap: {
+        overflow: 'hidden',
+    },
+    contentInner: {
+        flex: 1,
+    },
     statsRow: {
         flexDirection: 'row',
         paddingVertical: theme.spacing.md,
@@ -297,7 +289,6 @@ const s = StyleSheet.create({
         fontWeight: '700',
         color: theme.colors.neutral[900],
     },
-    // ── Actions ──────────────────────────────────────────────────────────────
     actionsRow: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -321,7 +312,6 @@ const s = StyleSheet.create({
         fontWeight: '500',
         color: theme.colors.primary,
     },
-    // ── List ─────────────────────────────────────────────────────────────────
     listContainer: {
         flex: 1,
         paddingHorizontal: theme.spacing.lg,
@@ -331,7 +321,18 @@ const s = StyleSheet.create({
     },
     list: {
         paddingBottom: 20,
-    }
+    },
+    emptyUpdates: {
+        borderTopWidth: 1,
+        borderTopColor: theme.colors.neutral[100],
+        paddingHorizontal: theme.spacing.lg,
+        paddingTop: theme.spacing.md,
+    },
+    emptyUpdatesTxt: {
+        fontSize: 13,
+        color: theme.colors.neutral[500],
+        fontWeight: '500',
+    },
 });
 
 export default React.memo(UploadProgressOverlay);

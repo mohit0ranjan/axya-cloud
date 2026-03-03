@@ -889,13 +889,17 @@ export const getStats = async (req: AuthRequest, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 export const getActivity = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit)
+        ? Math.min(Math.max(Math.floor(rawLimit), 1), 20)
+        : 5;
 
     try {
         const result = await pool.query(
             `SELECT al.*, f.file_name FROM activity_log al
              LEFT JOIN files f ON f.id = al.file_id
-             WHERE al.user_id = $1 ORDER BY al.created_at DESC LIMIT 50`,
-            [req.user.id]
+             WHERE al.user_id = $1 ORDER BY al.created_at DESC LIMIT $2`,
+            [req.user.id, limit]
         );
         res.json({ success: true, activity: result.rows });
     } catch (err: any) {

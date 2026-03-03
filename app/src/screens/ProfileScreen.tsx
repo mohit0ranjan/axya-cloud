@@ -93,6 +93,7 @@ export default function ProfileScreen({ navigation }: any) {
     const { theme, isDark } = useTheme();
 
     const [loading, setLoading] = useState(true);
+    const [isSigningOut, setIsSigningOut] = useState(false);
     const [stats, setStats] = useState<any>({});
     const [activity, setActivity] = useState<any[]>([]);
 
@@ -120,12 +121,24 @@ export default function ProfileScreen({ navigation }: any) {
         } catch { } finally { setLoading(false); }
     };
 
+    const confirmLogout = useCallback(async () => {
+        if (isSigningOut) return;
+        setIsSigningOut(true);
+        try {
+            await authCtx?.logout?.();
+        } catch {
+            showToast('Sign out failed', 'error');
+        } finally {
+            setIsSigningOut(false);
+        }
+    }, [authCtx, isSigningOut, showToast]);
+
     const handleLogout = useCallback(() => {
         Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
             { text: 'Cancel', style: 'cancel' },
-            { text: 'Sign Out', style: 'destructive', onPress: () => authCtx.logout() },
+            { text: 'Sign Out', style: 'destructive', onPress: () => { void confirmLogout(); } },
         ]);
-    }, [authCtx]);
+    }, [confirmLogout]);
 
     const formatSize = (bytes: number) => {
         if (!bytes) return '0 B';
@@ -349,15 +362,23 @@ export default function ProfileScreen({ navigation }: any) {
                 {/* ────────────────────────────────────────────────────────────
                     SIGN OUT
                 ──────────────────────────────────────────────────────────── */}
-                <PressableRow
+                <TouchableOpacity
                     onPress={handleLogout}
-                    style={[st.logoutCard, {
-                        backgroundColor: isDark ? 'rgba(239,68,68,0.08)' : 'rgba(239,68,68,0.05)',
-                    }]}
+                    activeOpacity={0.85}
+                    disabled={isSigningOut}
+                    style={[
+                        st.logoutCard,
+                        {
+                            backgroundColor: isDark ? 'rgba(239,68,68,0.08)' : 'rgba(239,68,68,0.05)',
+                            opacity: isSigningOut ? 0.65 : 1,
+                        },
+                    ]}
                 >
                     <LogOut color={C.danger} size={20} />
-                    <Text style={[st.logoutText, { color: C.danger }]}>Sign Out</Text>
-                </PressableRow>
+                    <Text style={[st.logoutText, { color: C.danger }]}>
+                        {isSigningOut ? 'Signing out...' : 'Sign Out'}
+                    </Text>
+                </TouchableOpacity>
 
                 <Text style={[st.footerText, { color: C.muted }]}>
                     Axya Cloud v1.0.0

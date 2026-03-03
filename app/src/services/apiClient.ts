@@ -5,7 +5,7 @@ import { shouldRetry, sleep } from '../utils/retry';
 import { serverStatusManager } from '../context/ServerStatusContext';
 import { logger } from '../utils/logger';
 
-const PRODUCTION_URL = 'https://axya-cloud.onrender.com';
+const PRODUCTION_URL = 'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net';
 const PORT = '3000';
 
 export const API_BASE: string = process.env.EXPO_PUBLIC_API_URL || (() => {

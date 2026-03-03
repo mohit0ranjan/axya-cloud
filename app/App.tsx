@@ -1,8 +1,20 @@
-import React, { useContext, useState, useEffect } from 'react';
+/**
+ * App.tsx — Production entry point with proper splash screen handling
+ *
+ * ✅ expo-splash-screen: preventAutoHideAsync() before render
+ * ✅ Auth bootstrap runs DURING native splash (not after)
+ * ✅ Native splash hides only after auth is ready
+ * ✅ Custom animated splash plays AFTER native splash hides
+ * ✅ No intermediate ActivityIndicator screen
+ * ✅ No flicker between native → JS splash → app
+ */
+
+import React, { useContext, useState, useEffect, useCallback } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { ActivityIndicator, Platform, View } from 'react-native';
+import { Platform, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
+import * as ExpoSplashScreen from 'expo-splash-screen';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { AuthProvider, AuthContext } from './src/context/AuthContext';
@@ -23,34 +35,57 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import FilesScreen from './src/screens/FilesScreen';
 import UploadProgressOverlay from './src/components/UploadProgressOverlay';
+import DownloadProgressOverlay from './src/components/DownloadProgressOverlay';
 import ServerWakingOverlay from './src/components/ServerWakingOverlay';
 import AppErrorBoundary from './src/components/AppErrorBoundary';
 import { logger } from './src/utils/logger';
 
 import { ServerStatusProvider } from './src/context/ServerStatusContext';
 import { UploadProvider } from './src/context/UploadContext';
+import { DownloadProvider } from './src/context/DownloadContext';
+
+// ─── CRITICAL: Keep native splash visible until we're ready ──────────────────
+// This MUST run at module level (before any component renders)
+ExpoSplashScreen.preventAutoHideAsync().catch(() => {
+    // Silently catch — on web or older SDKs this might not exist
+});
 
 const Stack = createNativeStackNavigator();
+
+// ─── Root Navigator ──────────────────────────────────────────────────────────
 
 function RootNavigator() {
     const auth = useContext(AuthContext);
     const isAuthenticated = auth?.isAuthenticated;
     const isLoading = auth?.isLoading;
 
-    const [splashDone, setSplashDone] = useState(false);
+    // Two-phase splash:
+    // Phase 1: Native splash (visible while auth bootstraps)
+    // Phase 2: Animated JS splash (plays after auth is ready)
+    const [nativeSplashHidden, setNativeSplashHidden] = useState(false);
+    const [animatedSplashDone, setAnimatedSplashDone] = useState(false);
 
-    if (!splashDone) {
-        return <SplashScreen onFinish={() => setSplashDone(true)} />;
+    // Once auth is done loading, hide the native splash & show animated splash
+    useEffect(() => {
+        if (!isLoading && !nativeSplashHidden) {
+            // Auth is ready — hide native splash, start animated splash
+            ExpoSplashScreen.hideAsync().catch(() => { });
+            setNativeSplashHidden(true);
+        }
+    }, [isLoading, nativeSplashHidden]);
+
+    // Phase 1: While auth is loading, native splash is still visible
+    // We render nothing (native splash covers the screen)
+    if (!nativeSplashHidden) {
+        return null;
     }
 
-    if (isLoading) {
-        return (
-            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0A0E1F' }}>
-                <ActivityIndicator size="large" color="#4B6EF5" />
-            </View>
-        );
+    // Phase 2: Show animated JS splash
+    if (!animatedSplashDone) {
+        return <SplashScreen onFinish={() => setAnimatedSplashDone(true)} />;
     }
 
+    // Phase 3: App is ready — show navigation
     return (
         <NavigationContainer>
             <View style={{ flex: 1 }}>
@@ -76,14 +111,18 @@ function RootNavigator() {
                     )}
                 </Stack.Navigator>
                 <UploadProgressOverlay />
+                <DownloadProgressOverlay />
                 <ServerWakingOverlay />
             </View>
         </NavigationContainer>
     );
 }
 
+// ─── App Entry Point ─────────────────────────────────────────────────────────
+
 export default function App() {
     useEffect(() => {
+        // Global error handler
         const globalAny = global as any;
         const ErrorUtilsRef = globalAny?.ErrorUtils;
         const existingGlobalHandler = ErrorUtilsRef?.getGlobalHandler?.();
@@ -101,13 +140,12 @@ export default function App() {
             });
         }
 
-        // Set up Android notification channel for upload progress
-        // (required on Android 8+ for notifications to appear)
+        // Set up Android notification channel for file transfers
         if (Platform.OS === 'android') {
             Notifications.setNotificationChannelAsync('upload_channel', {
-                name: 'File Uploads',
-                importance: Notifications.AndroidImportance.LOW, // LOW = no sound, non-intrusive
-                description: 'Shows file upload progress',
+                name: 'File Transfers',
+                importance: Notifications.AndroidImportance.LOW,
+                description: 'Shows file upload and download progress',
                 enableVibrate: false,
                 showBadge: false,
             });
@@ -120,12 +158,12 @@ export default function App() {
             }
         });
 
-        // Configure how notifications appear when app is in foreground
+        // Configure foreground notification behavior
         Notifications.setNotificationHandler({
             handleNotification: async () => ({
                 shouldShowAlert: false,
-                shouldShowBanner: false, // SDK 55 required
-                shouldShowList: true,    // SDK 55 required — appears in notification drawer
+                shouldShowBanner: false,
+                shouldShowList: true,
                 shouldPlaySound: false,
                 shouldSetBadge: false,
             }),
@@ -144,11 +182,13 @@ export default function App() {
                 <ThemeProvider>
                     <ServerStatusProvider>
                         <UploadProvider>
-                            <AuthProvider>
-                                <ToastProvider>
-                                    <RootNavigator />
-                                </ToastProvider>
-                            </AuthProvider>
+                            <DownloadProvider>
+                                <AuthProvider>
+                                    <ToastProvider>
+                                        <RootNavigator />
+                                    </ToastProvider>
+                                </AuthProvider>
+                            </DownloadProvider>
                         </UploadProvider>
                     </ServerStatusProvider>
                 </ThemeProvider>

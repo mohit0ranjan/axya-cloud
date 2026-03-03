@@ -115,6 +115,8 @@ export const initSchema = async () => {
     `CREATE INDEX IF NOT EXISTS idx_files_sort_date ON files (user_id, folder_id, created_at DESC) WHERE is_trashed = false`,
     `CREATE INDEX IF NOT EXISTS idx_files_sort_name ON files (user_id, folder_id, file_name ASC) WHERE is_trashed = false`,
     `CREATE INDEX IF NOT EXISTS idx_files_sort_size ON files (user_id, folder_id, file_size DESC) WHERE is_trashed = false`,
+    // ✅ FIX C3: Unique partial index prevents duplicate DB rows from concurrent uploads of the same file
+    `CREATE UNIQUE INDEX IF NOT EXISTS files_user_sha256_unique ON files (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL AND is_trashed = false`,
   ];
 
   try {

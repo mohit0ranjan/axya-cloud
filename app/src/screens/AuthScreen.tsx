@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
     View, Text, StyleSheet,
-    ActivityIndicator, Alert, Dimensions, StatusBar,
+    ActivityIndicator, Dimensions, StatusBar,
     Animated, Easing, KeyboardAvoidingView, Platform,
-    TouchableOpacity
+    TouchableOpacity, SafeAreaView, ScrollView, Keyboard,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { ArrowRight, ArrowLeft, Shield, Zap, HardDrive } from 'lucide-react-native';
@@ -51,6 +51,10 @@ export default function AuthScreen({ navigation }: any) {
     const dotAnims = useRef(DOTS.map(() => new Animated.Value(0))).current;
     const stepAnim = useRef(new Animated.Value(0)).current;
 
+    // Keyboard-aware hero shrink animation
+    const heroShrink = useRef(new Animated.Value(1)).current;
+    const heroFadeOut = useRef(new Animated.Value(1)).current;
+
     useEffect(() => {
         Animated.parallel([
             Animated.spring(heroScale, { toValue: 1, tension: 52, friction: 7, useNativeDriver: true }),
@@ -71,6 +75,29 @@ export default function AuthScreen({ navigation }: any) {
         );
         const t = setTimeout(() => float.start(), 600);
         return () => { clearTimeout(t); float.stop(); };
+    }, []);
+
+    // Keyboard show/hide — shrink hero so the sheet has room
+    useEffect(() => {
+        const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+        const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+        const onShow = () => {
+            Animated.parallel([
+                Animated.timing(heroShrink, { toValue: 0.55, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+                Animated.timing(heroFadeOut, { toValue: 0.0, duration: 200, useNativeDriver: true }),
+            ]).start();
+        };
+        const onHide = () => {
+            Animated.parallel([
+                Animated.timing(heroShrink, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+                Animated.timing(heroFadeOut, { toValue: 1, duration: 280, useNativeDriver: true }),
+            ]).start();
+        };
+
+        const sub1 = Keyboard.addListener(showEvent, onShow);
+        const sub2 = Keyboard.addListener(hideEvent, onHide);
+        return () => { sub1.remove(); sub2.remove(); };
     }, []);
 
     const animateStep = () => {
@@ -137,11 +164,11 @@ export default function AuthScreen({ navigation }: any) {
     const stepSlide = stepAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] });
 
     return (
-        <View style={styles.root}>
+        <SafeAreaView style={styles.root}>
             <StatusBar barStyle="dark-content" backgroundColor="#F4F6FB" />
 
             {DOTS.map((d, i) => (
-                <Animated.View key={i} style={{
+                <Animated.View key={i} pointerEvents="none" style={{
                     position: 'absolute',
                     top: height * d.top,
                     left: width * d.left,
@@ -157,10 +184,16 @@ export default function AuthScreen({ navigation }: any) {
                 <ArrowLeft color="#8892A4" size={22} />
             </TouchableOpacity>
 
-            <View style={styles.heroArea}>
+            {/* Hero — shrinks when keyboard opens to make room for the form */}
+            <Animated.View style={[
+                styles.heroArea,
+                {
+                    opacity: Animated.multiply(heroOpacity, heroFadeOut),
+                    transform: [{ scale: Animated.multiply(heroScale, heroShrink) }],
+                },
+            ]}>
                 <Animated.View style={{
-                    transform: [{ scale: heroScale }, { translateY: floatY }],
-                    opacity: heroOpacity,
+                    transform: [{ translateY: floatY }],
                     alignItems: 'center',
                 }}>
                     <View style={styles.blob} />
@@ -183,11 +216,12 @@ export default function AuthScreen({ navigation }: any) {
                         })}
                     </View>
                 </Animated.View>
-            </View>
+            </Animated.View>
 
+            {/* Form sheet — KeyboardAvoidingView pushes it above the keyboard */}
             <KeyboardAvoidingView
                 behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-                keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
+                keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
                 style={styles.kavWrapper}
             >
                 <Animated.View style={[styles.sheet, {
@@ -196,100 +230,109 @@ export default function AuthScreen({ navigation }: any) {
                 }]}>
                     <View style={styles.sheetHandle} />
 
-                    <View style={styles.sheetHeader}>
-                        <Text style={styles.sheetTitle}>
-                            {step === 'phone' ? 'Sign in with Telegram' : 'Enter the code'}
-                        </Text>
-                        <Text style={styles.sheetSubtitle}>
-                            {step === 'phone'
-                                ? 'Enter your mobile number to\nsecurely log in with Telegram.'
-                                : `A verification code was sent to\n+91 ${phone.substring(0, 5)} ${phone.substring(5)}`
-                            }
-                        </Text>
-                    </View>
-
-                    <View style={styles.stepDots}>
-                        <View style={[styles.stepDot, { backgroundColor: '#4B6EF5', width: step === 'phone' ? 24 : 8 }]} />
-                        <View style={[styles.stepDot, { backgroundColor: step === 'otp' ? '#4B6EF5' : '#EAEDF3', width: step === 'otp' ? 24 : 8 }]} />
-                    </View>
-
-                    {step === 'phone' ? (
-                        <View style={styles.formArea}>
-                            <PhoneInput
-                                value={phone}
-                                onChangeText={setPhone}
-                                error={error}
-                                editable={!isLoading}
-                            />
-
-                            <TouchableOpacity
-                                style={[styles.ctaBtn, (isLoading || phone.length !== 10) && styles.ctaDisabled]}
-                                onPress={handleSendCode}
-                                activeOpacity={0.85}
-                                disabled={isLoading || phone.length !== 10}
-                            >
-                                {isLoading ? (
-                                    <ActivityIndicator color="#fff" />
-                                ) : (
-                                    <>
-                                        <Text style={styles.ctaText}>Send Verification Code</Text>
-                                        <ArrowRight color="#fff" size={20} />
-                                    </>
-                                )}
-                            </TouchableOpacity>
+                    <ScrollView
+                        bounces={false}
+                        showsVerticalScrollIndicator={false}
+                        keyboardShouldPersistTaps="handled"
+                        contentContainerStyle={styles.scrollContent}
+                    >
+                        <View style={styles.sheetHeader}>
+                            <Text style={styles.sheetTitle}>
+                                {step === 'phone' ? 'Sign in with Telegram' : 'Enter the code'}
+                            </Text>
+                            <Text style={styles.sheetSubtitle}>
+                                {step === 'phone'
+                                    ? 'Enter your mobile number to\nsecurely log in with Telegram.'
+                                    : `A verification code was sent to\n+91 ${phone.substring(0, 5)} ${phone.substring(5)}`
+                                }
+                            </Text>
                         </View>
-                    ) : (
-                        <Animated.View style={[styles.formArea, { opacity: stepFadeIn, transform: [{ translateY: stepSlide }] }]}>
-                            <OTPInput
-                                value={otp}
-                                onChange={(val) => {
-                                    setOtp(val);
-                                    if (val.length === 5) handleVerifyOtp(val); // ✅ Telegram sends 5-digit codes
-                                }}
-                                length={5}
-                                onResend={handleSendCode}
-                                loading={isLoading}
-                                error={error}
-                            />
 
-                            <TouchableOpacity
-                                style={[styles.ctaBtn, (isLoading || otp.length < 5) && styles.ctaDisabled]}
-                                onPress={() => handleVerifyOtp()}
-                                activeOpacity={0.85}
-                                disabled={isLoading || otp.length < 5}  // ✅ 5-digit codes
-                            >
-                                {isLoading ? <ActivityIndicator color="#fff" /> : (
-                                    <>
-                                        <Text style={styles.ctaText}>Verify &amp; Sign In</Text>
-                                        <ArrowRight color="#fff" size={20} />
-                                    </>
-                                )}
-                            </TouchableOpacity>
+                        <View style={styles.stepDots}>
+                            <View style={[styles.stepDot, { backgroundColor: '#4B6EF5', width: step === 'phone' ? 24 : 8 }]} />
+                            <View style={[styles.stepDot, { backgroundColor: step === 'otp' ? '#4B6EF5' : '#EAEDF3', width: step === 'otp' ? 24 : 8 }]} />
+                        </View>
 
-                            <TouchableOpacity onPress={() => setStep('phone')} style={styles.backLink} disabled={isLoading}>
-                                <ArrowLeft color="#8892A4" size={16} />
-                                <Text style={styles.backLinkText}>Wrong number? Change it</Text>
-                            </TouchableOpacity>
-                        </Animated.View>
-                    )}
+                        {step === 'phone' ? (
+                            <View style={styles.formArea}>
+                                <PhoneInput
+                                    value={phone}
+                                    onChangeText={setPhone}
+                                    error={error}
+                                    editable={!isLoading}
+                                />
 
-                    <Text style={styles.finePrint}>
-                        By continuing you agree to Axya's Terms · No passwords stored
-                    </Text>
+                                <TouchableOpacity
+                                    style={[styles.ctaBtn, (isLoading || phone.length !== 10) && styles.ctaDisabled]}
+                                    onPress={handleSendCode}
+                                    activeOpacity={0.85}
+                                    disabled={isLoading || phone.length !== 10}
+                                >
+                                    {isLoading ? (
+                                        <ActivityIndicator color="#fff" />
+                                    ) : (
+                                        <>
+                                            <Text style={styles.ctaText}>Send Verification Code</Text>
+                                            <ArrowRight color="#fff" size={20} />
+                                        </>
+                                    )}
+                                </TouchableOpacity>
+                            </View>
+                        ) : (
+                            <Animated.View style={[styles.formArea, { opacity: stepFadeIn, transform: [{ translateY: stepSlide }] }]}>
+                                <OTPInput
+                                    value={otp}
+                                    onChange={(val) => {
+                                        setOtp(val);
+                                        if (val.length === 5) handleVerifyOtp(val);
+                                    }}
+                                    length={5}
+                                    onResend={handleSendCode}
+                                    loading={isLoading}
+                                    error={error}
+                                />
+
+                                <TouchableOpacity
+                                    style={[styles.ctaBtn, (isLoading || otp.length < 5) && styles.ctaDisabled]}
+                                    onPress={() => handleVerifyOtp()}
+                                    activeOpacity={0.85}
+                                    disabled={isLoading || otp.length < 5}
+                                >
+                                    {isLoading ? <ActivityIndicator color="#fff" /> : (
+                                        <>
+                                            <Text style={styles.ctaText}>Verify &amp; Sign In</Text>
+                                            <ArrowRight color="#fff" size={20} />
+                                        </>
+                                    )}
+                                </TouchableOpacity>
+
+                                <TouchableOpacity onPress={() => setStep('phone')} style={styles.backLink} disabled={isLoading}>
+                                    <ArrowLeft color="#8892A4" size={16} />
+                                    <Text style={styles.backLinkText}>Wrong number? Change it</Text>
+                                </TouchableOpacity>
+                            </Animated.View>
+                        )}
+
+                        <Text style={styles.finePrint}>
+                            By continuing you agree to Axya's Terms · No passwords stored
+                        </Text>
+                    </ScrollView>
                 </Animated.View>
             </KeyboardAvoidingView>
-        </View>
+        </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
     root: { flex: 1, backgroundColor: '#F4F6FB' },
     backBtn: { padding: 18, marginTop: Platform.OS === 'ios' ? 44 : 20, position: 'absolute', top: 0, left: 0, zIndex: 20 },
+
+    // Hero — flex-based, takes remaining space above the sheet
     heroArea: {
-        position: 'absolute',
-        top: 0, left: 0, right: 0,
-        bottom: 380,
-        alignItems: 'center', justifyContent: 'center',
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
     },
     blob: {
         position: 'absolute',
@@ -319,7 +362,8 @@ const styles = StyleSheet.create({
     },
     featurePillText: { fontSize: 11, fontWeight: '700' },
 
-    kavWrapper: { position: 'absolute', bottom: 0, left: 0, right: 0 },
+    // KAV wrapper — no absolute positioning, lives in the flex flow
+    kavWrapper: {},
     sheet: {
         backgroundColor: '#fff',
         borderTopLeftRadius: 32, borderTopRightRadius: 32,
@@ -329,8 +373,10 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: -8 },
         shadowOpacity: 0.07, shadowRadius: 24,
         elevation: 20,
-        gap: 16,
+        // maxHeight prevents the sheet from over-expanding on very small screens
+        maxHeight: height * 0.72,
     },
+    scrollContent: { alignItems: 'center', gap: 16, paddingBottom: 8 },
     sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: '#E2E8F0', marginBottom: 4 },
     sheetHeader: { alignItems: 'center', gap: 6 },
     sheetTitle: { fontSize: 24, fontWeight: '800', color: '#1A1F36', letterSpacing: -0.5, textAlign: 'center' },

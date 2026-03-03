@@ -38,6 +38,7 @@ export type UploadStatus =
     | 'queued'
     | 'uploading'
     | 'paused'
+    | 'waiting_retry'
     | 'retrying'
     | 'completed'
     | 'failed'
@@ -132,7 +133,32 @@ class UploadManager {
     // ✅ Throttle notify to ~200ms to avoid excessive React re-renders
     private readonly NOTIFY_THROTTLE_MS = 200;
 
-    private activeUploads = 0;
+    private get activeUploads(): number {
+        return this.tasks.filter(t => t.status === 'uploading').length;
+    }
+
+    private static VALID_TRANSITIONS: Record<UploadStatus, UploadStatus[]> = {
+        queued: ['uploading', 'paused', 'cancelled'],
+        uploading: ['completed', 'waiting_retry', 'failed', 'paused', 'cancelled'],
+        waiting_retry: ['retrying', 'cancelled', 'paused'],
+        retrying: ['uploading', 'cancelled', 'paused'],
+        paused: ['queued'],
+        failed: ['queued'],
+        completed: [],
+        cancelled: [],
+        pending: ['queued'],
+    };
+
+    private transition(task: UploadTask, to: UploadStatus): boolean {
+        const allowed = UploadManager.VALID_TRANSITIONS[task.status];
+        if (!allowed?.includes(to)) {
+            console.warn(`[SM] Illegal: ${task.status} → ${to} for "${task.file.name}"`);
+            return false;
+        }
+        task.status = to;
+        return true;
+    }
+
     private listeners: ((tasks: UploadTask[]) => void)[] = [];
 
     /**
@@ -304,7 +330,7 @@ class UploadManager {
                     } as any,
                     trigger: null,
                 });
-            } catch { /* non-critical */ }
+            } catch (err) { console.warn('[UploadManager] Warning: Failed to schedule progress notification:', err); }
         } else {
             try {
                 await Notifications.dismissNotificationAsync('upload_progress');
@@ -331,7 +357,7 @@ class UploadManager {
                         trigger: null,
                     });
                 }
-            } catch { /* non-critical */ }
+            } catch (err) { console.warn('[UploadManager] Warning: Failed to schedule completion notification:', err); }
         }
     }
 
@@ -380,8 +406,8 @@ class UploadManager {
     public pause(id: string) {
         const task = this.tasks.find(t => t.id === id);
         if (!task) return;
-        if (['queued', 'uploading', 'retrying'].includes(task.status)) {
-            task.status = 'paused';
+        if (['queued', 'uploading', 'retrying', 'waiting_retry'].includes(task.status)) {
+            this.transition(task, 'paused');
             this.abortControllers.get(id)?.abort();
             this.notifyListeners(true);
         }
@@ -391,7 +417,7 @@ class UploadManager {
         const task = this.tasks.find(t => t.id === id);
         if (!task) return;
         if (task.status === 'paused' || task.status === 'failed') {
-            task.status = 'queued';
+            this.transition(task, 'queued');
             task.retryCount = 0;
             task.error = undefined;
             task.progress = 0;
@@ -405,7 +431,8 @@ class UploadManager {
     public cancel(id: string) {
         const task = this.tasks.find(t => t.id === id);
         if (!task) return;
-        task.status = 'cancelled';
+        if (['completed', 'cancelled'].includes(task.status)) return;
+        this.transition(task, 'cancelled');
         this.abortControllers.get(id)?.abort();
         this.notifyListeners(true);
         this.processQueue();
@@ -413,8 +440,8 @@ class UploadManager {
 
     public cancelAll() {
         this.tasks.forEach(task => {
-            if (!['completed', 'failed'].includes(task.status)) {
-                task.status = 'cancelled';
+            if (!['completed', 'failed', 'cancelled'].includes(task.status)) {
+                this.transition(task, 'cancelled');
                 this.abortControllers.get(task.id)?.abort();
             }
         });
@@ -432,7 +459,7 @@ class UploadManager {
         this.tasks
             .filter(t => t.status === 'failed')
             .forEach(t => {
-                t.status = 'queued';
+                this.transition(t, 'queued');
                 t.retryCount = 0;
                 t.error = undefined;
                 t.progress = 0;
@@ -453,45 +480,70 @@ class UploadManager {
         );
         if (!nextTask) return;
 
-        this.activeUploads++;
-        nextTask.status = 'uploading';
+        this.transition(nextTask, 'uploading');
         this.notifyListeners(true);
 
         try {
             await this.performUpload(nextTask);
-            nextTask.status = 'completed';
+            this.transition(nextTask, 'completed');
             nextTask.progress = 100;
             nextTask.bytesUploaded = nextTask.file.size;
         } catch (e: any) {
             const status = nextTask.status as UploadStatus;
 
             const isCancelOrPauseError = e?.name === 'AbortError' || e?.message === 'Cancelled';
+            const isFatalSchemaError = e?.message?.includes('constraint') || e?.message?.includes('duplicate key');
+            // ✅ Fix 6: Telegram fatal errors should NOT be retried
+            const isFatalTelegramError = e?.message?.includes('FILE_PARTS_INVALID')
+                || e?.message?.includes('FILE_REFERENCE_EXPIRED')
+                || e?.message?.includes('MEDIA_EMPTY')
+                || e?.message?.includes('FILE_ID_INVALID')
+                || (e?.message?.includes('400:') && !e?.message?.includes('FLOOD'));
 
             if (isCancelOrPauseError || status === 'cancelled') {
-                if (status !== 'paused') nextTask.status = 'cancelled';
+                if (status !== 'paused') this.transition(nextTask, 'cancelled');
                 // If status is already 'paused', keep it
             } else if (status === 'paused') {
                 // Keep paused
+            } else if (isFatalSchemaError || isFatalTelegramError) {
+                // Do not retry fatal database/Telegram errors
+                this.transition(nextTask, 'failed');
+                nextTask.error = e?.message || 'Upload failed (non-recoverable)';
             } else {
                 nextTask.retryCount++;
                 if (nextTask.retryCount <= this.MAX_RETRIES) {
-                    nextTask.status = 'retrying';
+                    this.transition(nextTask, 'waiting_retry');
                     const delay = (Math.pow(2, nextTask.retryCount) + 1) * 1000;
                     console.warn(
                         `[UploadManager] Retry ${nextTask.retryCount}/${this.MAX_RETRIES}`,
                         `"${nextTask.file.name}" in ${delay / 1000}s:`, e?.message
                     );
-                    setTimeout(() => this.processQueue(), delay);
+                    setTimeout(() => {
+                        const t = this.tasks.find(x => x.id === nextTask.id);
+                        if (t && t.status === 'waiting_retry') {
+                            this.transition(t, 'retrying');
+                            this.notifyListeners(true);
+                            this.processQueue();
+                        } else {
+                            // Task was cancelled/paused while waiting — still trigger process
+                            this.processQueue();
+                        }
+                    }, delay);
                 } else {
-                    nextTask.status = 'failed';
+                    this.transition(nextTask, 'failed');
                     nextTask.error = e?.message || 'Upload failed';
                 }
             }
         } finally {
             this.abortControllers.delete(nextTask.id);
-            this.activeUploads = Math.max(0, this.activeUploads - 1);
-            this.notifyListeners(true); // status change — force notify
-            this.processQueue(); // Chain next upload
+            // ✅ Fix 2: Don't chain processQueue when retrying
+            // — the retry timer will handle it after the backoff delay
+            if (nextTask.status !== 'waiting_retry') {
+                this.notifyListeners(true);
+                this.processQueue();
+            } else {
+                this.notifyListeners(true);
+            }
         }
     }
 
@@ -509,6 +561,19 @@ class UploadManager {
         };
 
         const { file, folderId, chatTarget } = task;
+
+        // ── Step 0: Resolve file size if DocumentPicker returned 0 ────────
+        if (!file.size || file.size <= 0) {
+            if (Platform.OS !== 'web' && file.uri.startsWith('file://')) {
+                try {
+                    const fileObj = new File(file.uri);
+                    file.size = fileObj.size ?? 0;
+                } catch { /* fallthrough */ }
+            }
+            if (!file.size || file.size <= 0) {
+                throw new Error('File has 0 bytes — cannot upload an empty file');
+            }
+        }
 
         // ── Step 1: MD5 hash for deduplication ──────────────────────────────
         // Using the new File.md5 property — no deprecated FileSystem.getInfoAsync
@@ -542,7 +607,6 @@ class UploadManager {
             task.progress = 100;
             task.bytesUploaded = file.size;
             task.duplicate = true;
-            task.status = 'completed';
             this.notifyListeners(true);
             return;
         }
@@ -572,15 +636,14 @@ class UploadManager {
                 await uploadClient.post('/files/upload/chunk', formData, {
                     signal: abort.signal,
                     onUploadProgress: (progressEvent: any) => {
-                        if (progressEvent.total) {
-                            // Real per-chunk progress via axios
-                            const chunkBytesUploaded = progressEvent.loaded;
-                            task.bytesUploaded = offset + chunkBytesUploaded;
-                            task.progress = Math.round(
-                                Math.min((task.bytesUploaded / file.size) * 50, 50)
-                            );
-                            this.notifyListeners(); // throttled
-                        }
+                        // ✅ Fix 3: Use known chunk size as fallback when total is unavailable
+                        const chunkTotal = progressEvent.total || chunk.size || this.CHUNK_SIZE;
+                        const fraction = chunkTotal > 0 ? progressEvent.loaded / chunkTotal : 0;
+                        task.bytesUploaded = offset + Math.round(chunk.size * fraction);
+                        task.progress = Math.round(
+                            Math.min((task.bytesUploaded / file.size) * 50, 50)
+                        );
+                        this.notifyListeners(); // throttled
                     },
                 });
 
@@ -606,15 +669,14 @@ class UploadManager {
                     {
                         signal: abort.signal,
                         onUploadProgress: (progressEvent: any) => {
-                            if (progressEvent.total) {
-                                // Real per-chunk progress via axios
-                                const fraction = progressEvent.loaded / progressEvent.total;
-                                task.bytesUploaded = offset + Math.round(length * fraction);
-                                task.progress = Math.round(
-                                    Math.min((task.bytesUploaded / file.size) * 50, 50)
-                                );
-                                this.notifyListeners(); // throttled
-                            }
+                            // ✅ Fix 3: Use known chunk length as fallback when total is unavailable
+                            const chunkTotal = progressEvent.total || progressEvent.bytes || length;
+                            const fraction = chunkTotal > 0 ? progressEvent.loaded / chunkTotal : 0;
+                            task.bytesUploaded = offset + Math.round(length * fraction);
+                            task.progress = Math.round(
+                                Math.min((task.bytesUploaded / file.size) * 50, 50)
+                            );
+                            this.notifyListeners(); // throttled
                         },
                     }
                 );
@@ -643,9 +705,8 @@ class UploadManager {
         await new Promise<void>((resolve, reject) => {
             const maxWait = Date.now() + 10 * 60 * 1000;
 
-            const timer = setInterval(async () => {
+            const poll = async () => {
                 if (isCancelled() || Date.now() > maxWait) {
-                    clearInterval(timer);
                     reject(new Error(Date.now() > maxWait ? 'Upload timed out' : 'Cancelled'));
                     return;
                 }
@@ -653,37 +714,44 @@ class UploadManager {
                 try {
                     const res = await apiClient.get(
                         `/files/upload/status/${uploadId}`,
-                        { signal: abort.signal }
+                        { signal: abort.signal, _maxRetries: 0 } as any
                     );
                     const { status, progress: tgProgress, error: tgError } = res.data;
 
                     if (status === 'completed') {
                         // ✅ Server confirmed: DB entry created + Telegram delivery done
-                        clearInterval(timer);
                         task.progress = 100;
                         task.bytesUploaded = file.size;
                         this.notifyListeners(true);
                         resolve();
+                        return;
                     } else if (status === 'error') {
-                        clearInterval(timer);
                         reject(new Error(tgError || 'Telegram upload failed'));
+                        return;
                     } else {
                         task.progress = Math.round(50 + ((tgProgress || 0) * 0.5));
                         this.notifyListeners(); // throttled
                     }
                 } catch (e: any) {
                     if (e.name === 'CanceledError' || e.name === 'AbortError') {
-                        clearInterval(timer);
                         reject(new Error('Cancelled'));
+                        return;
+                    }
+                    if (e.response?.status === 404 || e.response?.status === 403) {
+                        reject(new Error(e.response?.data?.error || `Upload fatal error ${e.response?.status}`));
+                        return;
                     }
                     // Transient poll errors → keep polling
                 }
-            }, 2000);
+
+                setTimeout(poll, 2000);
+            };
 
             abort.signal.addEventListener('abort', () => {
-                clearInterval(timer);
                 reject(new Error('Cancelled'));
             });
+
+            poll(); // Start loop
         });
     }
 

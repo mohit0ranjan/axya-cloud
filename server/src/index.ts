@@ -43,7 +43,13 @@ console.log(`🔒 [CORS] Configured origins:`, allowedOrigins);
 app.use(cors({
     origin: (origin, callback) => {
         // Allow requests with no origin (mobile apps, curl, Expo Go)
-        if (!origin || allowedOrigins.includes(origin)) {
+        // Also allow local network and Expo dev origins dynamically
+        if (
+            !origin ||
+            allowedOrigins.includes(origin) ||
+            origin.startsWith('http://192.168.') ||
+            origin.startsWith('exp://')
+        ) {
             callback(null, true);
         } else {
             console.error(`🛑 [CORS Error] Origin rejected: ${origin}`);
@@ -144,9 +150,9 @@ const start = async () => {
         console.log(`⏳ Starting Axya on Port ${port}...`);
         await initSchema();
 
-        app.listen(port, () => {
+        app.listen(port as number, '0.0.0.0', () => {
             console.log(`🚀 Axya Server is READY!`);
-            console.log(`🔗 Interface: http://localhost:${port}`);
+            console.log(`🔗 Interface: http://0.0.0.0:${port}`);
             console.log(`📊 Node: ${process.version} | Env: ${process.env.NODE_ENV || 'development'}`);
         });
     } catch (error: any) {

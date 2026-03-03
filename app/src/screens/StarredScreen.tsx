@@ -14,6 +14,7 @@ import { AuthContext } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import FileCard from '../components/FileCard';
 import { FileCardSkeleton } from '../ui/Skeleton';
+import { EmptyState } from '../ui/EmptyState';
 
 const SORT_OPTIONS = [
     { key: 'created_at_DESC', label: 'Newest First', icon: SortDesc },
@@ -131,11 +132,11 @@ export default function StarredScreen({ navigation }: any) {
                     {[1, 2, 3].map(i => <FileCardSkeleton key={i} />)}
                 </View>
             ) : sortedFiles.length === 0 ? (
-                <View style={styles.empty}>
-                    <Star color="#cbd5e1" size={52} />
-                    <Text style={[styles.emptyTitle, { color: C.textHeading }]}>No starred files</Text>
-                    <Text style={[styles.emptySub, { color: C.textBody }]}>Tap the ⭐ on any file to star it</Text>
-                </View>
+                <EmptyState
+                    title="No starred files"
+                    description="Tap the ⭐ on any file to star it"
+                    iconType="file"
+                />
             ) : (
                 <FlatList
                     data={sortedFiles}

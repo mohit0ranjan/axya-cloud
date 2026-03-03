@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, SafeAreaView, ScrollView,
-    TouchableOpacity, ActivityIndicator, Dimensions,
+    TouchableOpacity, Dimensions, RefreshControl,
 } from 'react-native';
 import { ArrowLeft, HardDrive, FileText, Image as ImageIcon, Film, Music, Archive } from 'lucide-react-native';
 import Svg, { G, Circle, Path } from 'react-native-svg';
 import apiClient from '../services/apiClient';
 import { useTheme } from '../context/ThemeContext';
 import { formatSize, formatPct } from '../utils/format';
+import { StatCardSkeleton, SkeletonBlock } from '../ui/Skeleton';
+import { EmptyState } from '../ui/EmptyState';
 
 const { width } = Dimensions.get('window');
 
@@ -47,11 +49,12 @@ function DonutChart({ data, total, bgColor }: { data: any[]; total: number; bgCo
 
     if (slices.length === 0) {
         return (
-            <View style={{ width: size, height: size, justifyContent: 'center', alignItems: 'center' }}>
-                <View style={{ width: outerR * 2, height: outerR * 2, borderRadius: outerR, borderWidth: (outerR - innerR), borderColor: '#E2E8F0', justifyContent: 'center', alignItems: 'center' }}>
-                    <Text style={{ fontSize: 11, color: '#94a3b8' }}>No files</Text>
-                </View>
-            </View>
+            <EmptyState
+                title="No data yet"
+                description="Upload files to see your storage breakdown"
+                iconType="file"
+                style={{ paddingVertical: 32, flex: 0 }}
+            />
         );
     }
 
@@ -106,7 +109,28 @@ export default function AnalyticsScreen({ navigation }: any) {
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 20 }}>
                 {loading ? (
-                    <ActivityIndicator size="large" color={C.primary} style={{ marginTop: 60 }} />
+                    <>
+                        {/* Skeleton for quota card */}
+                        <View style={[styles.quotaCard, { backgroundColor: C.card }]}>
+                            <SkeletonBlock width={22} height={22} borderRadius={6} />
+                            <View style={{ flex: 1, marginLeft: 14, gap: 8 }}>
+                                <SkeletonBlock width="40%" height={13} borderRadius={6} />
+                                <SkeletonBlock width="60%" height={22} borderRadius={8} />
+                                <SkeletonBlock width="100%" height={8} borderRadius={4} />
+                            </View>
+                        </View>
+                        {/* Skeleton for stat cards */}
+                        <View style={styles.statsRow}>
+                            {[1, 2, 3, 4].map(i => <StatCardSkeleton key={i} />)}
+                        </View>
+                        {/* Skeleton for chart section */}
+                        <View style={[styles.chartSection, { backgroundColor: C.card }]}>
+                            <SkeletonBlock width="50%" height={16} borderRadius={8} />
+                            <View style={{ alignItems: 'center', marginVertical: 24 }}>
+                                <SkeletonBlock width={width * 0.52} height={width * 0.52} borderRadius={width * 0.26} />
+                            </View>
+                        </View>
+                    </>
                 ) : (
                     <>
                         {/* ── Storage Quota Card ── */}
@@ -148,9 +172,6 @@ export default function AnalyticsScreen({ navigation }: any) {
                             <View style={{ alignItems: 'center', marginVertical: 16 }}>
                                 {/* Pass dynamic bgColor so donut hole works in dark mode */}
                                 <DonutChart data={chartData} total={totalBytes || 1} bgColor={C.card} />
-                                {totalBytes === 0 && (
-                                    <Text style={{ position: 'absolute', color: C.textBody, fontSize: 14 }}>No files yet</Text>
-                                )}
                             </View>
 
                             {/* ── Legend ── */}
@@ -176,7 +197,12 @@ export default function AnalyticsScreen({ navigation }: any) {
                                 );
                             })}
                             {chartData.length === 0 && (
-                                <Text style={{ textAlign: 'center', color: C.textBody, marginTop: 10 }}>Upload files to see breakdown</Text>
+                                <EmptyState
+                                    title="No breakdown available"
+                                    description="Upload files to see your storage breakdown by type"
+                                    iconType="file"
+                                    style={{ paddingVertical: 16, flex: 0 }}
+                                />
                             )}
                         </View>
                     </>
@@ -193,7 +219,7 @@ const styles = StyleSheet.create({
     backBtn: { padding: 4 },
     headerTitle: { fontSize: 20, fontWeight: '700' },
 
-    quotaCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, padding: 18, marginBottom: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.07, shadowRadius: 12, elevation: 3 },
+    quotaCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 16, padding: 18, marginBottom: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.07, shadowRadius: 12, elevation: 3 },
     quotaTitle: { fontSize: 13, marginBottom: 4 },
     quotaValues: { fontSize: 22, fontWeight: '700', marginBottom: 8 },
     quotaBarTrack: { width: '100%', height: 8, borderRadius: 4 },
@@ -205,7 +231,7 @@ const styles = StyleSheet.create({
     statVal: { fontSize: 22, fontWeight: '800', marginBottom: 4 },
     statLabel: { fontSize: 11, fontWeight: '600' },
 
-    chartSection: { borderRadius: 24, padding: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2 },
+    chartSection: { borderRadius: 16, padding: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2 },
     sectionTitle: { fontSize: 16, fontWeight: '700' },
 
     legendRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 8, borderTopWidth: 1 },

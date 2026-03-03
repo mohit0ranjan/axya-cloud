@@ -77,7 +77,7 @@ export const StatCardSkeleton = () => (
 const styles = StyleSheet.create({
     card: {
         flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
-        padding: 16, borderRadius: 20, marginBottom: 10,
+        padding: 16, borderRadius: 16, marginBottom: 10,
         ...(Platform.OS !== 'web' ? {
             shadowColor: '#8a95a5', shadowOffset: { width: 0, height: 4 },
             shadowOpacity: 0.06, shadowRadius: 12, elevation: 3,
@@ -85,7 +85,7 @@ const styles = StyleSheet.create({
     },
     info: { flex: 1, marginLeft: 16 },
     folderCard: {
-        width: '47%', backgroundColor: '#fff', borderRadius: 20, padding: 18,
+        width: '47%', backgroundColor: '#fff', borderRadius: 16, padding: 18,
         marginBottom: 12, minHeight: 138, justifyContent: 'flex-end',
         ...(Platform.OS !== 'web' ? {
             shadowColor: '#8a95a5', shadowOffset: { width: 0, height: 4 },
@@ -93,7 +93,7 @@ const styles = StyleSheet.create({
         } : {}),
     },
     statCard: {
-        flex: 1, backgroundColor: '#fff', borderRadius: 20, padding: 20,
+        flex: 1, backgroundColor: '#fff', borderRadius: 16, padding: 20,
         ...(Platform.OS !== 'web' ? {
             shadowColor: '#8a95a5', shadowOffset: { width: 0, height: 4 },
             shadowOpacity: 0.06, shadowRadius: 12, elevation: 3,

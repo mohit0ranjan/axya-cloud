@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useContext, useCallback, useRef, useMemo } from 'react';
 import {
     View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet,
     SafeAreaView, RefreshControl, Platform, Modal, KeyboardAvoidingView,
@@ -20,7 +20,8 @@ import { useUpload } from '../context/UploadContext';
 import { useApiCacheStore } from '../context/ApiCacheStore';
 import { useToast } from '../context/ToastContext';
 import { FileCardSkeleton, SkeletonBlock } from '../ui/Skeleton';
-import { theme } from '../ui/theme';
+import { EmptyState } from '../ui/EmptyState';
+import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
 
 
@@ -277,10 +278,42 @@ export default function HomeScreen({ navigation }: any) {
     // ── Storage card percentage ────────────────────────────────────────────
     const totalBytes = stats.total_size || stats.totalBytes || 0;
     const usedGBNum = totalBytes / (1024 ** 3);
-    const usedGB = usedGBNum.toFixed(2);
-    const quotaGB = 5;
-    const pct = Math.min((usedGBNum / quotaGB) * 100, 100);
+    const quotaGBNum = 5;
+    const pct = Math.min((usedGBNum / quotaGBNum) * 100, 100);
 
+    // Animated CountUp for GB
+    const [animatedGB, setAnimatedGB] = useState('0.00');
+    useEffect(() => {
+        if (usedGBNum === 0) {
+            setAnimatedGB('0.00');
+            return;
+        }
+        let start = 0;
+        const duration = 1000;
+        const fps = 60;
+        const steps = duration / (1000 / fps);
+        const increment = usedGBNum / steps;
+
+        let current = 0;
+        const timer = setInterval(() => {
+            current += increment;
+            if (current >= usedGBNum) {
+                setAnimatedGB(usedGBNum.toFixed(2));
+                clearInterval(timer);
+            } else {
+                setAnimatedGB(current.toFixed(2));
+            }
+        }, 1000 / fps);
+        return () => clearInterval(timer);
+    }, [usedGBNum]);
+
+    // Smart Insights Logic
+    const unusedGBNum = Math.max(0, quotaGBNum - usedGBNum);
+
+    const largestFile = useMemo(() => {
+        if (!recentFiles || recentFiles.length === 0) return null;
+        return [...recentFiles].sort((a, b) => b.size - a.size)[0];
+    }, [recentFiles]);
 
     const displayItems = searchQuery ? searchResults : recentFiles;
 
@@ -335,45 +368,78 @@ export default function HomeScreen({ navigation }: any) {
                     STORAGE CARD
                 ═══════════════════════════════════════════════════════════ */}
                 {!searchQuery && (
-                    <View style={s.storageCard}>
-                        {/* Top row */}
-                        <View style={s.storageTop}>
-                            <View style={s.storageIconBox}>
-                                <HardDrive color="#fff" size={20} />
+                    <View style={{ marginBottom: staticTheme.spacing['4xl'] }}>
+                        {/* Storage Card with Soft Mesh Gradient simulated */}
+                        <View style={s.storageCard}>
+                            {/* Decorative background blurs to simulate mesh */}
+                            <View style={s.meshBlob1} />
+                            <View style={s.meshBlob2} />
+
+                            {/* Top row */}
+                            <View style={s.storageTop}>
+                                <View style={s.storageIconBox}>
+                                    <View style={{ backgroundColor: 'rgba(255,255,255,0.25)', padding: 10, borderRadius: staticTheme.radius.card }}>
+                                        <HardDrive color="#fff" size={24} />
+                                    </View>
+                                </View>
+                                <View style={{ flex: 1, marginLeft: staticTheme.spacing.lg }}>
+                                    <Text style={s.storageTitle}>Axya Space</Text>
+                                    <Text style={s.storageSubtitle}>Personal Cloud Storage</Text>
+                                </View>
                             </View>
-                            <View style={{ flex: 1, marginLeft: 12 }}>
-                                <Text style={s.storageTitle}>Axya Space</Text>
-                                <Text style={s.storageSubtitle}>Personal Cloud</Text>
+
+                            {/* Size display - Count up */}
+                            <View style={s.storageSizeRow}>
+                                <Text style={s.storageBig}>{animatedGB}</Text>
+                                <Text style={s.storageGBLabel}>GB</Text>
+                                <Text style={s.storageOf}>/ {quotaGBNum} GB</Text>
+                            </View>
+
+                            {/* Progress bar */}
+                            <View style={s.progressTrack}>
+                                <View style={[s.progressFill, { width: `${pct}%` as any }]} />
+                            </View>
+
+                            {/* Stats row */}
+                            <View style={s.storageStats}>
+                                <View style={s.storageStat}>
+                                    <View style={[s.statDot, { backgroundColor: C.accent }]} />
+                                    <Text style={s.statStatText}>{stats.image_count || 0} Images</Text>
+                                </View>
+                                <View style={s.storageStat}>
+                                    <View style={[s.statDot, { backgroundColor: C.purple }]} />
+                                    <Text style={s.statStatText}>{stats.video_count || 0} Videos</Text>
+                                </View>
+                                <View style={s.storageStat}>
+                                    <View style={[s.statDot, { backgroundColor: 'rgba(255,255,255,0.6)' }]} />
+                                    <Text style={s.statStatText}>{stats.totalFiles || 0} Files</Text>
+                                </View>
                             </View>
                         </View>
 
-                        {/* Size display */}
-                        <View style={s.storageSizeRow}>
-                            <Text style={s.storageBig}>{usedGB}</Text>
-                            <Text style={s.storageGBLabel}>GB</Text>
-                            <Text style={s.storageOf}>/ {quotaGB} GB</Text>
-                        </View>
-
-                        {/* Progress bar */}
-                        <View style={s.progressTrack}>
-                            <View style={[s.progressFill, { width: `${pct}%` as any }]} />
-                        </View>
-
-                        {/* Stats row */}
-                        <View style={s.storageStats}>
-                            <View style={s.storageStat}>
-                                <View style={[s.statDot, { backgroundColor: C.accent }]} />
-                                <Text style={s.statStatText}>{stats.image_count || 0} Images</Text>
+                        {/* Smart Storage Insights Row */}
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: staticTheme.spacing.xl, gap: staticTheme.spacing.md }}>
+                            <View style={[s.insightPill, { backgroundColor: C.success + '1A' }]}>
+                                <View style={[s.insightIconBox, { backgroundColor: C.success + '33' }]}>
+                                    <Activity color={C.success} size={14} />
+                                </View>
+                                <View>
+                                    <Text style={s.insightLabel}>{unusedGBNum.toFixed(1)} GB Free</Text>
+                                    <Text style={s.insightSub}>Available space</Text>
+                                </View>
                             </View>
-                            <View style={s.storageStat}>
-                                <View style={[s.statDot, { backgroundColor: '#9333EA' }]} />
-                                <Text style={s.statStatText}>{stats.video_count || 0} Videos</Text>
-                            </View>
-                            <View style={s.storageStat}>
-                                <View style={[s.statDot, { backgroundColor: 'rgba(255,255,255,0.4)' }]} />
-                                <Text style={s.statStatText}>{stats.totalFiles || 0} Files</Text>
-                            </View>
-                        </View>
+                            {largestFile && (
+                                <View style={[s.insightPill, { backgroundColor: C.accent + '1A' }]}>
+                                    <View style={[s.insightIconBox, { backgroundColor: C.accent + '33' }]}>
+                                        <HardDrive color={C.accent} size={14} />
+                                    </View>
+                                    <View>
+                                        <Text style={s.insightLabel} numberOfLines={1}>{largestFile.name}</Text>
+                                        <Text style={s.insightSub}>Largest file ({formatSize(largestFile.size)})</Text>
+                                    </View>
+                                </View>
+                            )}
+                        </ScrollView>
                     </View>
 
                 )}
@@ -565,17 +631,12 @@ export default function HomeScreen({ navigation }: any) {
                         {[1, 2, 3, 4].map(i => <FileCardSkeleton key={i} />)}
                     </View>
                 ) : displayItems.length === 0 ? (
-                    <View style={s.emptyFiles}>
-                        <View style={s.emptyFilesIcon}>
-                            <HardDrive color={C.muted} size={36} />
-                        </View>
-                        <Text style={s.emptyTitle}>
-                            {searchQuery ? 'No results found' : 'No files yet'}
-                        </Text>
-                        <Text style={s.emptyBody}>
-                            {searchQuery ? 'Try a different keyword' : 'Upload a file to get started'}
-                        </Text>
-                    </View>
+                    <EmptyState
+                        title={searchQuery ? 'No results found' : 'No files yet'}
+                        description={searchQuery ? 'Try a different keyword' : 'Upload a file to get started'}
+                        iconType={searchQuery ? 'search' : 'file'}
+                        style={{ paddingVertical: 40, flex: 0 }}
+                    />
                 ) : (
                     <View style={s.fileList}>
                         {displayItems.map((item: any) => {
@@ -881,25 +942,42 @@ const s = StyleSheet.create({
 
     scrollContent: { paddingTop: 4, paddingBottom: 20 },
 
-    /* Storage Card */
+    /* Storage Card & Smart Insights */
     storageCard: {
         marginHorizontal: 20,
         borderRadius: 24,
         backgroundColor: CS.primary,
         padding: 22,
         marginTop: 4,
-        marginBottom: 32,
+        overflow: 'hidden',
+        // removed marginBottom: 32 so Insights can sit closer
+        marginBottom: 20,
         shadowColor: CS.primary,
         shadowOffset: { width: 0, height: 10 },
         shadowOpacity: 0.4,
         shadowRadius: 20,
         elevation: 12,
     },
-    storageTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
+    meshBlob1: {
+        position: 'absolute', top: -50, right: -40, width: 160, height: 160,
+        borderRadius: 80, backgroundColor: 'rgba(255,255,255,0.15)'
+    },
+    meshBlob2: {
+        position: 'absolute', bottom: -60, left: -30, width: 180, height: 180,
+        borderRadius: 90, backgroundColor: 'rgba(255,255,255,0.08)'
+    },
+    insightPill: {
+        flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
+        padding: 12, borderRadius: 16, gap: 12, minWidth: 160,
+        borderCurve: 'continuous',
+    },
+    insightIconBox: { width: 36, height: 36, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+    insightLabel: { fontSize: 13, fontWeight: '700', color: CS.text, marginBottom: 2 },
+    insightSub: { fontSize: 11, color: CS.muted, fontWeight: '500' },
+
+    storageTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 24 },
     storageIconBox: {
-        width: 44, height: 44, borderRadius: 14,
-        backgroundColor: 'rgba(255,255,255,0.2)',
-        justifyContent: 'center', alignItems: 'center',
+        // Transparent box around icon
     },
     storageTitle: { fontSize: 18, fontWeight: '700', color: '#fff' },
     storageSubtitle: { color: '#fff', fontSize: 13, opacity: 0.7, marginTop: 2 },
@@ -934,7 +1012,7 @@ const s = StyleSheet.create({
         paddingHorizontal: 20, marginBottom: 28,
     },
     folderGridCard: {
-        width: '47%', borderRadius: 20, padding: 18,
+        width: '47%', borderRadius: 16, padding: 18,
         minHeight: 138,
         justifyContent: 'space-between',
         shadowColor: '#96A0B5', shadowOffset: { width: 0, height: 4 },

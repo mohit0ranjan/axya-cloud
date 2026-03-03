@@ -21,6 +21,7 @@
       }
     },
     "android": {
+      "softwareKeyboardLayoutMode": "resize",
       "package": "com.mohit.axya",
       "versionCode": 2,
       "permissions": [

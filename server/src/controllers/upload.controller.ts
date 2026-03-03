@@ -314,34 +314,43 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
 
     // Async Telegram upload — guarded by semaphore so max 3 run simultaneously
     (async () => {
-        const release = await telegramSemaphore.acquire(); // ✅ blocks until slot available
+        const release = await telegramSemaphore.acquire();
         try {
+            // ── Cancellation check 1: Before hash compute ──────────────────
+            if (state.status === 'cancelled') {
+                cleanupUpload(state, uploadId);
+                return;
+            }
+
             const client = await getDynamicClient(state.sessionString);
 
             if (!fs.existsSync(state.filePath)) {
                 throw new Error('Upload temp file missing before Telegram upload');
             }
 
-            // Compute hashes with a stream to avoid loading large files into RAM.
             const { sha256: serverHash, md5: serverMd5 } = await computeFileHashes(state.filePath);
 
-            // ── Pre-upload dedup (before hitting Telegram) ──────────────────────
-            // Handles the case where client MD5 was missing/wrong but same file already exists
+            // ── Cancellation check 2: Before Telegram upload ───────────────
+            if (state.status === 'cancelled') {
+                cleanupUpload(state, uploadId);
+                return;
+            }
+
+            // ── Pre-upload dedup (before hitting Telegram) ──────────────────
             const preCheck = await pool.query(
                 `SELECT * FROM files WHERE (sha256_hash = $1 OR md5_hash = $2) AND user_id = $3 AND is_trashed = false LIMIT 1`,
                 [serverHash, serverMd5, state.userId]
             );
             if (preCheck.rows.length > 0) {
-                try { fs.rmSync(path.dirname(state.filePath), { recursive: true, force: true }); } catch (cleanupErr) { console.error('[Cleanup] Failed:', cleanupErr); }
+                cleanupUpload(state, uploadId);
                 state.status = 'completed';
                 state.progress = 100;
                 state.fileResult = formatFileRow(preCheck.rows[0]);
                 console.log(`[Upload] Pre-upload dedup: reused file id=${preCheck.rows[0].id}`);
-                setTimeout(() => { uploadState.delete(uploadId); }, 60 * 60 * 1000);
                 return;
             }
 
-            // ── Upload to Telegram ───────────────────────────────────────────────
+            // ── Upload to Telegram ───────────────────────────────────────────
             const progressCallback = (progress: number) => {
                 state.progress = Math.round(progress * 100);
             };
@@ -361,6 +370,12 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
 
             if (!uploadedMessage) throw new Error('Upload failed after all retries.');
 
+            // ── Cancellation check 3: Before DB insert ─────────────────────
+            if (state.status === 'cancelled') {
+                cleanupUpload(state, uploadId);
+                return;
+            }
+
             const messageId = uploadedMessage.id;
             const telegramFileId = uploadedMessage.document
                 ? uploadedMessage.document.id.toString()
@@ -368,46 +383,58 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                     ? uploadedMessage.photo.id.toString()
                     : '';
 
-            // ── Insert with ON CONFLICT DO NOTHING (Fix C3 — concurrent dedup) ──
-            const result = await pool.query(
-                `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                 ON CONFLICT (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL AND is_trashed = false
-                 DO NOTHING
-                 RETURNING *`,
-                [
-                    state.userId,
-                    state.folderId,
-                    state.fileName,
-                    state.totalBytes,
-                    telegramFileId,
-                    messageId,
-                    state.chatId,
-                    state.mimeType,
-                    serverHash,
-                    serverMd5,
-                ]
-            );
-
-            try { fs.rmSync(path.dirname(state.filePath), { recursive: true, force: true }); } catch (cleanupErr) { console.error('[Cleanup] Failed:', cleanupErr); }
-
-            if (result.rows.length === 0) {
-                // Concurrent upload won the race — return the winning row
-                const existing = await pool.query(
-                    `SELECT * FROM files WHERE sha256_hash = $1 AND user_id = $2 AND is_trashed = false LIMIT 1`,
-                    [serverHash, state.userId]
+            // ── Insert with ON CONFLICT + 23505 catch ───────────────────────
+            let fileResult: any = null;
+            try {
+                const result = await pool.query(
+                    `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                     ON CONFLICT (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL AND is_trashed = false
+                     DO NOTHING
+                     RETURNING *`,
+                    [
+                        state.userId,
+                        state.folderId,
+                        state.fileName,
+                        state.totalBytes,
+                        telegramFileId,
+                        messageId,
+                        state.chatId,
+                        state.mimeType,
+                        serverHash,
+                        serverMd5,
+                    ]
                 );
-                state.status = 'completed';
-                state.progress = 100;
-                state.fileResult = existing.rows.length > 0 ? formatFileRow(existing.rows[0]) : null;
-                console.log(`[Upload] Conflict dedup: reused file sha256=${serverHash}`);
-            } else {
-                state.status = 'completed';
-                state.progress = 100;
-                state.fileResult = formatFileRow(result.rows[0]);
+
+                if (result.rows.length === 0) {
+                    // ON CONFLICT DO NOTHING fired — fetch existing row
+                    const existing = await pool.query(
+                        `SELECT * FROM files WHERE sha256_hash = $1 AND user_id = $2 AND is_trashed = false LIMIT 1`,
+                        [serverHash, state.userId]
+                    );
+                    fileResult = existing.rows.length > 0 ? formatFileRow(existing.rows[0]) : null;
+                    console.log(`[Upload] Conflict dedup: reused file sha256=${serverHash}`);
+                } else {
+                    fileResult = formatFileRow(result.rows[0]);
+                }
+            } catch (insertErr: any) {
+                // ── Handle 23505 (unique_violation) when sha256 is null ──────
+                if (insertErr.code === '23505') {
+                    console.warn(`[Upload] Caught 23505 unique_violation for "${state.fileName}" — fetching existing row`);
+                    const existing = await pool.query(
+                        `SELECT * FROM files WHERE user_id = $1 AND file_name = $2 AND is_trashed = false ORDER BY created_at DESC LIMIT 1`,
+                        [state.userId, state.fileName]
+                    );
+                    fileResult = existing.rows.length > 0 ? formatFileRow(existing.rows[0]) : null;
+                } else {
+                    throw insertErr; // Re-throw non-duplicate errors
+                }
             }
 
-            setTimeout(() => { uploadState.delete(uploadId); }, 60 * 60 * 1000);
+            cleanupUpload(state, uploadId);
+            state.status = 'completed';
+            state.progress = 100;
+            state.fileResult = fileResult;
 
         } catch (err: any) {
             logger.error('backend.upload', 'telegram_upload_failed', {
@@ -417,18 +444,48 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                 message: err.message,
                 stack: err.stack,
             });
-            if (state.filePath) {
-                try { fs.rmSync(path.dirname(state.filePath), { recursive: true, force: true }); } catch (cleanupErr) { console.error('[Cleanup] Failed:', cleanupErr); }
-            }
+            cleanupUpload(state, uploadId);
             state.status = 'error';
             state.error = err.message || 'Unknown error';
         } finally {
-            release(); // ✅ Always release semaphore slot, even on error
+            release();
         }
     })();
 };
 
-// ─── Step 4: Poll Status ─────────────────────────────────────────────────────
+// ─── Helper: cleanup temp files ──────────────────────────────────────────────
+const cleanupUpload = (state: any, uploadId: string) => {
+    if (state.filePath) {
+        try { fs.rmSync(path.dirname(state.filePath), { recursive: true, force: true }); } catch { }
+    }
+    // Schedule state eviction (keep for status polling, then auto-delete)
+    setTimeout(() => { uploadState.delete(uploadId); }, 60 * 60 * 1000);
+};
+
+// ─── Step 4: Cancel Upload ───────────────────────────────────────────────────
+export const cancelUpload = async (req: AuthRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+    const { uploadId } = req.body;
+    if (!uploadId) return res.status(400).json({ success: false, error: 'Missing uploadId' });
+
+    const state = uploadState.get(uploadId);
+    if (!state) return res.json({ success: true, message: 'Upload session not found or already cleaned up' });
+    if (state.userId !== req.user.id) return res.status(403).json({ success: false, error: 'Forbidden' });
+
+    // Mark as cancelled — the async IIFE checks this flag at key points
+    state.status = 'cancelled';
+    console.log(`[Upload] Cancel requested for uploadId=${uploadId} file="${state.fileName}"`);
+
+    // Clean up temp files immediately
+    if (state.filePath) {
+        try { fs.rmSync(path.dirname(state.filePath), { recursive: true, force: true }); } catch { }
+    }
+
+    return res.json({ success: true, message: 'Upload cancelled' });
+};
+
+// ─── Step 5: Poll Status ─────────────────────────────────────────────────────
 export const checkUploadStatus = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 

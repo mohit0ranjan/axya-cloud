@@ -417,6 +417,10 @@ class UploadManager {
         const task = this.tasks.find(t => t.id === id);
         if (!task) return;
         if (task.status === 'paused' || task.status === 'failed') {
+            // Cancel old server session before creating fresh one
+            if (task.uploadId) {
+                uploadClient.post('/files/upload/cancel', { uploadId: task.uploadId }).catch(() => { });
+            }
             this.transition(task, 'queued');
             task.retryCount = 0;
             task.error = undefined;
@@ -434,6 +438,12 @@ class UploadManager {
         if (['completed', 'cancelled'].includes(task.status)) return;
         this.transition(task, 'cancelled');
         this.abortControllers.get(id)?.abort();
+
+        // Tell the server to cancel the async Telegram upload
+        if (task.uploadId) {
+            uploadClient.post('/files/upload/cancel', { uploadId: task.uploadId }).catch(() => { });
+        }
+
         this.notifyListeners(true);
         this.processQueue();
     }
@@ -443,6 +453,9 @@ class UploadManager {
             if (!['completed', 'failed', 'cancelled'].includes(task.status)) {
                 this.transition(task, 'cancelled');
                 this.abortControllers.get(task.id)?.abort();
+                if (task.uploadId) {
+                    uploadClient.post('/files/upload/cancel', { uploadId: task.uploadId }).catch(() => { });
+                }
             }
         });
         this.notifyListeners(true);
@@ -459,6 +472,10 @@ class UploadManager {
         this.tasks
             .filter(t => t.status === 'failed')
             .forEach(t => {
+                // Cancel stale server session
+                if (t.uploadId) {
+                    uploadClient.post('/files/upload/cancel', { uploadId: t.uploadId }).catch(() => { });
+                }
                 this.transition(t, 'queued');
                 t.retryCount = 0;
                 t.error = undefined;
@@ -704,10 +721,18 @@ class UploadManager {
         // Server confirms DB entry + Telegram delivery — success only on server OK
         await new Promise<void>((resolve, reject) => {
             const maxWait = Date.now() + 10 * 60 * 1000;
+            let settled = false;
+
+            const settle = (fn: () => void) => {
+                if (settled) return;
+                settled = true;
+                fn();
+            };
 
             const poll = async () => {
+                if (settled) return;
                 if (isCancelled() || Date.now() > maxWait) {
-                    reject(new Error(Date.now() > maxWait ? 'Upload timed out' : 'Cancelled'));
+                    settle(() => reject(new Error(Date.now() > maxWait ? 'Upload timed out' : 'Cancelled')));
                     return;
                 }
 
@@ -719,39 +744,41 @@ class UploadManager {
                     const { status, progress: tgProgress, error: tgError } = res.data;
 
                     if (status === 'completed') {
-                        // ✅ Server confirmed: DB entry created + Telegram delivery done
                         task.progress = 100;
                         task.bytesUploaded = file.size;
                         this.notifyListeners(true);
-                        resolve();
+                        settle(() => resolve());
                         return;
-                    } else if (status === 'error') {
-                        reject(new Error(tgError || 'Telegram upload failed'));
+                    } else if (status === 'error' || status === 'cancelled') {
+                        settle(() => reject(new Error(tgError || 'Telegram upload failed')));
                         return;
                     } else {
-                        task.progress = Math.round(50 + ((tgProgress || 0) * 0.5));
-                        this.notifyListeners(); // throttled
+                        // Fix: update bytesUploaded during poll phase so stats compute correctly
+                        const pollProgress = Math.round(50 + ((tgProgress || 0) * 0.5));
+                        task.progress = pollProgress;
+                        task.bytesUploaded = Math.round((pollProgress / 100) * file.size);
+                        this.notifyListeners();
                     }
                 } catch (e: any) {
                     if (e.name === 'CanceledError' || e.name === 'AbortError') {
-                        reject(new Error('Cancelled'));
+                        settle(() => reject(new Error('Cancelled')));
                         return;
                     }
                     if (e.response?.status === 404 || e.response?.status === 403) {
-                        reject(new Error(e.response?.data?.error || `Upload fatal error ${e.response?.status}`));
+                        settle(() => reject(new Error(e.response?.data?.error || `Upload fatal error ${e.response?.status}`)));
                         return;
                     }
-                    // Transient poll errors → keep polling
                 }
 
-                setTimeout(poll, 2000);
+                if (!settled) setTimeout(poll, 2000);
             };
 
+            // Use {once: true} to prevent memory leak
             abort.signal.addEventListener('abort', () => {
-                reject(new Error('Cancelled'));
-            });
+                settle(() => reject(new Error('Cancelled')));
+            }, { once: true });
 
-            poll(); // Start loop
+            poll();
         });
     }
 

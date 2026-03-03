@@ -55,7 +55,7 @@ router.delete('/folder/:id', trashFolder);
 
 import rateLimit from 'express-rate-limit';
 import {
-    initUpload, uploadChunk, completeUpload, checkUploadStatus
+    initUpload, uploadChunk, completeUpload, checkUploadStatus, cancelUpload
 } from '../controllers/upload.controller';
 
 const uploadLimiter = rateLimit({
@@ -89,6 +89,7 @@ const chunkLimiter = rateLimit({
 router.post('/upload/init', uploadLimiter, initUpload);
 router.post('/upload/chunk', chunkLimiter, upload.single('chunk'), uploadChunk);
 router.post('/upload/complete', uploadLimiter, completeUpload);
+router.post('/upload/cancel', uploadLimiter, cancelUpload);
 router.get('/upload/status/:uploadId', checkUploadStatus);
 
 router.post('/upload', upload.single('file'), uploadFile); // Legacy fallback

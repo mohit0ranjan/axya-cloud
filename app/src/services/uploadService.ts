@@ -153,10 +153,18 @@ export const uploadFile = async (
     // ✅ Fix 5: Recursive setTimeout prevents overlapping poll requests
     await new Promise<void>((resolve, reject) => {
         const maxWait = Date.now() + 10 * 60 * 1000;
+        let settled = false;
+
+        const settle = (fn: () => void) => {
+            if (settled) return;
+            settled = true;
+            fn();
+        };
 
         const poll = async () => {
+            if (settled) return;
             if (isCancelled() || abortSignal?.aborted || Date.now() > maxWait) {
-                reject(new Error(Date.now() > maxWait ? 'Upload timed out' : 'Cancelled'));
+                settle(() => reject(new Error(Date.now() > maxWait ? 'Upload timed out' : 'Cancelled')));
                 return;
             }
 
@@ -166,33 +174,33 @@ export const uploadFile = async (
 
                 if (status === 'completed') {
                     onProgress(100, size);
-                    resolve();
+                    settle(() => resolve());
                     return;
-                } else if (status === 'error') {
-                    reject(new Error(tgError || 'Telegram upload failed'));
+                } else if (status === 'error' || status === 'cancelled') {
+                    settle(() => reject(new Error(tgError || 'Telegram upload failed')));
                     return;
                 } else {
-                    onProgress(Math.round(50 + ((tgProgress || 0) * 0.5)), size * 0.5);
+                    const pollProgress = Math.round(50 + ((tgProgress || 0) * 0.5));
+                    onProgress(pollProgress, Math.round((pollProgress / 100) * size));
                 }
             } catch (e: any) {
                 if (e.name === 'CanceledError' || e.name === 'AbortError') {
-                    reject(new Error('Cancelled'));
+                    settle(() => reject(new Error('Cancelled')));
                     return;
                 }
                 if (e.response?.status === 404 || e.response?.status === 403) {
-                    reject(new Error(e.response?.data?.error || `Upload fatal error ${e.response?.status}`));
+                    settle(() => reject(new Error(e.response?.data?.error || `Upload fatal error ${e.response?.status}`)));
                     return;
                 }
-                // Transient poll errors → keep polling
             }
 
-            setTimeout(poll, 2000);
+            if (!settled) setTimeout(poll, 2000);
         };
 
         abortSignal?.addEventListener('abort', () => {
-            reject(new Error('Cancelled'));
-        });
+            settle(() => reject(new Error('Cancelled')));
+        }, { once: true });
 
-        poll(); // Start loop
+        poll();
     });
 };

@@ -2,18 +2,17 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
     View, Text, TouchableOpacity, StyleSheet, SafeAreaView, ActivityIndicator,
     Alert, Dimensions, Platform, Modal, KeyboardAvoidingView, ScrollView, TextInput,
-    FlatList, Animated, PanResponder,
+    FlatList,
 } from 'react-native';
 import { ArrowLeft, Download, Trash2, FileText, FolderInput, Star, Link, CheckCircle, X } from 'lucide-react-native';
 
 import { Image } from 'expo-image';
 import VideoPlayer from '../components/VideoPlayer';
-import { File, Paths } from 'expo-file-system';
-import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient, { API_BASE } from '../services/apiClient';
 import { useToast } from '../context/ToastContext';
+import { useDownload } from '../context/DownloadContext';
 import { theme } from '../ui/theme';
 
 // react-native-reanimated v3/v4 — import as `Animated` (standard naming)
@@ -21,6 +20,7 @@ import Animated2, {
     useSharedValue,
     useAnimatedStyle,
     withSpring,
+    runOnJS,
 } from 'react-native-reanimated';
 
 // react-native-gesture-handler v2
@@ -48,8 +48,9 @@ const SPRING_CFG = { damping: 20, stiffness: 200 };
 function ImagePreviewItem({
     item,
     jwt,
+    isZoomed,
     onZoomChange,
-}: { item: any; jwt: string; onZoomChange?: (zoomed: boolean) => void }) {
+}: { item: any; jwt: string; isZoomed: boolean; onZoomChange?: (zoomed: boolean) => void }) {
     const [loading, setLoading] = useState(true);
     const [useFallback, setUseFallback] = useState(false);
     const [errored, setErrored] = useState(false);
@@ -94,20 +95,23 @@ function ImagePreviewItem({
                 savedTransX.value = cx;
                 savedTransY.value = cy;
             }
-            // Notify parent when zoom state changes
+            // Notify parent when zoom state changes (must use runOnJS from worklet)
             if (onZoomChange) {
-                onZoomChange(scale.value > 1.05);
+                runOnJS(onZoomChange)(scale.value > 1.05);
             }
         });
 
-    // ── Pan (only active while zoomed in — lets FlatList handle swipe at 1x) ──
+    // ── Pan (completely disabled at 1× — lets FlatList handle swipe freely) ──
+    // Using .enabled(isZoomed) prevents the Pan recognizer from even competing
+    // with FlatList's scroll gesture. activeOffsetX/Y set a high distance
+    // threshold so even if enabled, it doesn't fire on casual swipes.
     const pan = Gesture.Pan()
+        .enabled(isZoomed)                // ← completely off at 1×, no gesture conflict
         .averageTouches(true)
-        .minDistance(8)              // Higher threshold to avoid swallow at 1x
+        .activeOffsetX([-20, 20])         // must move 20px before activating
+        .activeOffsetY([-10, 10])
         .onUpdate(e => {
             'worklet';
-            if (scale.value <= 1.05) return; // ✅ at 1x = don't consume, let FlatList swipe
-
             const maxX = (width * (scale.value - 1)) / 2;
             const maxY = (IMG_H * (scale.value - 1)) / 2;
             translateX.value = Math.max(-maxX, Math.min(maxX, savedTransX.value + e.translationX));
@@ -217,6 +221,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     );
     const [jwt, setJwt] = useState('');
     const [downloading, setDownloading] = useState(false);
+    const { addDownload, hasActive: hasActiveDownloads } = useDownload();
     const [isStarred, setIsStarred] = useState(false);
 
     // Share link
@@ -267,31 +272,13 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         ]);
     }, [file]);
 
-    const handleDownload = useCallback(async () => {
+    const handleDownload = useCallback(() => {
         if (!file?.id) return;
         if (!jwt) return;
-        setDownloading(true);
-        try {
-            const fileName = file.name || file.file_name || 'download';
-            showToast('Downloading…');
-
-            // New expo-file-system API: File.downloadFileAsync is static (SDK 54+)
-            // File(directory: Directory, filename: string) — Paths.document is a Directory
-            const destFile = await File.downloadFileAsync(
-                `${API_BASE}/files/${file.id}/download`,
-                new File(Paths.document, fileName),
-                { headers: { Authorization: `Bearer ${jwt}` } }
-            );
-
-            if (await Sharing.isAvailableAsync()) {
-                await Sharing.shareAsync(destFile.uri, { mimeType: file.mime_type });
-            } else {
-                showToast('File saved: ' + fileName);
-            }
-        } catch (e: any) {
-            showToast(e.message || 'Download failed', 'error');
-        } finally { setDownloading(false); }
-    }, [file, jwt]);
+        const fileName = file.name || file.file_name || 'download';
+        addDownload(file.id, fileName, jwt, file.mime_type);
+        showToast('Download started…');
+    }, [file, jwt, addDownload, showToast]);
 
     const handleCreateShare = async () => {
         if (!file?.id) return;
@@ -346,21 +333,22 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const renderItem = useCallback(({ item }: { item: any }) => {
         const isImage = item.mime_type?.includes('image');
         const isVideo = item.mime_type?.includes('video');
-        const streamUrl = `${API_BASE}/files/${item.id}/stream`;
+        const streamUrl = `${API_BASE}/stream/${item.id}`;
 
         if (isImage) {
             return (
                 <ImagePreviewItem
                     item={item}
                     jwt={jwt}
-                    onZoomChange={setIsZoomed}  // ✅ dynamically lock/unlock FlatList scroll
+                    isZoomed={isZoomed}
+                    onZoomChange={setIsZoomed}
                 />
             );
         }
         if (isVideo) {
             return (
                 <View style={{ width, flex: 1, justifyContent: 'center', backgroundColor: '#0a0a0f' }}>
-                    <VideoPlayer url={streamUrl} token={jwt} width={width} onError={() => {
+                    <VideoPlayer url={streamUrl} token={jwt} width={width} fileId={item.id} onError={() => {
                         showToast('Video stream failed. Try downloading instead.', 'error');
                     }} />
                 </View>
@@ -374,15 +362,14 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                 <Text style={styles.genericSub}>Use Download to open this file</Text>
             </View>
         );
-    }, [jwt]);
+    }, [jwt, isZoomed, showToast]);
 
-    const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
+    const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
         if (viewableItems.length > 0) {
             const idx = viewableItems[0].index ?? 0;
             setCurrentIndex(idx);
-            setIsStarred(!!previewData[idx]?.is_starred);
         }
-    }).current;
+    }, []);
 
     const viewabilityConfig = useRef({ viewAreaCoveragePercentThreshold: 50 }).current;
 
@@ -430,11 +417,15 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                         renderItem={renderItem}
                         onViewableItemsChanged={onViewableItemsChanged}
                         viewabilityConfig={viewabilityConfig}
-                        // ✅ Disable FlatList swiping when user is zoomed in on an image
                         scrollEnabled={previewData.length > 1 && !isZoomed}
                         decelerationRate="fast"
                         snapToInterval={width}
                         snapToAlignment="start"
+                        // ── Performance optimizations ──
+                        removeClippedSubviews={true}
+                        initialNumToRender={1}
+                        maxToRenderPerBatch={2}
+                        windowSize={3}
                     />
                 )}
             </View>

@@ -291,40 +291,36 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
             // Compute hashes with a stream to avoid loading large files into RAM.
             const { sha256: serverHash, md5: serverMd5 } = await computeFileHashes(state.filePath);
 
-            // Secondary server-side dedup (in case client hash was missing or mismatched)
-            if (true) { // Always check at the end to be completely safe
-                const existing = await pool.query(
-                    `SELECT * FROM files WHERE (sha256_hash = $1 OR md5_hash = $2) AND user_id = $3 LIMIT 1`,
-                    [serverHash, serverMd5, state.userId]
-                );
-                if (existing.rows.length > 0) {
-                    if (fs.existsSync(state.filePath)) fs.unlinkSync(state.filePath);
-                    state.status = 'completed';
-                    state.progress = 100;
-                    state.fileResult = formatFileRow(existing.rows[0]);
-                    console.log(`[Upload] Server-side dedup: reused file id=${existing.rows[0].id}`);
-                    setTimeout(() => { uploadState.delete(uploadId); }, 60 * 60 * 1000);
-                    return;
-                }
+            // ── Pre-upload dedup (before hitting Telegram) ──────────────────────
+            // Handles the case where client MD5 was missing/wrong but same file already exists
+            const preCheck = await pool.query(
+                `SELECT * FROM files WHERE (sha256_hash = $1 OR md5_hash = $2) AND user_id = $3 AND is_trashed = false LIMIT 1`,
+                [serverHash, serverMd5, state.userId]
+            );
+            if (preCheck.rows.length > 0) {
+                if (fs.existsSync(state.filePath)) fs.unlinkSync(state.filePath);
+                state.status = 'completed';
+                state.progress = 100;
+                state.fileResult = formatFileRow(preCheck.rows[0]);
+                console.log(`[Upload] Pre-upload dedup: reused file id=${preCheck.rows[0].id}`);
+                setTimeout(() => { uploadState.delete(uploadId); }, 60 * 60 * 1000);
+                return;
             }
 
+            // ── Upload to Telegram ───────────────────────────────────────────────
             const progressCallback = (progress: number) => {
                 state.progress = Math.round(progress * 100);
             };
 
-            const customFile = new CustomFile(
-                state.fileName,          // ✅ was state.originalname
-                state.totalBytes,
-                state.filePath
-            );
+            const customFile = new CustomFile(state.fileName, state.totalBytes, state.filePath);
 
             const uploadedMessage = await uploadToTelegramWithRetry(
                 client,
-                state.chatId,            // ✅ was state.telegram_chat_id
+                state.chatId,
                 {
                     file: customFile,
                     caption: `[Axya] ${state.fileName}`,
-                    workers: 4, // parallel MTProto upload workers
+                    workers: 4,
                     progressCallback,
                 }
             );
@@ -332,24 +328,28 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
             if (!uploadedMessage) throw new Error('Upload failed after all retries.');
 
             const messageId = uploadedMessage.id;
-            const fileId = uploadedMessage.document
+            const telegramFileId = uploadedMessage.document
                 ? uploadedMessage.document.id.toString()
                 : uploadedMessage.photo
                     ? uploadedMessage.photo.id.toString()
                     : '';
 
+            // ── Insert with ON CONFLICT DO NOTHING (Fix C3 — concurrent dedup) ──
             const result = await pool.query(
                 `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 ON CONFLICT (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL AND is_trashed = false
+                 DO NOTHING
+                 RETURNING *`,
                 [
                     state.userId,
-                    state.folderId,         // ✅ was state.folder_id
-                    state.fileName,         // ✅ was state.originalname
+                    state.folderId,
+                    state.fileName,
                     state.totalBytes,
-                    fileId,
+                    telegramFileId,
                     messageId,
-                    state.chatId,           // ✅ was state.telegram_chat_id
-                    state.mimeType,         // ✅ was state.mimetype
+                    state.chatId,
+                    state.mimeType,
                     serverHash,
                     serverMd5,
                 ]
@@ -357,9 +357,21 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
 
             if (fs.existsSync(state.filePath)) fs.unlinkSync(state.filePath);
 
-            state.status = 'completed';
-            state.progress = 100;
-            state.fileResult = formatFileRow(result.rows[0]);
+            if (result.rows.length === 0) {
+                // Concurrent upload won the race — return the winning row
+                const existing = await pool.query(
+                    `SELECT * FROM files WHERE sha256_hash = $1 AND user_id = $2 AND is_trashed = false LIMIT 1`,
+                    [serverHash, state.userId]
+                );
+                state.status = 'completed';
+                state.progress = 100;
+                state.fileResult = existing.rows.length > 0 ? formatFileRow(existing.rows[0]) : null;
+                console.log(`[Upload] Conflict dedup: reused file sha256=${serverHash}`);
+            } else {
+                state.status = 'completed';
+                state.progress = 100;
+                state.fileResult = formatFileRow(result.rows[0]);
+            }
 
             setTimeout(() => { uploadState.delete(uploadId); }, 60 * 60 * 1000);
 

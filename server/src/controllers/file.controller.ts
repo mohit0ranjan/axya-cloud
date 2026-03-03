@@ -399,7 +399,7 @@ export const emptyTrash = async (req: AuthRequest, res: Response) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DOWNLOAD / STREAM
+// DOWNLOAD — Buffer download (fine for one-shot file saves)
 // ─────────────────────────────────────────────────────────────────────────────
 export const downloadFile = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
@@ -412,17 +412,17 @@ export const downloadFile = async (req: AuthRequest, res: Response) => {
         );
         if (fileResult.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
 
-        const { telegram_message_id, telegram_chat_id, mime_type, file_name, file_size } = fileResult.rows[0];
+        const { telegram_message_id, telegram_chat_id, mime_type, file_name } = fileResult.rows[0];
         const client = await getDynamicClient(req.user.sessionString);
 
         const messages = await client.getMessages(telegram_chat_id, { ids: parseInt(telegram_message_id, 10) });
         if (!messages || messages.length === 0) return res.status(404).json({ success: false, error: 'File no longer exists in Telegram' });
 
         const buffer = await client.downloadMedia(messages[0] as any);
-        if (!buffer) return res.status(500).json({ success: false, error: 'Failed to retrieve file stream' });
+        if (!buffer) return res.status(500).json({ success: false, error: 'Failed to retrieve file' });
 
         res.set('Content-Type', mime_type || 'application/octet-stream');
-        res.set('Content-Disposition', `inline; filename="${encodeURIComponent(file_name)}"`);
+        res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(file_name)}"`);
         res.set('Content-Length', buffer.length.toString());
         res.set('Cache-Control', 'private, max-age=3600');
         res.send(buffer);
@@ -534,14 +534,77 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STREAM MEDIA — Download to /tmp then stream with Range support
-// ✅ Fix #30: was downloadMedia()→RAM buffer → OOM on large videos
-// Now: download to temp disk file, stream with createReadStream, delete after.
+// STREAM MEDIA — Disk-cached streaming with HTTP Range support
+// ✅ Download once from Telegram → /tmp cache → stream instantly with Range
+// ✅ Cache auto-expires after 1 hour; concurrent-safe via download locks
 // ─────────────────────────────────────────────────────────────────────────────
+
+const STREAM_CACHE_DIR = path.join(os.tmpdir(), 'axya_streams');
+const STREAM_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// Ensure cache dir exists at module load
+try { fs.mkdirSync(STREAM_CACHE_DIR, { recursive: true }); } catch { }
+
+// Prevents double-download when player sends multiple Range requests at once
+const streamDownloadLocks = new Map<string, Promise<string>>();
+
+async function ensureStreamCached(
+    fileId: string,
+    sessionString: string,
+    telegramMessageId: string,
+    telegramChatId: string,
+): Promise<string> {
+    const cachePath = path.join(STREAM_CACHE_DIR, `${fileId}.cache`);
+
+    // Already cached and fresh?
+    try {
+        const stat = fs.statSync(cachePath);
+        if (stat.size > 0 && (Date.now() - stat.mtimeMs) < STREAM_CACHE_TTL_MS) {
+            return cachePath;
+        }
+    } catch { /* not cached */ }
+
+    // Already downloading? Wait on the same promise
+    if (streamDownloadLocks.has(fileId)) {
+        return streamDownloadLocks.get(fileId)!;
+    }
+
+    // Start new download
+    const downloadPromise = (async () => {
+        try {
+            const client = await getDynamicClient(sessionString);
+            const messages = await client.getMessages(telegramChatId, {
+                ids: parseInt(telegramMessageId, 10),
+            });
+            if (!messages || messages.length === 0) {
+                throw new Error('File no longer exists in Telegram');
+            }
+
+            const result = await client.downloadMedia(messages[0] as any, {
+                outputFile: cachePath,
+            } as any);
+
+            const diskPath = typeof result === 'string' ? result : cachePath;
+            if (!fs.existsSync(diskPath) || fs.statSync(diskPath).size === 0) {
+                throw new Error('Download to disk failed');
+            }
+            if (diskPath !== cachePath) {
+                fs.renameSync(diskPath, cachePath);
+            }
+
+            return cachePath;
+        } finally {
+            streamDownloadLocks.delete(fileId);
+        }
+    })();
+
+    streamDownloadLocks.set(fileId, downloadPromise);
+    return downloadPromise;
+}
+
 export const streamFile = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
     const { id } = req.params;
-    let tempFilePath: string | null = null;
 
     try {
         const fileResult = await pool.query(
@@ -551,77 +614,67 @@ export const streamFile = async (req: AuthRequest, res: Response) => {
         if (fileResult.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
 
         const { telegram_message_id, telegram_chat_id, mime_type, file_name } = fileResult.rows[0];
-        const client = await getDynamicClient(req.user.sessionString);
 
-        const messages = await client.getMessages(telegram_chat_id, { ids: parseInt(telegram_message_id, 10) });
-        if (!messages || messages.length === 0) {
-            return res.status(404).json({ success: false, error: 'File no longer exists in Telegram' });
-        }
+        // Download to cache (or use existing cache)
+        const cachePath = await ensureStreamCached(String(id), req.user.sessionString, String(telegram_message_id), String(telegram_chat_id));
 
-        // ✅ Download to /tmp file — keeps Node.js heap flat regardless of file size
-        tempFilePath = path.join(os.tmpdir(), `stream_${crypto.randomUUID()}`);
-        const outputPath = await client.downloadMedia(messages[0] as any, {
-            outputFile: tempFilePath,
-        } as any);
-        const diskPath = (typeof outputPath === 'string' ? outputPath : tempFilePath);
-
-        if (!fs.existsSync(diskPath)) {
-            return res.status(500).json({ success: false, error: 'Download to disk failed' });
-        }
-
-        const stat = fs.statSync(diskPath);
-        const fileBytes = stat.size;
+        const stat = fs.statSync(cachePath);
+        const totalSize = stat.size;
         const mimeType = mime_type || 'application/octet-stream';
 
-        const cleanup = () => { try { fs.unlinkSync(diskPath); } catch { } };
-
-        // ── HTTP Range (required for video seeking in mobile players) ──────────
+        // ── HTTP Range support ─────────────────────────────────────────────
         const rangeHeader = req.headers.range;
+        let start = 0;
+        let end = totalSize - 1;
+        let isRangeRequest = false;
+
         if (rangeHeader) {
-            const [startStr, endStr] = rangeHeader.replace(/bytes=/, '').split('-');
-            const start = parseInt(startStr, 10);
-            const end = endStr ? parseInt(endStr, 10) : fileBytes - 1;
-            if (Number.isNaN(start) || Number.isNaN(end) || start < 0 || end < start || end >= fileBytes) {
-                res.status(416).set({
-                    'Content-Range': `bytes */${fileBytes}`,
-                });
-                cleanup();
+            const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
+            if (match) {
+                start = match[1] ? parseInt(match[1], 10) : 0;
+                end = match[2] ? parseInt(match[2], 10) : totalSize - 1;
+                isRangeRequest = true;
+            }
+
+            if (start < 0 || end < start || start >= totalSize) {
+                res.status(416).set({ 'Content-Range': `bytes */${totalSize}` });
                 return res.end();
             }
-            const chunkSize = end - start + 1;
-
-            res.status(206).set({
-                'Content-Range': `bytes ${start}-${end}/${fileBytes}`,
-                'Accept-Ranges': 'bytes',
-                'Content-Length': String(chunkSize),
-                'Content-Type': mimeType,
-                'Cache-Control': 'private, max-age=3600',
-            });
-            const stream = fs.createReadStream(diskPath, { start, end });
-            stream.on('end', cleanup).on('error', cleanup);
-            return stream.pipe(res);
+            end = Math.min(end, totalSize - 1);
         }
 
-        // ── Full file stream ───────────────────────────────────────────────────
-        res.set({
+        const chunkLength = end - start + 1;
+
+        const headers: Record<string, string> = {
             'Content-Type': mimeType,
-            'Content-Disposition': `inline; filename="${encodeURIComponent(file_name)}"`,
-            'Content-Length': String(fileBytes),
-            'Cache-Control': 'private, max-age=3600',
             'Accept-Ranges': 'bytes',
+            'Content-Length': String(chunkLength),
+            'Cache-Control': 'private, max-age=3600',
+            'Content-Disposition': `inline; filename="${encodeURIComponent(file_name)}"`,
+        };
+
+        if (isRangeRequest) {
+            headers['Content-Range'] = `bytes ${start}-${end}/${totalSize}`;
+            res.status(206).set(headers);
+        } else {
+            res.status(200).set(headers);
+        }
+
+        // Stream from disk cache — instant for Range requests
+        const stream = fs.createReadStream(cachePath, { start, end });
+        stream.on('error', (err) => {
+            logger.error('backend.stream', 'stream_read_error', { fileId: id, message: err.message });
+            if (!res.headersSent) res.status(500).json({ success: false, error: 'Stream read failed' });
         });
-        const stream = fs.createReadStream(diskPath);
-        stream.on('end', cleanup).on('error', cleanup);
-        return stream.pipe(res);
+        stream.pipe(res);
 
     } catch (err: any) {
         logger.error('backend.stream', 'stream_failed', {
             fileId: id,
-            userId: req.user.id,
+            userId: req.user!.id,
             message: err.message,
             stack: err.stack,
         });
-        if (tempFilePath && fs.existsSync(tempFilePath)) try { fs.unlinkSync(tempFilePath); } catch { }
         if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
     }
 };

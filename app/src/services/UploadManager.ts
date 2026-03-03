@@ -8,9 +8,13 @@
  * ✅ Pause / Resume / Cancel: all functional with AbortController
  * ✅ notify() creates new task object references → React re-renders work
  * ✅ activeUploads counter has no race conditions
- * ✅ Retry with exponential backoff (3 attempts)
+ * ✅ Retry with exponential backoff (5 attempts)
  * ✅ Persistence via AsyncStorage (queue survives app restart)
  * ✅ Android progress notifications via expo-notifications
+ * ✅ Real progress via axios onUploadProgress — no fake timers
+ * ✅ Throttled notifications (200ms) to avoid excessive React re-renders
+ * ✅ Duplicate upload prevention via file URI + name + size hash
+ * ✅ Byte-accurate overallProgress = uploadedBytes / totalBytes * 100
  */
 
 import { File, Paths } from 'expo-file-system';
@@ -53,6 +57,10 @@ export interface UploadTask {
     retryCount: number;
     /** Server-assigned upload session ID */
     uploadId?: string;
+    /** Fingerprint for deduplication (uri + name + size) */
+    fingerprint: string;
+    /** True if server detected this file already exists (hash match) */
+    duplicate?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -60,6 +68,11 @@ export interface UploadTask {
 /** Convert a Uint8Array to a Base64 string (used for native chunk uploads) */
 function uint8ArrayToBase64(bytes: Uint8Array): string {
     return Buffer.from(bytes).toString('base64');
+}
+
+/** Generate a fingerprint for deduplication */
+function makeFingerprint(file: FileAsset): string {
+    return `${file.uri}|${file.name}|${file.size}`;
 }
 
 /**
@@ -111,11 +124,13 @@ async function readFileChunkAsBase64(
 
 class UploadManager {
     public tasks: UploadTask[] = [];
-    // ✅ 3 concurrent uploads — matches server semaphore. Raised from 2 → 3 for throughput.
+    // ✅ 3 concurrent uploads — matches server semaphore
     private readonly MAX_CONCURRENT = 3;
     // ✅ 5 retries — handles Telegram FLOOD_WAIT and Render cold starts gracefully
     private readonly MAX_RETRIES = 5;
     private readonly CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB chunks
+    // ✅ Throttle notify to ~200ms to avoid excessive React re-renders
+    private readonly NOTIFY_THROTTLE_MS = 200;
 
     private activeUploads = 0;
     private listeners: ((tasks: UploadTask[]) => void)[] = [];
@@ -125,6 +140,10 @@ class UploadManager {
      * Aborting signals the running performUpload to stop.
      */
     private abortControllers: Map<string, AbortController> = new Map();
+
+    /** Throttle: timestamp of last notify */
+    private lastNotifyTime = 0;
+    private pendingNotifyTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor() {
         this.loadQueue();
@@ -139,10 +158,10 @@ class UploadManager {
                 const parsed: UploadTask[] = JSON.parse(stored);
                 this.tasks = parsed.map(t =>
                     t.status === 'uploading' || t.status === 'retrying'
-                        ? { ...t, status: 'paused', progress: 0, bytesUploaded: 0 }
+                        ? { ...t, status: 'paused' as UploadStatus, progress: 0, bytesUploaded: 0 }
                         : t
                 );
-                this.notifyListeners();
+                this.notifyListeners(true); // force, bypass throttle for initial load
             }
         } catch (e) {
             console.error('[UploadManager] Failed to load queue:', e);
@@ -175,49 +194,108 @@ class UploadManager {
         return this.tasks.map(t => ({ ...t }));
     }
 
-    private notifyListeners() {
+    /**
+     * Throttled notify — avoids flooding React with state updates during
+     * rapid chunk uploads. Forces immediate notify for status changes (force=true).
+     */
+    private notifyListeners(force = false) {
         this.saveQueue();
-        this.updateNotification();
-        const snapshot = this.snapshotTasks();
-        this.listeners.forEach(l => l(snapshot));
+
+        const now = Date.now();
+        const elapsed = now - this.lastNotifyTime;
+
+        if (force || elapsed >= this.NOTIFY_THROTTLE_MS) {
+            // Flush immediately
+            if (this.pendingNotifyTimer) {
+                clearTimeout(this.pendingNotifyTimer);
+                this.pendingNotifyTimer = null;
+            }
+            this.lastNotifyTime = now;
+            this.updateNotification();
+            const snapshot = this.snapshotTasks();
+            this.listeners.forEach(l => l(snapshot));
+        } else if (!this.pendingNotifyTimer) {
+            // Schedule a trailing flush
+            this.pendingNotifyTimer = setTimeout(() => {
+                this.pendingNotifyTimer = null;
+                this.lastNotifyTime = Date.now();
+                this.updateNotification();
+                const snapshot = this.snapshotTasks();
+                this.listeners.forEach(l => l(snapshot));
+            }, this.NOTIFY_THROTTLE_MS - elapsed);
+        }
+    }
+
+    // ── Aggregate Stats ──────────────────────────────────────────────────────
+
+    /**
+     * Compute real aggregate stats from tasks.
+     * Used by both notifications and the context.
+     */
+    public getStats() {
+        const totalFiles = this.tasks.length;
+        const uploadedCount = this.tasks.filter(t => t.status === 'completed').length;
+        const queuedCount = this.tasks.filter(t => t.status === 'queued').length;
+        const failedCount = this.tasks.filter(t => t.status === 'failed').length;
+        const activeCount = this.tasks.filter(
+            t => t.status === 'uploading' || t.status === 'queued' || t.status === 'retrying'
+        ).length;
+        const uploadingCount = this.tasks.filter(t => t.status === 'uploading').length;
+        const pausedCount = this.tasks.filter(t => t.status === 'paused').length;
+        const cancelledCount = this.tasks.filter(t => t.status === 'cancelled').length;
+
+        // Byte-accurate progress computation
+        const totalBytes = this.tasks.reduce((acc, t) => acc + Math.max(t.file.size || 1, 1), 0);
+        const uploadedBytes = this.tasks.reduce((acc, t) => {
+            if (t.status === 'completed') return acc + Math.max(t.file.size || 1, 1);
+            return acc + (t.bytesUploaded || 0);
+        }, 0);
+
+        const overallProgress = totalBytes > 0
+            ? Math.round(Math.min((uploadedBytes / totalBytes) * 100, 100))
+            : 0;
+
+        return {
+            totalFiles,
+            uploadedCount,
+            queuedCount,
+            failedCount,
+            activeCount,
+            uploadingCount,
+            pausedCount,
+            cancelledCount,
+            totalBytes,
+            uploadedBytes,
+            overallProgress,
+        };
     }
 
     // ── Notifications ─────────────────────────────────────────────────────────
 
     private async updateNotification() {
-        const active = this.tasks.filter(
-            t => t.status === 'uploading' || t.status === 'queued' || t.status === 'retrying'
-        );
+        const stats = this.getStats();
 
-        if (active.length > 0) {
-            const totalWeight = active.reduce((acc, t) => acc + Math.max(t.file.size || 1, 1), 0);
-            const weightedProgress = active.reduce(
-                (acc, t) => acc + (Math.max(t.file.size || 1, 1) * Math.max(0, Math.min(100, t.progress))),
-                0
-            );
-            const overallProgress = Math.round(weightedProgress / totalWeight);
-            const uploadingNow = this.tasks.filter(t => t.status === 'uploading').length;
-            const queuedCount = this.tasks.filter(t => t.status === 'queued').length;
-            const queuedPct = Math.round((queuedCount / active.length) * 100);
+        if (stats.activeCount > 0) {
             const parts: string[] = [];
-            if (uploadingNow > 0) parts.push(`${uploadingNow} uploading`);
-            if (queuedCount > 0) parts.push(`${queuedCount} queued (${queuedPct}%)`);
+            if (stats.uploadingCount > 0) parts.push(`${stats.uploadingCount} uploading`);
+            if (stats.queuedCount > 0) parts.push(`${stats.queuedCount} queued`);
+            if (stats.failedCount > 0) parts.push(`${stats.failedCount} failed`);
 
             try {
                 await Notifications.scheduleNotificationAsync({
                     identifier: 'upload_progress',
                     content: {
-                        title: `Axya · ${overallProgress}%`,
-                        body: parts.join(' · ') || `${active.length} file(s) in progress...`,
-                        data: { type: 'upload_progress', progress: overallProgress },
+                        title: `Axya · ${stats.overallProgress}%`,
+                        body: `${parts.join(' · ')} · ${stats.totalFiles} total`,
+                        data: { type: 'upload_progress', progress: stats.overallProgress },
                         android: {
                             channelId: 'upload_channel',
                             ongoing: true,
                             onlyAlertOnce: true,
                             progress: {
                                 max: 100,
-                                current: overallProgress,
-                                indeterminate: overallProgress === 0,
+                                current: stats.overallProgress,
+                                indeterminate: stats.overallProgress === 0,
                             },
                             smallIcon: 'notification_icon',
                             color: '#4B6EF5',
@@ -231,18 +309,22 @@ class UploadManager {
             try {
                 await Notifications.dismissNotificationAsync('upload_progress');
 
-                const completed = this.tasks.filter(t => t.status === 'completed').length;
-                const failed = this.tasks.filter(t => t.status === 'failed').length;
-                if (completed > 0 || failed > 0) {
+                if (stats.uploadedCount > 0 || stats.failedCount > 0) {
+                    const title = stats.failedCount > 0
+                        ? `Upload finished — ${stats.failedCount} failed ⚠️`
+                        : 'Upload complete ✅';
+                    const body = [
+                        `${stats.uploadedCount} of ${stats.totalFiles} uploaded`,
+                        stats.failedCount > 0 ? `${stats.failedCount} failed — tap to retry` : '',
+                    ].filter(Boolean).join(' · ');
+
                     await Notifications.scheduleNotificationAsync({
                         content: {
-                            title: failed > 0 ? 'Upload finished ⚠️' : 'Upload complete ✅',
-                            body: failed > 0
-                                ? `${completed} done · ${failed} failed — tap to retry`
-                                : `${completed} file${completed > 1 ? 's' : ''} synced to Axya`,
+                            title,
+                            body,
                             android: {
                                 channelId: 'upload_channel',
-                                color: failed > 0 ? '#EF4444' : '#1FD45A',
+                                color: stats.failedCount > 0 ? '#EF4444' : '#1FD45A',
                                 priority: Notifications.AndroidNotificationPriority.DEFAULT,
                             },
                         } as any,
@@ -260,18 +342,38 @@ class UploadManager {
         folderId: string | null = null,
         chatTarget: string = 'me'
     ) {
-        const newTasks: UploadTask[] = files.map(file => ({
-            id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-            file,
-            folderId,
-            chatTarget,
-            progress: 0,
-            bytesUploaded: 0,
-            status: 'queued',
-            retryCount: 0,
-        }));
+        // Dedup: skip files already in the queue (by fingerprint)
+        const existingFingerprints = new Set(
+            this.tasks
+                .filter(t => t.status !== 'cancelled' && t.status !== 'failed')
+                .map(t => t.fingerprint)
+        );
+
+        const newTasks: UploadTask[] = [];
+        for (const file of files) {
+            const fp = makeFingerprint(file);
+            if (existingFingerprints.has(fp)) {
+                console.log(`[UploadManager] Skipped duplicate: "${file.name}"`);
+                continue;
+            }
+            existingFingerprints.add(fp);
+            newTasks.push({
+                id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+                file,
+                folderId,
+                chatTarget,
+                progress: 0,
+                bytesUploaded: 0,
+                status: 'queued',
+                retryCount: 0,
+                fingerprint: fp,
+            });
+        }
+
+        if (newTasks.length === 0) return;
+
         this.tasks.push(...newTasks);
-        this.notifyListeners();
+        this.notifyListeners(true);
         this.processQueue();
     }
 
@@ -281,7 +383,7 @@ class UploadManager {
         if (['queued', 'uploading', 'retrying'].includes(task.status)) {
             task.status = 'paused';
             this.abortControllers.get(id)?.abort();
-            this.notifyListeners();
+            this.notifyListeners(true);
         }
     }
 
@@ -295,7 +397,7 @@ class UploadManager {
             task.progress = 0;
             task.bytesUploaded = 0;
             task.uploadId = undefined;
-            this.notifyListeners();
+            this.notifyListeners(true);
             this.processQueue();
         }
     }
@@ -305,7 +407,7 @@ class UploadManager {
         if (!task) return;
         task.status = 'cancelled';
         this.abortControllers.get(id)?.abort();
-        this.notifyListeners();
+        this.notifyListeners(true);
         this.processQueue();
     }
 
@@ -316,14 +418,14 @@ class UploadManager {
                 this.abortControllers.get(task.id)?.abort();
             }
         });
-        this.notifyListeners();
+        this.notifyListeners(true);
     }
 
     public clearCompleted() {
         this.tasks = this.tasks.filter(
             t => t.status !== 'completed' && t.status !== 'cancelled' && t.status !== 'failed'
         );
-        this.notifyListeners();
+        this.notifyListeners(true);
     }
 
     public retryFailed() {
@@ -337,7 +439,7 @@ class UploadManager {
                 t.bytesUploaded = 0;
                 t.uploadId = undefined;
             });
-        this.notifyListeners();
+        this.notifyListeners(true);
         this.processQueue();
     }
 
@@ -353,7 +455,7 @@ class UploadManager {
 
         this.activeUploads++;
         nextTask.status = 'uploading';
-        this.notifyListeners();
+        this.notifyListeners(true);
 
         try {
             await this.performUpload(nextTask);
@@ -388,7 +490,7 @@ class UploadManager {
         } finally {
             this.abortControllers.delete(nextTask.id);
             this.activeUploads = Math.max(0, this.activeUploads - 1);
-            this.notifyListeners();
+            this.notifyListeners(true); // status change — force notify
             this.processQueue(); // Chain next upload
         }
     }
@@ -439,7 +541,9 @@ class UploadManager {
         if (initRes.data.duplicate) {
             task.progress = 100;
             task.bytesUploaded = file.size;
-            this.notifyListeners();
+            task.duplicate = true;
+            task.status = 'completed';
+            this.notifyListeners(true);
             return;
         }
 
@@ -447,6 +551,8 @@ class UploadManager {
         task.uploadId = uploadId;
 
         // ── Step 3: Upload chunks ────────────────────────────────────────────
+        // Progress 0-50% = chunk upload phase (real bytes sent)
+        // Progress 50-100% = server-side Telegram delivery (polled)
         let offset = 0;
         let chunkIndex = 0;
 
@@ -463,13 +569,26 @@ class UploadManager {
                 formData.append('chunkIndex', String(chunkIndex));
                 formData.append('chunk', new globalThis.File([chunk], file.name, { type: file.mimeType }));
 
-                await uploadClient.post('/files/upload/chunk', formData, { signal: abort.signal });
+                await uploadClient.post('/files/upload/chunk', formData, {
+                    signal: abort.signal,
+                    onUploadProgress: (progressEvent: any) => {
+                        if (progressEvent.total) {
+                            // Real per-chunk progress via axios
+                            const chunkBytesUploaded = progressEvent.loaded;
+                            task.bytesUploaded = offset + chunkBytesUploaded;
+                            task.progress = Math.round(
+                                Math.min((task.bytesUploaded / file.size) * 50, 50)
+                            );
+                            this.notifyListeners(); // throttled
+                        }
+                    },
+                });
 
                 offset = Math.min(offset + this.CHUNK_SIZE, file.size);
                 chunkIndex++;
-                task.progress = Math.round(Math.min((offset / file.size) * 45, 45));
                 task.bytesUploaded = offset;
-                this.notifyListeners();
+                task.progress = Math.round(Math.min((offset / file.size) * 50, 50));
+                this.notifyListeners(); // throttled
             }
         } else {
             // Native (iOS/Android): new File + FileHandle API
@@ -484,20 +603,33 @@ class UploadManager {
                 await uploadClient.post(
                     '/files/upload/chunk',
                     { uploadId, chunkIndex, chunkBase64 },
-                    { signal: abort.signal }
+                    {
+                        signal: abort.signal,
+                        onUploadProgress: (progressEvent: any) => {
+                            if (progressEvent.total) {
+                                // Real per-chunk progress via axios
+                                const fraction = progressEvent.loaded / progressEvent.total;
+                                task.bytesUploaded = offset + Math.round(length * fraction);
+                                task.progress = Math.round(
+                                    Math.min((task.bytesUploaded / file.size) * 50, 50)
+                                );
+                                this.notifyListeners(); // throttled
+                            }
+                        },
+                    }
                 );
 
                 offset += length;
                 chunkIndex++;
-                task.progress = Math.round(Math.min((offset / file.size) * 45, 45));
                 task.bytesUploaded = offset;
-                this.notifyListeners();
+                task.progress = Math.round(Math.min((offset / file.size) * 50, 50));
+                this.notifyListeners(); // throttled
             }
         }
 
         throwIfCancelled();
         task.progress = 50;
-        this.notifyListeners();
+        this.notifyListeners(true);
 
         // ── Step 4: Finalise on server ───────────────────────────────────────
         await uploadClient.post(
@@ -507,6 +639,7 @@ class UploadManager {
         );
 
         // ── Step 5: Poll Telegram delivery status (50% → 100%) ───────────────
+        // Server confirms DB entry + Telegram delivery — success only on server OK
         await new Promise<void>((resolve, reject) => {
             const maxWait = Date.now() + 10 * 60 * 1000;
 
@@ -525,17 +658,18 @@ class UploadManager {
                     const { status, progress: tgProgress, error: tgError } = res.data;
 
                     if (status === 'completed') {
+                        // ✅ Server confirmed: DB entry created + Telegram delivery done
                         clearInterval(timer);
                         task.progress = 100;
                         task.bytesUploaded = file.size;
-                        this.notifyListeners();
+                        this.notifyListeners(true);
                         resolve();
                     } else if (status === 'error') {
                         clearInterval(timer);
                         reject(new Error(tgError || 'Telegram upload failed'));
                     } else {
                         task.progress = Math.round(50 + ((tgProgress || 0) * 0.5));
-                        this.notifyListeners();
+                        this.notifyListeners(); // throttled
                     }
                 } catch (e: any) {
                     if (e.name === 'CanceledError' || e.name === 'AbortError') {

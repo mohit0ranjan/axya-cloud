@@ -8,6 +8,7 @@ import pool from './config/db';
 import authRoutes from './routes/auth.routes';
 import fileRoutes from './routes/file.routes';
 import shareRoutes from './routes/share.routes';
+import streamRoutes from './routes/stream.routes';
 import { logger } from './utils/logger';
 
 dotenv.config();
@@ -83,6 +84,7 @@ const authLimiter = rateLimit({
 app.use('/auth', authLimiter, authRoutes);
 app.use('/files', fileRoutes);
 app.use('/share', shareRoutes);
+app.use('/stream', streamRoutes);
 
 // ── Health Check (Render keep-alive friendly) ────────────────────────────────
 app.get('/health', (req: Request, res: Response) => {

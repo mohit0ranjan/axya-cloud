@@ -3,9 +3,9 @@ module.exports = function (api) {
     return {
         presets: ['babel-preset-expo'],
         plugins: [
-            // Required for react-native-reanimated worklets (pinch-zoom, animations)
-            // MUST be listed last
-            'react-native-reanimated/plugin',
+            // Reanimated v4 uses the worklets Babel plugin.
+            // MUST be listed last.
+            'react-native-worklets/plugin',
         ],
     };
 };

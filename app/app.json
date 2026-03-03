@@ -9,7 +9,7 @@
     "splash": {
       "image": "./assets/axya_logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#F4F6FB"
     },
     "ios": {
       "supportsTablet": true,

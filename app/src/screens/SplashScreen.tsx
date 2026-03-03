@@ -1,89 +1,87 @@
+/**
+ * SplashScreen.tsx — Premium animated splash with smooth exit
+ *
+ * ✅ Simple, fast animation (logo scale + fade, text fade)
+ * ✅ Minimal animated values (4 instead of 10)
+ * ✅ useNativeDriver: true on all animations
+ * ✅ No Animated.multiply (avoids JS thread computation)
+ * ✅ Clean fade-out exit
+ * ✅ Matching background color with app.json splash (#ffffff → #F4F6FB)
+ */
+
 import React, { useEffect, useRef } from 'react';
 import {
-    View, Text, StyleSheet, Animated, Easing, Dimensions, StatusBar, Platform,
+    View, Text, StyleSheet, Animated, StatusBar, Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
 
-const { width, height } = Dimensions.get('window');
-// useNativeDriver only available on native, not on web
-const ND = Platform.OS !== 'web';
+const ND = Platform.OS !== 'web'; // useNativeDriver only on native
 
 interface Props {
     onFinish: () => void;
 }
 
 export default function SplashScreen({ onFinish }: Props) {
-    const logoScale = useRef(new Animated.Value(0.4)).current;
+    // Only 4 animated values — minimal JS overhead
+    const logoScale = useRef(new Animated.Value(0.6)).current;
     const logoOpacity = useRef(new Animated.Value(0)).current;
     const textOpacity = useRef(new Animated.Value(0)).current;
-    const taglineOpacity = useRef(new Animated.Value(0)).current;
     const exitOpacity = useRef(new Animated.Value(0)).current;
-    const pulseAnim = useRef(new Animated.Value(1)).current;
-    const ring1Opacity = useRef(new Animated.Value(0)).current;
-    const ring1Scale = useRef(new Animated.Value(0.5)).current;
-    const ring2Opacity = useRef(new Animated.Value(0)).current;
-    const ring2Scale = useRef(new Animated.Value(0.5)).current;
 
     useEffect(() => {
-        // 1. Logo entrance spring
+        // Phase 1: Logo entrance (spring scale + fade-in) — 500ms
+        // Phase 2: Text fade-in — 300ms
+        // Phase 3: Hold — 800ms
+        // Phase 4: Exit fade — 300ms
+        // Total: ~1900ms (fast, premium feel)
+
         Animated.sequence([
+            // ── Logo entrance ──
             Animated.parallel([
-                Animated.spring(logoScale, { toValue: 1, tension: 55, friction: 7, useNativeDriver: ND }),
-                Animated.timing(logoOpacity, { toValue: 1, duration: 500, useNativeDriver: ND }),
+                Animated.spring(logoScale, {
+                    toValue: 1,
+                    tension: 80,
+                    friction: 10,
+                    useNativeDriver: ND,
+                }),
+                Animated.timing(logoOpacity, {
+                    toValue: 1,
+                    duration: 400,
+                    useNativeDriver: ND,
+                }),
             ]),
-            // 2. Rings radiate out
-            Animated.parallel([
-                Animated.timing(ring1Opacity, { toValue: 0.18, duration: 400, useNativeDriver: ND }),
-                Animated.spring(ring1Scale, { toValue: 1, tension: 40, friction: 8, useNativeDriver: ND }),
-                Animated.timing(ring2Opacity, { toValue: 0.09, duration: 600, delay: 150, useNativeDriver: ND }),
-                Animated.spring(ring2Scale, { toValue: 1, tension: 30, friction: 9, useNativeDriver: ND }),
-            ]),
-            // 3. App name
-            Animated.timing(textOpacity, { toValue: 1, duration: 400, useNativeDriver: ND }),
-            // 4. Tagline
-            Animated.timing(taglineOpacity, { toValue: 1, duration: 350, useNativeDriver: ND }),
-        ]).start();
 
-        // 5. Gentle pulse on logo
-        const pulse = Animated.loop(
-            Animated.sequence([
-                Animated.timing(pulseAnim, { toValue: 1.05, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: ND }),
-                Animated.timing(pulseAnim, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: ND }),
-            ])
-        );
-        const pulseTimeout = setTimeout(() => pulse.start(), 900);
+            // ── Text fade-in ──
+            Animated.timing(textOpacity, {
+                toValue: 1,
+                duration: 300,
+                useNativeDriver: ND,
+            }),
 
-        // 6. Fade out and call onFinish
-        const exitTimeout = setTimeout(() => {
-            Animated.timing(exitOpacity, { toValue: 1, duration: 350, useNativeDriver: ND }).start(() => onFinish());
-        }, 2700);
+            // ── Hold for a beat ──
+            Animated.delay(800),
 
-        return () => {
-            clearTimeout(pulseTimeout);
-            clearTimeout(exitTimeout);
-            pulse.stop();
-        };
+            // ── Exit fade ──
+            Animated.timing(exitOpacity, {
+                toValue: 1,
+                duration: 300,
+                useNativeDriver: ND,
+            }),
+        ]).start(() => {
+            // Animation complete — hand off to app
+            onFinish();
+        });
     }, []);
 
     return (
         <View style={styles.container}>
             <StatusBar barStyle="dark-content" backgroundColor="#F4F6FB" />
 
-            {/* Decorative rings (use PRIMARY blue, subtle) */}
-            <Animated.View style={[
-                styles.ring, styles.ring2,
-                { opacity: ring2Opacity, transform: [{ scale: ring2Scale }] }
-            ]} />
-            <Animated.View style={[
-                styles.ring, styles.ring1,
-                { opacity: ring1Opacity, transform: [{ scale: ring1Scale }] }
-            ]} />
-
             {/* Logo */}
             <Animated.View style={{
-                transform: [{ scale: Animated.multiply(logoScale, pulseAnim) }],
                 opacity: logoOpacity,
-                marginBottom: 28,
+                transform: [{ scale: logoScale }],
+                marginBottom: 24,
             }}>
                 <Image
                     source={require('../../assets/axya_logo.png')}
@@ -98,18 +96,25 @@ export default function SplashScreen({ onFinish }: Props) {
             </Animated.Text>
 
             {/* Tagline */}
-            <Animated.Text style={[styles.tagline, { opacity: taglineOpacity }]}>
+            <Animated.Text style={[styles.tagline, { opacity: textOpacity }]}>
                 The vessel that never empties
             </Animated.Text>
 
             {/* Bottom label */}
-            <Animated.Text style={[styles.bottom, { opacity: taglineOpacity }]}>
+            <Animated.Text style={[styles.bottom, { opacity: textOpacity }]}>
                 Secured by Telegram
             </Animated.Text>
 
-            {/* Exit overlay — pointerEvents in style to avoid deprecation */}
+            {/* Exit overlay — fades to background color */}
             <Animated.View
-                style={[StyleSheet.absoluteFillObject, { backgroundColor: '#F4F6FB', opacity: exitOpacity, pointerEvents: 'none' } as any]}
+                style={[
+                    StyleSheet.absoluteFillObject,
+                    {
+                        backgroundColor: '#F4F6FB',
+                        opacity: exitOpacity,
+                        pointerEvents: 'none',
+                    } as any,
+                ]}
             />
         </View>
     );
@@ -123,22 +128,25 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
     },
     logo: {
-        width: 110,
-        height: 110,
-        borderRadius: 28,
-        // subtle card shadow
-        shadowColor: '#4B6EF5',
-        shadowOffset: { width: 0, height: 12 },
-        shadowOpacity: 0.18,
-        shadowRadius: 24,
-        elevation: 10,
+        width: 100,
+        height: 100,
+        borderRadius: 24,
+        ...Platform.select({
+            ios: {
+                shadowColor: '#4B6EF5',
+                shadowOffset: { width: 0, height: 10 },
+                shadowOpacity: 0.15,
+                shadowRadius: 20,
+            },
+            android: { elevation: 8 },
+        }),
     },
     appName: {
-        fontSize: 46,
+        fontSize: 42,
         fontWeight: '800',
         color: '#1A1F36',
         letterSpacing: -1.5,
-        marginBottom: 8,
+        marginBottom: 6,
     },
     tagline: {
         fontSize: 14,
@@ -151,19 +159,5 @@ const styles = StyleSheet.create({
         fontSize: 12,
         color: '#B0BAC9',
         letterSpacing: 0.2,
-    },
-    ring: {
-        position: 'absolute',
-        borderRadius: 9999,
-        borderWidth: 1.5,
-        borderColor: '#4B6EF5',
-    },
-    ring1: {
-        width: 200,
-        height: 200,
-    },
-    ring2: {
-        width: 320,
-        height: 320,
     },
 });

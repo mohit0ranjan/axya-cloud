@@ -18,6 +18,7 @@ import FileCard from '../components/FileCard';
 import { useToast } from '../context/ToastContext';
 import { useTheme } from '../context/ThemeContext';
 import { FileCardSkeleton } from '../ui/Skeleton';
+import { EmptyState } from '../ui/EmptyState';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -217,12 +218,11 @@ export default function FilesScreen({ navigation }: any) {
                     {[1, 2, 3, 4, 5].map(i => <FileCardSkeleton key={i} />)}
                 </View>
             ) : filteredFiles.length === 0 ? (
-                <View style={styles.center}>
-                    <HardDrive color="#cbd5e1" size={48} />
-                    <Text style={[styles.emptyText, { color: C.textBody }]}>
-                        {searchQuery ? 'No results found' : filterTab !== 'all' ? 'No files of this type' : 'No files uploaded yet'}
-                    </Text>
-                </View>
+                <EmptyState
+                    title={searchQuery ? 'No results found' : filterTab !== 'all' ? 'No files found' : 'No files uploaded yet'}
+                    description={searchQuery ? 'Try a different keyword' : filterTab !== 'all' ? 'Try changing your filter' : 'Upload files to see them here'}
+                    iconType={searchQuery || filterTab !== 'all' ? 'search' : 'file'}
+                />
             ) : (
                 <FlatList
                     data={filteredFiles}

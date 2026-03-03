@@ -4,6 +4,7 @@ import {
     Alert, Dimensions, Platform, Modal, KeyboardAvoidingView, ScrollView, TextInput,
     FlatList,
 } from 'react-native';
+import { WebView } from 'react-native-webview';
 import { ArrowLeft, Download, Trash2, FileText, FolderInput, Star, Link, CheckCircle, X } from 'lucide-react-native';
 
 import { Image } from 'expo-image';
@@ -234,6 +235,43 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const [folders, setFolders] = useState<any[]>([]);
     const [loadingFolders, setLoadingFolders] = useState(false);
 
+    const openMoveModal = useCallback(async () => {
+        if (!file?.id) return;
+        setLoadingFolders(true);
+        setMoveModalVisible(true);
+        try {
+            const res = await apiClient.get('/files/folders');
+            if (res.data.success) {
+                // Add "Root (No Folder)" as first option, then all user folders
+                setFolders([
+                    { id: null, name: '🏠 Root (No Folder)' },
+                    ...res.data.folders,
+                ]);
+            }
+        } catch {
+            showToast('Could not load folders', 'error');
+            setMoveModalVisible(false);
+        } finally {
+            setLoadingFolders(false);
+        }
+    }, [file]);
+
+    const handleMove = useCallback(async (targetFolderId: string | null) => {
+        if (!file?.id) return;
+        try {
+            await apiClient.post('/files/bulk', {
+                ids: [file.id],
+                action: 'move',
+                folder_id: targetFolderId,
+            });
+            setMoveModalVisible(false);
+            showToast('File moved successfully');
+            navigation.goBack();
+        } catch {
+            showToast('Could not move file', 'error');
+        }
+    }, [file]);
+
     // Rename
     const [renameModalVisible, setRenameModalVisible] = useState(false);
     const [newName, setNewName] = useState('');
@@ -308,32 +346,16 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         } catch { showToast('Rename failed', 'error'); }
     };
 
-    const handleMove = async (folderId: string | null) => {
-        if (!file?.id) return;
-        try {
-            await apiClient.patch(`/files/${file.id}`, { folder_id: folderId });
-            showToast('File moved!');
-            setMoveModalVisible(false);
-            navigation.goBack();
-        } catch { showToast('Move failed', 'error'); }
-    };
-
-    const openMoveModal = async () => {
-        setMoveModalVisible(true);
-        setLoadingFolders(true);
-        try {
-            const res = await apiClient.get('/files/folders');
-            if (res.data.success) {
-                setFolders([{ id: null, name: '📂 Root (Top Level)' }, ...res.data.folders]);
-            }
-        } catch { } finally { setLoadingFolders(false); }
-    };
-
     // Render each slide
     const renderItem = useCallback(({ item }: { item: any }) => {
         const isImage = item.mime_type?.includes('image');
         const isVideo = item.mime_type?.includes('video');
+        const isPdf = item.mime_type?.includes('pdf');
+        const isOfficeDoc = item.mime_type?.includes('word') || item.mime_type?.includes('excel') || item.mime_type?.includes('powerpoint') || item.mime_type?.includes('officedocument');
+        const isDoc = isPdf || isOfficeDoc;
+
         const streamUrl = `${API_BASE}/stream/${item.id}`;
+        const downloadUrl = `${API_BASE}/files/${item.id}/download`;
 
         if (isImage) {
             return (
@@ -351,6 +373,39 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     <VideoPlayer url={streamUrl} token={jwt} width={width} fileId={item.id} onError={() => {
                         showToast('Video stream failed. Try downloading instead.', 'error');
                     }} />
+                </View>
+            );
+        }
+        if (isDoc && jwt) {
+            // For iOS, direct PDF works in WebView. For Android, it might require google docs viewer for office files, 
+            // but we'll try direct Webview first as standard procedure.
+            return (
+                <View style={{ width, flex: 1, backgroundColor: theme.colors.neutral[50] }}>
+                    <WebView
+                        source={{ uri: downloadUrl, headers: { Authorization: `Bearer ${jwt}` } }}
+                        style={{ flex: 1 }}
+                        startInLoadingState={true}
+                        renderLoading={() => (
+                            <View style={[StyleSheet.absoluteFillObject, { justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.neutral[50] }]}>
+                                <ActivityIndicator size="large" color={theme.colors.primary} />
+                                <Text style={{ color: theme.colors.neutral[500], marginTop: theme.spacing.md, fontWeight: '500' }}>Loading document...</Text>
+                            </View>
+                        )}
+                        renderError={() => (
+                            <View style={[StyleSheet.absoluteFillObject, { justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.neutral[50] }]}>
+                                <FileText color={theme.colors.neutral[400]} size={72} strokeWidth={1} />
+                                <Text style={{ color: theme.colors.neutral[600], marginTop: theme.spacing.md, fontSize: 16 }}>Could not preview document</Text>
+                                <Text style={{ color: theme.colors.neutral[500], marginTop: theme.spacing.sm, fontSize: 14 }}>Try downloading the file instead.</Text>
+                            </View>
+                        )}
+                        // Prevent navigation away from the document
+                        onShouldStartLoadWithRequest={(request) => {
+                            if (request.url !== downloadUrl) {
+                                return false; // Block external navigation
+                            }
+                            return true;
+                        }}
+                    />
                 </View>
             );
         }
@@ -540,43 +595,43 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0a0a0f' },
-    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, zIndex: 10 },
-    headerActions: { flexDirection: 'row', gap: 10 },
-    glassBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
+    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: theme.spacing.lg, zIndex: 10 },
+    headerActions: { flexDirection: 'row', gap: theme.spacing.sm },
+    glassBtn: { width: 44, height: 44, borderRadius: theme.radius.full, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
 
     previewContainer: { flex: 1 },
     previewImage: { width: '100%', height: '100%' },
-    genericPreview: { alignItems: 'center', justifyContent: 'center', padding: 32, flex: 1 },
-    genericLabel: { color: '#fff', fontSize: 18, fontWeight: '700', marginTop: 20, textAlign: 'center' },
-    genericSub: { color: 'rgba(255,255,255,0.5)', fontSize: 13, marginTop: 8 },
+    genericPreview: { alignItems: 'center', justifyContent: 'center', padding: theme.spacing['2xl'], flex: 1 },
+    genericLabel: { color: theme.colors.card, fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight, marginTop: theme.spacing.xl, textAlign: 'center' },
+    genericSub: { color: 'rgba(255,255,255,0.5)', fontSize: theme.typography.caption.fontSize, marginTop: theme.spacing.sm },
 
-    dotRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, paddingVertical: 8 },
+    dotRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, paddingVertical: theme.spacing.sm },
     dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.3)' },
     dotActive: { width: 18, backgroundColor: theme.colors.primary },
 
-    detailSheet: { backgroundColor: '#fff', borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: 28, paddingBottom: 36 },
-    fileName: { fontSize: 20, fontWeight: '700', color: theme.colors.textHeading, marginBottom: 6 },
-    fileMeta: { fontSize: 13, color: theme.colors.textBody, marginBottom: 24 },
-    actionRow: { flexDirection: 'row', gap: 12 },
-    primaryBtn: { flex: 1, flexDirection: 'row', backgroundColor: theme.colors.primary, height: 54, borderRadius: 16, justifyContent: 'center', alignItems: 'center', gap: 8, shadowColor: theme.colors.primary, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 6 },
-    primaryBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
-    secondaryBtn: { width: 54, height: 54, backgroundColor: '#f1f5f9', borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
+    detailSheet: { backgroundColor: theme.colors.card, borderTopLeftRadius: theme.radius.modal, borderTopRightRadius: theme.radius.modal, padding: theme.spacing.xl, paddingBottom: theme.spacing['3xl'] },
+    fileName: { fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight, color: theme.colors.neutral[900], marginBottom: 6 },
+    fileMeta: { fontSize: theme.typography.caption.fontSize, color: theme.colors.neutral[500], marginBottom: theme.spacing.xl },
+    actionRow: { flexDirection: 'row', gap: theme.spacing.md },
+    primaryBtn: { flex: 1, flexDirection: 'row', backgroundColor: theme.colors.primary, height: 54, borderRadius: theme.radius.card, justifyContent: 'center', alignItems: 'center', gap: theme.spacing.sm, ...theme.shadows.elevation1 },
+    primaryBtnText: { color: theme.colors.card, fontSize: theme.typography.body.fontSize, fontWeight: theme.typography.hero.fontWeight },
+    secondaryBtn: { width: 54, height: 54, backgroundColor: theme.colors.neutral[50], borderRadius: theme.radius.card, justifyContent: 'center', alignItems: 'center' },
 
     overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
-    bottomSheet: { backgroundColor: '#fff', borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 28, paddingBottom: 44 },
-    sheetHandle: { width: 40, height: 4, backgroundColor: '#e2e8f0', borderRadius: 2, alignSelf: 'center', marginBottom: 24 },
-    sheetTitle: { fontSize: 20, fontWeight: '700', color: theme.colors.textHeading, marginBottom: 20 },
+    bottomSheet: { backgroundColor: theme.colors.card, borderTopLeftRadius: theme.radius.modal, borderTopRightRadius: theme.radius.modal, padding: theme.spacing.xl, paddingBottom: theme.spacing['4xl'] },
+    sheetHandle: { width: 40, height: 4, backgroundColor: theme.colors.neutral[200], borderRadius: theme.radius.full, alignSelf: 'center', marginBottom: theme.spacing.xl },
+    sheetTitle: { fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight, color: theme.colors.neutral[900], marginBottom: theme.spacing.lg },
 
-    linkBox: { backgroundColor: '#f8f9fc', borderRadius: 14, padding: 16, marginBottom: 16 },
-    linkText: { fontSize: 13, color: theme.colors.textBody, lineHeight: 20 },
-    copyBtn: { backgroundColor: theme.colors.primary, borderRadius: 14, height: 50, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8 },
-    copyBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-    linkSub: { fontSize: 12, color: theme.colors.textBody, textAlign: 'center', marginTop: 12 },
+    linkBox: { backgroundColor: theme.colors.neutral[50], borderRadius: theme.radius.md, padding: theme.spacing.lg, marginBottom: theme.spacing.lg },
+    linkText: { fontSize: theme.typography.caption.fontSize, color: theme.colors.neutral[700], lineHeight: 20 },
+    copyBtn: { backgroundColor: theme.colors.primary, borderRadius: theme.radius.md, height: 50, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: theme.spacing.sm },
+    copyBtnText: { color: theme.colors.card, fontWeight: theme.typography.hero.fontWeight, fontSize: theme.typography.body.fontSize },
+    linkSub: { fontSize: theme.typography.metadata.fontSize, color: theme.colors.neutral[500], textAlign: 'center', marginTop: theme.spacing.md },
 
-    moveRow: { paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
-    moveLabel: { fontSize: 15, fontWeight: '600', color: theme.colors.textHeading },
+    moveRow: { paddingVertical: theme.spacing.lg, borderBottomWidth: 1, borderBottomColor: theme.colors.neutral[100] },
+    moveLabel: { fontSize: theme.typography.body.fontSize, fontWeight: theme.typography.subtitle.fontWeight, color: theme.colors.neutral[900] },
 
-    centeredOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
-    modalCard: { width: '100%', backgroundColor: '#fff', borderRadius: 24, padding: 24 },
-    renameInput: { borderWidth: 1.5, borderColor: theme.colors.border, borderRadius: 12, paddingHorizontal: 16, height: 50, fontSize: 15, marginBottom: 20, color: theme.colors.textHeading },
+    centeredOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: theme.spacing.xl },
+    modalCard: { width: '100%', backgroundColor: theme.colors.card, borderRadius: theme.radius.modal, padding: theme.spacing.xl, ...theme.shadows.elevation2 },
+    renameInput: { borderWidth: 1.5, borderColor: theme.colors.neutral[200], borderRadius: theme.radius.md, paddingHorizontal: theme.spacing.lg, height: 50, fontSize: theme.typography.body.fontSize, marginBottom: theme.spacing.lg, color: theme.colors.neutral[900] },
 });

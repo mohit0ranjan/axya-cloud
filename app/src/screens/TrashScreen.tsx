@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useContext } from 'react';
-import { View, Text, ScrollView, StyleSheet, SafeAreaView, TouchableOpacity, Alert, RefreshControl } from 'react-native';
+import React, { useState, useEffect, useContext, useCallback } from 'react';
+import { View, Text, FlatList, StyleSheet, SafeAreaView, TouchableOpacity, Alert, RefreshControl } from 'react-native';
 import { ArrowLeft, Trash } from 'lucide-react-native';
 import apiClient from '../services/apiClient';
 import { useToast } from '../context/ToastContext';
@@ -7,6 +7,7 @@ import { AuthContext } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import FileCard from '../components/FileCard';
 import { FileCardSkeleton } from '../ui/Skeleton';
+import { EmptyState } from '../ui/EmptyState';
 
 export default function TrashScreen({ navigation }: any) {
     const { showToast } = useToast();
@@ -67,6 +68,24 @@ export default function TrashScreen({ navigation }: any) {
 
     const C = theme.colors;
 
+    const renderItem = useCallback(({ item: f }: { item: any }) => (
+        <FileCard
+            item={f}
+            onPress={() => navigation.navigate('FilePreview', {
+                files,
+                initialIndex: files.findIndex(x => x.id === f.id),
+                file: f,
+            })}
+            onTrash={() => handleDelete(f.id)}
+            showRestore
+            onRestore={() => handleRestore(f.id)}
+            token={token || ''}
+            apiBase={apiClient.defaults.baseURL}
+        />
+    ), [files, token]);
+
+    const keyExtractor = useCallback((item: any) => item.id, []);
+
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
             <View style={[styles.header, { backgroundColor: C.background }]}>
@@ -81,46 +100,36 @@ export default function TrashScreen({ navigation }: any) {
                 )}
             </View>
 
-            <ScrollView
-                style={{ flex: 1 }}
-                contentContainerStyle={styles.content}
-                refreshControl={
-                    <RefreshControl
-                        refreshing={refreshing}
-                        tintColor={C.primary}
-                        onRefresh={() => { setRefreshing(true); fetchTrash(); }}
-                    />
-                }
-            >
-                {isLoading ? [1, 2, 3].map(i => <FileCardSkeleton key={i} />) : (
-                    files.length === 0 ? (
-                        <View style={styles.empty}>
-                            <Trash color="#cbd5e1" size={52} />
-                            <Text style={[styles.emptyTitle, { color: C.textHeading }]}>Trash is empty</Text>
-                            <Text style={[styles.emptySub, { color: C.textBody }]}>Files moved to trash appear here</Text>
-                        </View>
-                    ) : (
-                        files.map(f => (
-                            <FileCard
-                                key={f.id}
-                                item={f}
-                                onPress={() => navigation.navigate('FilePreview', {
-                                    files,
-                                    initialIndex: files.findIndex(x => x.id === f.id),
-                                    file: f,
-                                })}
-                                onTrash={() => handleDelete(f.id)}
-                                showRestore
-                                onRestore={() => handleRestore(f.id)}
-                                token={token || ''}
-                                apiBase={apiClient.defaults.baseURL}
-                            />
-                        ))
-
-                    )
-                )}
-                <View style={{ height: 40 }} />
-            </ScrollView>
+            {isLoading ? (
+                <View style={styles.content}>
+                    {[1, 2, 3].map(i => <FileCardSkeleton key={i} />)}
+                </View>
+            ) : files.length === 0 ? (
+                <EmptyState
+                    title="Trash is empty"
+                    description="Files moved to trash appear here"
+                    iconType="file"
+                    style={{ paddingVertical: 80, flex: 1 }}
+                />
+            ) : (
+                <FlatList
+                    data={files}
+                    keyExtractor={keyExtractor}
+                    renderItem={renderItem}
+                    contentContainerStyle={styles.content}
+                    refreshControl={
+                        <RefreshControl
+                            refreshing={refreshing}
+                            tintColor={C.primary}
+                            onRefresh={() => { setRefreshing(true); fetchTrash(); }}
+                        />
+                    }
+                    ListFooterComponent={<View style={{ height: 40 }} />}
+                    removeClippedSubviews={true}
+                    maxToRenderPerBatch={10}
+                    windowSize={7}
+                />
+            )}
         </SafeAreaView>
     );
 }
@@ -133,7 +142,4 @@ const styles = StyleSheet.create({
     emptyBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
     emptyText: { fontWeight: '700', fontSize: 14 },
     content: { paddingHorizontal: 20, paddingTop: 8 },
-    empty: { alignItems: 'center', paddingTop: 80 },
-    emptyTitle: { fontSize: 18, fontWeight: '700', marginTop: 16, marginBottom: 8 },
-    emptySub: { fontSize: 14 },
 });

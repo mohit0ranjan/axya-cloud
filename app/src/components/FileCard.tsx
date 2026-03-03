@@ -16,13 +16,13 @@ interface Props {
 }
 
 const ICON_MAP: Record<string, { icon: any; color: string; bg: string }> = {
-    image: { icon: ImageIcon, color: '#F59E0B', bg: '#FEF3C7' },
+    image: { icon: ImageIcon, color: theme.colors.warning, bg: '#FEF3C7' },
     video: { icon: Film, color: '#9333EA', bg: '#F3E8FF' },
-    audio: { icon: Music, color: '#1FD45A', bg: '#DCFCE7' },
-    pdf: { icon: FileText, color: '#EF4444', bg: '#FEE2E2' },
-    folder: { icon: Folder, color: theme.colors.primary, bg: '#EEF1FD' },
+    audio: { icon: Music, color: theme.colors.success, bg: '#DCFCE7' },
+    pdf: { icon: FileText, color: theme.colors.error, bg: '#FEE2E2' },
+    folder: { icon: Folder, color: theme.colors.primary, bg: theme.colors.primaryLight },
     zip: { icon: Archive, color: '#F97316', bg: '#FFEDD5' },
-    default: { icon: FileText, color: theme.colors.primary, bg: '#EEF1FD' },
+    default: { icon: FileText, color: theme.colors.primary, bg: theme.colors.primaryLight },
 };
 
 const getIconConfig = (item: any) => {
@@ -100,9 +100,9 @@ export default function FileCard({ item, onPress, onTrash, onStar, onRestore, sh
                         }}
                     >
                         <Star
-                            color={item.is_starred ? '#FCBD0B' : theme.colors.textBody}
+                            color={item.is_starred ? theme.colors.accent : theme.colors.neutral[400]}
                             size={20}
-                            fill={item.is_starred ? '#FCBD0B' : 'transparent'}
+                            fill={item.is_starred ? theme.colors.accent : 'transparent'}
                         />
                     </TouchableOpacity>
                 )}
@@ -135,17 +135,51 @@ export default function FileCard({ item, onPress, onTrash, onStar, onRestore, sh
 
 const styles = StyleSheet.create({
     card: {
-        flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
-        padding: 14, borderRadius: 20, marginBottom: 10,
-        shadowColor: '#8a95a5', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.07, shadowRadius: 12, elevation: 3,
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: theme.colors.card,
+        padding: theme.spacing.lg,
+        borderRadius: theme.radius.card,
+        marginBottom: theme.spacing.md,
+        ...theme.shadows.elevation1,
     },
-    iconBox: { width: 46, height: 46, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
-    info: { flex: 1, marginHorizontal: 14 },
-    name: { fontSize: 15, fontWeight: '600', color: theme.colors.textHeading, marginBottom: 3 },
-    meta: { fontSize: 12, color: theme.colors.textBody, fontWeight: '500' },
-    actions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    actionBtn: { width: 44, height: 44, borderRadius: 12, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.background },
-    actionBtnRestore: { paddingHorizontal: 16, height: 44, borderRadius: 12, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(31,212,90,0.1)' },
-    actionBtnRestoreText: { fontSize: 13, fontWeight: '700', color: '#1FD45A' },
-    actionBtnTrash: { width: 44, height: 44, borderRadius: 12, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(239,68,68,0.08)' },
+    iconBox: {
+        width: 46, height: 46,
+        borderRadius: theme.radius.md,
+        justifyContent: 'center', alignItems: 'center'
+    },
+    info: { flex: 1, marginHorizontal: theme.spacing.lg },
+    name: {
+        fontSize: theme.typography.body.fontSize,
+        fontWeight: theme.typography.subtitle.fontWeight,
+        color: theme.colors.neutral[900],
+        marginBottom: 3
+    },
+    meta: {
+        fontSize: theme.typography.metadata.fontSize,
+        color: theme.colors.neutral[500],
+        fontWeight: theme.typography.metadata.fontWeight
+    },
+    actions: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+    actionBtn: {
+        width: 44, height: 44,
+        borderRadius: theme.radius.md,
+        justifyContent: 'center', alignItems: 'center',
+        backgroundColor: theme.colors.neutral[50]
+    },
+    actionBtnRestore: {
+        paddingHorizontal: theme.spacing.lg, height: 44,
+        borderRadius: theme.radius.md, justifyContent: 'center', alignItems: 'center',
+        backgroundColor: `${theme.colors.success}1A` // 10% opacity equivalent
+    },
+    actionBtnRestoreText: {
+        fontSize: theme.typography.caption.fontSize,
+        fontWeight: theme.typography.hero.fontWeight,
+        color: theme.colors.success
+    },
+    actionBtnTrash: {
+        width: 44, height: 44, borderRadius: theme.radius.md,
+        justifyContent: 'center', alignItems: 'center',
+        backgroundColor: `${theme.colors.error}14` // 8% opacity equivalent
+    },
 });

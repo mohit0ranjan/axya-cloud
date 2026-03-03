@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView, Dimensions, ActivityIndicator, Alert, TextInput, Modal, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView, Dimensions, Alert, TextInput, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { MoreHorizontal, ArrowLeft, Folder as FolderIcon, Plus, SortAsc, SortDesc, Filter } from 'lucide-react-native';
 import apiClient from '../services/apiClient';
 import { theme } from '../ui/theme';
+import { EmptyState } from '../ui/EmptyState';
+import { FolderCardSkeleton } from '../ui/Skeleton';
 
 const { width } = Dimensions.get('window');
 const CARD_MARGIN = 12;
@@ -160,7 +162,9 @@ export default function FoldersScreen({ navigation }: any) {
 
             <ScrollView style={styles.scrollArea} showsVerticalScrollIndicator={false}>
                 {isLoading ? (
-                    <ActivityIndicator style={{ marginTop: 40 }} size="large" color={theme.colors.primary} />
+                    <View style={styles.gridContainer}>
+                        {[1, 2, 3, 4].map(i => <FolderCardSkeleton key={i} />)}
+                    </View>
                 ) : (
                     <View style={styles.gridContainer}>
                         <TouchableOpacity
@@ -206,7 +210,14 @@ export default function FoldersScreen({ navigation }: any) {
                             </TouchableOpacity>
                         ))}
                         {filtered.length === 0 && (
-                            <Text style={styles.emptyText}>No folders found.</Text>
+                            <View style={{ width: '100%', paddingTop: 20 }}>
+                                <EmptyState
+                                    title={searchQuery ? 'No results found' : 'No folders here'}
+                                    description={searchQuery ? 'Try a different folder name' : 'Create a folder to organize your files'}
+                                    iconType={searchQuery ? 'search' : 'folder'}
+                                    style={{ flex: 0 }}
+                                />
+                            </View>
                         )}
                     </View>
                 )}

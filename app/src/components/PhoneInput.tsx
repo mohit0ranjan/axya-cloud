@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, TextInput, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useState, useRef, useCallback } from 'react';
+import { View, Text, TextInput, StyleSheet, Animated, Platform } from 'react-native';
 import { Phone } from 'lucide-react-native';
 
 interface PhoneInputProps {
@@ -10,6 +10,27 @@ interface PhoneInputProps {
 }
 
 const PhoneInput: React.FC<PhoneInputProps> = ({ value, onChangeText, error, editable = true }) => {
+    const [isFocused, setIsFocused] = useState(false);
+    const borderAnim = useRef(new Animated.Value(0)).current;
+
+    const handleFocus = useCallback(() => {
+        setIsFocused(true);
+        Animated.timing(borderAnim, {
+            toValue: 1,
+            duration: 200,
+            useNativeDriver: false,
+        }).start();
+    }, []);
+
+    const handleBlur = useCallback(() => {
+        setIsFocused(false);
+        Animated.timing(borderAnim, {
+            toValue: 0,
+            duration: 200,
+            useNativeDriver: false,
+        }).start();
+    }, []);
+
     const handleChange = (text: string) => {
         // Only allow 10 digits
         const cleaned = text.replace(/[^0-9]/g, '');
@@ -18,30 +39,66 @@ const PhoneInput: React.FC<PhoneInputProps> = ({ value, onChangeText, error, edi
         }
     };
 
+    // Animated border color
+    const borderColor = error
+        ? '#EF4444'
+        : borderAnim.interpolate({
+            inputRange: [0, 1],
+            outputRange: ['#E2E8F0', '#4B6EF5'],
+        });
+
+    const bgColor = error
+        ? '#FEF2F2'
+        : borderAnim.interpolate({
+            inputRange: [0, 1],
+            outputRange: ['#F4F6FB', '#F0F3FF'],
+        });
+
     return (
         <View style={styles.container}>
-            <View style={[styles.inputContainer, error ? styles.inputError : null]}>
+            <Animated.View
+                style={[
+                    styles.inputContainer,
+                    {
+                        borderColor: borderColor as any,
+                        backgroundColor: bgColor as any,
+                    },
+                ]}
+            >
                 <View style={styles.countryPicker}>
                     <Text style={styles.flag}>🇮🇳</Text>
                     <Text style={styles.countryCode}>+91</Text>
                 </View>
-                <View style={styles.divider} />
+                <View style={[
+                    styles.divider,
+                    isFocused && !error && { backgroundColor: '#4B6EF5', opacity: 0.3 },
+                    error ? { backgroundColor: '#EF4444', opacity: 0.3 } : {},
+                ]} />
                 <TextInput
                     style={styles.input}
-                    placeholder="9876543210"
-                    placeholderTextColor="#B0BAC9"
+                    placeholder="98765 43210"
+                    placeholderTextColor="#94A3B8"
                     keyboardType="phone-pad"
                     value={value}
                     onChangeText={handleChange}
+                    onFocus={handleFocus}
+                    onBlur={handleBlur}
                     editable={editable}
                     maxLength={10}
                 />
-                <View style={styles.iconBox}>
-                    <Phone color="#4B6EF5" size={18} />
+                <View style={[
+                    styles.iconBox,
+                    isFocused && !error && { backgroundColor: '#4B6EF5', },
+                    error ? { backgroundColor: '#EF4444' } : {},
+                ]}>
+                    <Phone color={isFocused || error ? '#fff' : '#4B6EF5'} size={16} />
                 </View>
-            </View>
-            {error ? <Text style={styles.errorText}>{error}</Text> : null}
-            <Text style={styles.hint}>Enter your 10-digit mobile number</Text>
+            </Animated.View>
+            {error ? (
+                <Text style={styles.errorText}>⚠ {error}</Text>
+            ) : (
+                <Text style={styles.hint}>Enter your 10-digit mobile number</Text>
+            )}
         </View>
     );
 };
@@ -49,65 +106,65 @@ const PhoneInput: React.FC<PhoneInputProps> = ({ value, onChangeText, error, edi
 const styles = StyleSheet.create({
     container: {
         width: '100%',
-        gap: 6,
+        gap: 8,
     },
     inputContainer: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: '#F4F6FB',
         borderRadius: 16,
-        borderWidth: 1.5,
-        borderColor: '#EAEDF3',
-        height: 60,
-        paddingHorizontal: 12,
-    },
-    inputError: {
-        borderColor: '#EF4444',
+        borderWidth: 2,
+        height: 62,
+        paddingHorizontal: 14,
     },
     countryPicker: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 6,
-        paddingRight: 8,
+        paddingRight: 10,
     },
     flag: {
-        fontSize: 20,
+        fontSize: 22,
     },
     countryCode: {
-        fontSize: 16,
-        fontWeight: '600',
+        fontSize: 17,
+        fontWeight: '700',
         color: '#1A1F36',
+        letterSpacing: 0.5,
     },
     divider: {
-        width: 1,
-        height: 24,
+        width: 1.5,
+        height: 28,
         backgroundColor: '#E2E8F0',
-        marginHorizontal: 8,
+        marginHorizontal: 10,
     },
     input: {
         flex: 1,
         fontSize: 18,
         color: '#1A1F36',
         fontWeight: '600',
-        letterSpacing: 1,
+        letterSpacing: 1.5,
+        paddingVertical: Platform.OS === 'ios' ? 0 : 0,
+        // Ensures vertical centering on both platforms
+        textAlignVertical: 'center',
     },
     iconBox: {
         width: 36,
         height: 36,
-        borderRadius: 10,
+        borderRadius: 12,
         backgroundColor: '#EEF1FD',
         justifyContent: 'center',
         alignItems: 'center',
     },
     errorText: {
-        color: '#EF4444',
-        fontSize: 12,
-        fontWeight: '500',
+        color: '#DC2626',
+        fontSize: 13,
+        fontWeight: '600',
         marginLeft: 4,
     },
     hint: {
-        color: '#8892A4',
-        fontSize: 12,
+        color: '#64748B',
+        fontSize: 13,
+        fontWeight: '500',
         marginLeft: 4,
     }
 });

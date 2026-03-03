@@ -1,7 +1,7 @@
 ﻿import React, { useState, useEffect, useContext, useCallback, useRef } from 'react';
 import {
     View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView,
-    ActivityIndicator, Alert, Platform, Modal, TextInput, KeyboardAvoidingView,
+    Alert, Platform, Modal, TextInput, KeyboardAvoidingView,
     Dimensions, FlatList, Animated,
 } from 'react-native';
 import {
@@ -16,6 +16,8 @@ import { AuthContext } from '../context/AuthContext';
 import { useUpload } from '../context/UploadContext';
 import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
+import { EmptyState } from '../ui/EmptyState';
+import { FileCardSkeleton } from '../ui/Skeleton';
 
 
 const { width } = Dimensions.get('window');
@@ -408,6 +410,21 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                                                 }
                                             }
                                         },
+                                        {
+                                            text: '📦 Move to Folder',
+                                            onPress: async () => {
+                                                try {
+                                                    const res = await apiClient.get('/files/folders');
+                                                    if (res.data.success) {
+                                                        setAllFolders(res.data.folders);
+                                                        setMoveTarget({ ids: [item.id] });
+                                                        setMoveModalVisible(true);
+                                                    }
+                                                } catch {
+                                                    Alert.alert('Error', 'Could not load folders');
+                                                }
+                                            }
+                                        },
                                         { text: '🗑 Move to Trash', style: 'destructive', onPress: () => handleDelete(item) },
 
                                     ]);
@@ -438,6 +455,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     {selectMode ? (
                         <>
                             <TouchableOpacity style={styles.iconBtn} onPress={() => handleBulkAction('star')}><Star color={theme.colors.accent} size={20} /></TouchableOpacity>
+                            <TouchableOpacity style={styles.iconBtn} onPress={() => handleBulkAction('move')}><Move color={theme.colors.primary} size={20} /></TouchableOpacity>
                             <TouchableOpacity style={styles.iconBtn} onPress={() => handleBulkAction('trash')}><Trash2 color={theme.colors.danger} size={20} /></TouchableOpacity>
                         </>
                     ) : (
@@ -500,12 +518,16 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 removeClippedSubviews
                 ListEmptyComponent={
                     isLoading ? (
-                        <ActivityIndicator style={{ marginTop: 40 }} size="large" color={theme.colors.primary} />
-                    ) : (
-                        <View style={styles.emptyState}>
-                            <Folder color="#cbd5e1" size={48} />
-                            <Text style={styles.emptyText}>{searchQuery ? 'No results found' : 'Folder is empty'}</Text>
+                        <View style={{ paddingTop: 12 }}>
+                            {[1, 2, 3, 4].map(i => <FileCardSkeleton key={i} />)}
                         </View>
+                    ) : (
+                        <EmptyState
+                            title={searchQuery ? 'No results found' : 'Folder is empty'}
+                            description={searchQuery ? 'Try a different keyword' : 'Upload files or create subfolders here'}
+                            iconType={searchQuery ? 'search' : 'folder'}
+                            style={{ paddingVertical: 60, flex: 0 }}
+                        />
                     )
                 }
             />

@@ -3,22 +3,14 @@ import {
     View, Text, StyleSheet, TouchableOpacity,
     Animated, Dimensions, FlatList,
 } from 'react-native';
-import { ChevronUp, ChevronDown, Trash2, X, AlertTriangle, CheckCircle2 } from 'lucide-react-native';
+import {
+    ChevronUp, ChevronDown, CheckCircle2, AlertTriangle, X
+} from 'lucide-react-native';
 import { useUpload } from '../context/UploadContext';
 import UploadProgress from './UploadProgress';
+import { theme } from '../ui/theme';
 
 const { height } = Dimensions.get('window');
-
-const C = {
-    primary: '#4B6EF5',
-    text: '#111827', // darker gray for max contrast without being pure black
-    muted: '#6B7280', // muted gray
-    bg: '#FFFFFF',
-    border: '#E5E7EB',
-    success: '#10B981',
-    danger: '#EF4444',
-    warn: '#F59E0B',
-};
 
 function formatBytes(bytes: number): string {
     if (bytes === 0) return '0 B';
@@ -27,7 +19,7 @@ function formatBytes(bytes: number): string {
     return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${sizes[i]}`;
 }
 
-export default function UploadProgressOverlay() {
+function UploadProgressOverlay() {
     const {
         tasks,
         cancelUpload, pauseUpload, resumeUpload, retryFailed, clearCompleted,
@@ -35,9 +27,10 @@ export default function UploadProgressOverlay() {
         activeCount, overallProgress, totalBytes, uploadedBytes,
     } = useUpload();
 
-    const [expanded, setExpanded] = useState(false);
+    const [isExpanded, setIsExpanded] = useState(false);
     const [isDismissed, setIsDismissed] = useState(false);
-    const expandAnim = useRef(new Animated.Value(0)).current;
+    const animHeight = useRef(new Animated.Value(0)).current; // 0 = collapsed, 1 = expanded
+    const animFade = useRef(new Animated.Value(0)).current; // 0 = hidden, 1 = visible
 
     // Un-dismiss when new files are added
     const prevTotal = useRef(totalFiles);
@@ -69,27 +62,44 @@ export default function UploadProgressOverlay() {
     const isErrorState = allDone && hasFailed;
 
     const toggleExpand = () => {
-        const toValue = expanded ? 0 : 1;
-        setExpanded(!expanded);
-        Animated.spring(expandAnim, {
-            toValue,
-            tension: 65,
-            friction: 10,
-            useNativeDriver: false,
-        }).start();
+        const MIN_HEIGHT = 0;
+        const MAX_HEIGHT = Math.min(tasks.length * 110 + 80, height * 0.55); // Max height for list
+        if (isExpanded) {
+            Animated.parallel([
+                Animated.timing(animHeight, {
+                    toValue: MIN_HEIGHT,
+                    duration: theme.motion.duration,
+                    useNativeDriver: false,
+                }),
+                Animated.timing(animFade, {
+                    toValue: 0,
+                    duration: theme.motion.duration,
+                    useNativeDriver: false,
+                }),
+            ]).start(() => setIsExpanded(false));
+        } else {
+            setIsExpanded(true);
+            Animated.parallel([
+                Animated.timing(animHeight, {
+                    toValue: MAX_HEIGHT,
+                    duration: theme.motion.duration,
+                    useNativeDriver: false,
+                }),
+                Animated.timing(animFade, {
+                    toValue: 1,
+                    duration: theme.motion.duration,
+                    useNativeDriver: false,
+                }),
+            ]).start();
+        }
     };
 
     const handleDismiss = () => {
         setIsDismissed(true);
     };
 
-    const expandedHeight = expandAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0, Math.min(tasks.length * 110 + 80, height * 0.55)],
-    });
-
     // Derived Display Logic
-    const progressColor = hasFailed ? C.danger : (allDone ? C.success : C.primary);
+    const progressColor = hasFailed ? theme.colors.error : (allDone ? theme.colors.success : theme.colors.primary);
 
     // Status text in banner
     let bannerTitle = '';
@@ -97,100 +107,93 @@ export default function UploadProgressOverlay() {
 
     if (hasFailed) {
         bannerTitle = `${failedCount} upload${failedCount > 1 ? 's' : ''} failed`;
-        bannerIcon = <AlertTriangle color={C.danger} size={18} />;
+        bannerIcon = <AlertTriangle color={theme.colors.error} size={18} />;
     } else if (allDone) {
         bannerTitle = 'Uploads complete';
-        bannerIcon = <CheckCircle2 color={C.success} size={18} />;
+        bannerIcon = <CheckCircle2 color={theme.colors.success} size={18} />;
     } else {
-        const remaining = activeCount + queuedCount;
-        bannerTitle = `Uploading ${remaining} item${remaining > 1 ? 's' : ''}`;
+        bannerTitle = `Uploading ${activeCount} item${activeCount > 1 ? 's' : ''}`;
     }
+
+    const animProgressUI = animHeight.interpolate({
+        inputRange: [0, 1],
+        outputRange: [`${overallProgress}%`, `${overallProgress}%`],
+    });
 
     return (
         <Animated.View style={s.container}>
             {/* ── Banner Header ─────────────────────────────────────────────────── */}
-            <View style={s.header}>
-                <TouchableOpacity style={s.headerTitleArea} onPress={toggleExpand} activeOpacity={0.7}>
+            <View style={s.bannerRow}>
+                <View style={s.bannerLeft}>
                     {bannerIcon}
-                    <Text style={[s.bannerTitle, hasFailed && { color: C.danger }]} numberOfLines={1}>
-                        {bannerTitle}
-                    </Text>
-                    {expanded ? <ChevronDown color={C.muted} size={20} /> : <ChevronUp color={C.muted} size={20} />}
-                </TouchableOpacity>
-
-                <View style={s.headerActions}>
-                    {hasFailed && (
-                        <TouchableOpacity onPress={retryFailed} style={{ paddingHorizontal: 8, paddingVertical: 4 }}>
-                            <Text style={s.primaryBtnText}>Retry All</Text>
+                    <Text style={s.bannerTitle}>{bannerTitle}</Text>
+                </View>
+                <View style={s.bannerRight}>
+                    <TouchableOpacity style={s.chevronBox} onPress={toggleExpand}>
+                        {isExpanded ? <ChevronDown size={20} color={theme.colors.neutral[500]} /> : <ChevronUp size={20} color={theme.colors.neutral[500]} />}
+                    </TouchableOpacity>
+                    {!isExpanded && (
+                        <TouchableOpacity style={s.closeBox} onPress={handleDismiss}>
+                            <X size={20} color={theme.colors.neutral[500]} />
                         </TouchableOpacity>
                     )}
-                    <TouchableOpacity onPress={handleDismiss} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ padding: 4 }}>
-                        <X color={C.muted} size={20} />
-                    </TouchableOpacity>
                 </View>
             </View>
 
-            {/* ── Global progress bar ────────────────────────────────────── */}
-            <View style={s.mainProgressTrack}>
+            {/* ── Main Progress Bar ── */}
+            <View style={[s.mainProgressTrack, isExpanded && s.mainProgressHidden]}>
                 <Animated.View
                     style={[
                         s.mainProgressFill,
                         {
-                            width: `${overallProgress}%`,
-                            backgroundColor: progressColor,
+                            width: animProgressUI,
+                            backgroundColor: hasFailed ? theme.colors.error : allDone ? theme.colors.success : theme.colors.primary,
                         },
                     ]}
                 />
             </View>
 
-            {/* ── Compact Stats row (always visible) ─────────────────────────────── */}
-            <TouchableOpacity activeOpacity={0.9} onPress={toggleExpand} style={s.statsRow}>
-                <StatPill label="Total" value={totalFiles} color={C.text} />
-                <StatPill label="Done" value={uploadedCount} color={C.success} />
-                <View style={dedupCount === 0 ? s.hiddenPill : undefined}>
-                    <StatPill label="Dedup" value={dedupCount} color={C.muted} />
+            {/* ── Collapsible Content ── */}
+            <Animated.View style={[s.contentBox, { opacity: animFade }]}>
+                <View style={s.statsRow}>
+                    <StatPill label="Uploaded" value={uploadedCount} />
+                    <StatPill label="Queued" value={queuedCount} />
+                    <StatPill label="Failed" value={failedCount} color={theme.colors.error} />
+                    <StatPill label="Avg speed" value="-- MB/s" />
                 </View>
-                <StatPill label="Queued" value={queuedCount} color={C.primary} />
-                {hasFailed && <StatPill label="Failed" value={failedCount} color={C.danger} />}
 
-                <View style={[s.statPill, { marginLeft: 'auto', alignItems: 'flex-end', paddingRight: 4 }]}>
-                    <Text style={s.statLabel}>{isErrorState ? 'Status' : 'Progress'}</Text>
-                    <Text style={[s.statValue, { color: progressColor }]}>
-                        {isErrorState ? 'Errors' : `${overallProgress}%`}
-                    </Text>
+                <View style={s.actionsRow}>
+                    <Text style={s.speedTxt}>{formatBytes(uploadedBytes)} / {formatBytes(totalBytes)} ({overallProgress}%)</Text>
+                    <TouchableOpacity style={s.clearBtn} onPress={clearCompleted}>
+                        <Text style={s.clearBtnTxt}>Clear completed</Text>
+                    </TouchableOpacity>
                 </View>
-            </TouchableOpacity>
 
-            {/* ── Expanded: file list ────────────────────────────────────── */}
-            <Animated.View style={{ height: expandedHeight, overflow: 'hidden' }}>
-                <View style={s.listContainer}>
-                    <View style={s.listHeader}>
-                        <Text style={s.listTitle}>Upload Queue</Text>
-                        <TouchableOpacity
-                            onPress={clearCompleted}
-                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                            style={s.clearBtn}
-                        >
-                            <Trash2 size={14} color={C.muted} />
-                            <Text style={s.clearBtnTxt}>Clear done</Text>
-                        </TouchableOpacity>
+                {/* ── Expanded: file list ────────────────────────────────────── */}
+                <Animated.View style={{ height: animHeight, overflow: 'hidden' }}>
+                    <View style={s.listContainer}>
+                        <FlatList
+                            data={tasks}
+                            keyExtractor={t => t.id}
+                            removeClippedSubviews={true}
+                            initialNumToRender={10}
+                            maxToRenderPerBatch={5}
+                            windowSize={5}
+                            nestedScrollEnabled={true}
+                            renderItem={({ item }) => (
+                                <UploadProgress
+                                    task={item}
+                                    onCancel={cancelUpload}
+                                    onPause={pauseUpload}
+                                    onResume={resumeUpload}
+                                    onRetry={resumeUpload} // Map retry action directly to resume
+                                />
+                            )}
+                            contentContainerStyle={s.list}
+                            showsVerticalScrollIndicator={false}
+                        />
                     </View>
-                    <FlatList
-                        data={tasks}
-                        keyExtractor={t => t.id}
-                        renderItem={({ item }) => (
-                            <UploadProgress
-                                task={item}
-                                onCancel={cancelUpload}
-                                onPause={pauseUpload}
-                                onResume={resumeUpload}
-                                onRetry={resumeUpload} // Map retry action directly to resume
-                            />
-                        )}
-                        contentContainerStyle={s.list}
-                        showsVerticalScrollIndicator={false}
-                    />
-                </View>
+                </Animated.View>
             </Animated.View>
         </Animated.View>
     );
@@ -201,14 +204,12 @@ export default function UploadProgressOverlay() {
 const StatPill = React.memo(function StatPill({
     label, value, color
 }: {
-    label: string; value: number | string; color: string;
+    label: string; value: number | string; color?: string;
 }) {
     return (
         <View style={s.statPill}>
             <Text style={s.statLabel}>{label}</Text>
-            <Text style={[s.statValue, { color }]}>
-                {value}
-            </Text>
+            <Text style={[s.pillVal, color ? { color } : null]}>{value}</Text>
         </View>
     );
 });
@@ -219,49 +220,56 @@ const s = StyleSheet.create({
     container: {
         position: 'absolute',
         bottom: 90,
-        left: 16,
-        right: 16,
-        backgroundColor: '#FFFFFF',
-        borderRadius: 16, // softer edges
+        left: theme.spacing.lg,
+        right: theme.spacing.lg,
+        backgroundColor: theme.colors.card,
+        borderRadius: theme.radius.modal, // Premium edge curves
         overflow: 'hidden',
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.08, // softer shadow
-        shadowRadius: 24,
-        elevation: 8,
+        ...theme.shadows.elevation2, // SaaS drop-shadow
     },
-    header: {
-        height: 54, // slightly compact header
+    bannerRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        paddingHorizontal: 16,
         justifyContent: 'space-between',
+        paddingHorizontal: theme.spacing.lg,
+        paddingTop: theme.spacing.lg,
+        paddingBottom: theme.spacing.md,
     },
-    headerTitleArea: {
+    bannerLeft: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 8,
-        flex: 1,
+        gap: theme.spacing.sm,
     },
     bannerTitle: {
-        fontSize: 15,
-        fontWeight: '500', // medium instead of bold
-        color: C.text,
+        fontSize: theme.typography.subtitle.fontSize,
+        fontWeight: theme.typography.subtitle.fontWeight,
+        color: theme.colors.neutral[900],
     },
-    headerActions: {
+    bannerRight: {
         flexDirection: 'row',
-        alignItems: 'center',
-        gap: 12,
+        gap: theme.spacing.sm,
     },
-    primaryBtnText: {
-        color: C.primary,
-        fontWeight: '500',
-        fontSize: 14,
+    chevronBox: {
+        padding: theme.spacing.xs,
+        backgroundColor: theme.colors.neutral[50],
+        borderRadius: theme.radius.sm,
     },
+    closeBox: {
+        padding: theme.spacing.xs,
+        backgroundColor: theme.colors.neutral[50], // Muted close
+        borderRadius: theme.radius.sm,
+    },
+    contentBox: {
+        flex: 1,
+    },
+    // ── Main Header line progress ────────────────────────────────────────────
     mainProgressTrack: {
         height: 3,
-        backgroundColor: '#F3F4F6',
+        backgroundColor: theme.colors.neutral[100],
         width: '100%',
+    },
+    mainProgressHidden: {
+        opacity: 0,
     },
     mainProgressFill: {
         height: 3,
@@ -269,9 +277,9 @@ const s = StyleSheet.create({
     // ── Stats row ────────────────────────────────────────────────────────────
     statsRow: {
         flexDirection: 'row',
-        paddingVertical: 12,
-        paddingHorizontal: 16,
-        gap: 16,
+        paddingVertical: theme.spacing.md,
+        paddingHorizontal: theme.spacing.lg,
+        gap: theme.spacing.lg,
         flexWrap: 'wrap',
     },
     statPill: {
@@ -279,32 +287,28 @@ const s = StyleSheet.create({
         gap: 2,
     },
     statLabel: {
-        fontSize: 12,
-        fontWeight: '400', // regular text for labels
-        color: C.muted,
-    },
-    statValue: {
-        fontSize: 16, // matching UI scale
-        fontWeight: '500', // medium instead of bold
-    },
-    // ── List ─────────────────────────────────────────────────────────────────
-    listContainer: {
-        flex: 1,
-        padding: 16,
-        paddingTop: 8,
-        borderTopWidth: 1,
-        borderTopColor: '#F3F4F6', // softer separate
-    },
-    listHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 12,
-    },
-    listTitle: {
-        fontSize: 14,
+        fontSize: 11,
+        color: theme.colors.neutral[500],
         fontWeight: '500',
-        color: C.text,
+        textTransform: 'uppercase',
+    },
+    pillVal: {
+        fontSize: 15,
+        fontWeight: '700',
+        color: theme.colors.neutral[900],
+    },
+    // ── Actions ──────────────────────────────────────────────────────────────
+    actionsRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: theme.spacing.lg,
+        paddingBottom: theme.spacing.md,
+    },
+    speedTxt: {
+        fontSize: 13,
+        color: theme.colors.neutral[600],
+        fontWeight: '500',
     },
     clearBtn: {
         flexDirection: 'row',
@@ -314,13 +318,20 @@ const s = StyleSheet.create({
     },
     clearBtnTxt: {
         fontSize: 12,
-        fontWeight: '400',
-        color: C.muted,
+        fontWeight: '500',
+        color: theme.colors.primary,
+    },
+    // ── List ─────────────────────────────────────────────────────────────────
+    listContainer: {
+        flex: 1,
+        paddingHorizontal: theme.spacing.lg,
+        paddingTop: theme.spacing.sm,
+        borderTopWidth: 1,
+        borderTopColor: theme.colors.neutral[100],
     },
     list: {
         paddingBottom: 20,
-    },
-    hiddenPill: {
-        display: 'none',
-    },
+    }
 });
+
+export default React.memo(UploadProgressOverlay);

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react-native';
 
 import { UploadTask } from '../services/UploadManager';
+import { theme } from '../ui/theme';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -82,21 +83,21 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
     };
 
     const StatusIcon = () => {
-        if (isCompleted && task.duplicate) return <Copy size={14} color="#06B6D4" />;
-        if (isCompleted) return <CheckCircle size={14} color="#1FD45A" />;
-        if (isFailed) return <AlertCircle size={14} color="#EF4444" />;
-        if (isPaused) return <Pause size={14} color="#F59E0B" />;
-        if (isCancelled) return <X size={14} color="#8892A4" />;
-        if (isRetrying) return <Loader size={14} color="#F59E0B" />;
-        if (isQueued) return <Clock size={14} color="#8892A4" />;
-        return <CloudUpload size={14} color="#4B6EF5" />;
+        if (isCompleted && task.duplicate) return <Copy size={16} color={theme.colors.info} />;
+        if (isCompleted) return <CheckCircle size={16} color={theme.colors.success} />;
+        if (isFailed) return <AlertCircle size={16} color={theme.colors.error} />;
+        if (isPaused) return <Pause size={16} color={theme.colors.warning} />;
+        if (isCancelled) return <X size={16} color={theme.colors.neutral[500]} />;
+        if (isRetrying) return <Loader size={16} color={theme.colors.warning} />;
+        if (isQueued) return <Clock size={16} color={theme.colors.neutral[500]} />;
+        return <CloudUpload size={16} color={theme.colors.primary} />;
     };
 
     const progressColor = isCompleted
-        ? (task.duplicate ? '#06B6D4' : '#1FD45A')
-        : isFailed ? '#EF4444'
-            : isPaused ? '#F59E0B'
-                : '#4B6EF5';
+        ? (task.duplicate ? theme.colors.info : theme.colors.success)
+        : isFailed ? theme.colors.error
+            : isPaused ? theme.colors.warning
+                : theme.colors.primary;
 
     return (
         <View style={styles.card}>
@@ -127,7 +128,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                             accessibilityLabel="Pause upload"
                         >
-                            <Pause size={17} color="#8892A4" />
+                            <Pause size={17} color={theme.colors.neutral[500]} />
                         </TouchableOpacity>
                     )}
                     {canResume && !canRetry && (
@@ -137,7 +138,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                             accessibilityLabel="Resume upload"
                         >
-                            <Play size={17} color="#4B6EF5" />
+                            <Play size={17} color={theme.colors.primary} />
                         </TouchableOpacity>
                     )}
                     {canRetry && (
@@ -147,7 +148,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                             accessibilityLabel="Retry upload"
                         >
-                            <RotateCcw size={17} color="#4B6EF5" />
+                            <RotateCcw size={17} color={theme.colors.primary} />
                         </TouchableOpacity>
                     )}
                     {canCancel && (
@@ -157,7 +158,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                             accessibilityLabel="Cancel upload"
                         >
-                            <X size={17} color="#EF4444" />
+                            <X size={17} color={theme.colors.error} />
                         </TouchableOpacity>
                     )}
                 </View>
@@ -183,24 +184,20 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
 
 const styles = StyleSheet.create({
     card: {
-        backgroundColor: '#fff',
-        borderRadius: 20,
-        padding: 16,
-        marginBottom: 12,
-        shadowColor: '#1A1F36',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.07,
-        shadowRadius: 10,
-        elevation: 3,
+        backgroundColor: theme.colors.card,
+        borderRadius: theme.radius.card,
+        padding: theme.spacing.lg,
+        marginBottom: theme.spacing.md,
+        ...theme.shadows.elevation1,
         borderWidth: 1,
-        borderColor: '#F1F3F9',
+        borderColor: theme.colors.neutral[100],
     },
     header: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        marginBottom: 12,
-        gap: 8,
+        marginBottom: theme.spacing.md,
+        gap: theme.spacing.sm,
     },
     info: {
         flex: 1,
@@ -208,9 +205,9 @@ const styles = StyleSheet.create({
         minWidth: 0,
     },
     fileName: {
-        fontSize: 14,
-        fontWeight: '700',
-        color: '#1A1F36',
+        fontSize: theme.typography.body.fontSize,
+        fontWeight: theme.typography.subtitle.fontWeight,
+        color: theme.colors.neutral[900],
     },
     statusRow: {
         flexDirection: 'row',
@@ -220,45 +217,47 @@ const styles = StyleSheet.create({
     statusText: {
         fontSize: 12,
         fontWeight: '600',
-        color: '#4B6EF5',
+        color: theme.colors.primary,
         flexShrink: 1,
     },
-    statusError: { color: '#EF4444' },
-    statusSuccess: { color: '#1FD45A' },
-    statusDuplicate: { color: '#06B6D4' },
-    statusPaused: { color: '#F59E0B' },
+    statusError: { color: theme.colors.error },
+    statusSuccess: { color: theme.colors.success },
+    statusDuplicate: { color: theme.colors.info },
+    statusPaused: { color: theme.colors.warning },
     actions: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 6,
     },
     iconBtn: {
-        padding: 6,
-        borderRadius: 10,
-        backgroundColor: '#F8F9FC',
+        padding: theme.spacing.sm,
+        borderRadius: theme.radius.md,
+        backgroundColor: theme.colors.neutral[50],
     },
     resumeBtn: {
-        backgroundColor: '#EEF1FD',
+        backgroundColor: theme.colors.primaryLight,
     },
     cancelBtn: {
-        backgroundColor: '#FEE2E2',
+        backgroundColor: `${theme.colors.error}1A`, // 10% opacity equivalent
     },
     progressTrack: {
-        height: 5,
-        borderRadius: 10,
-        backgroundColor: '#F4F6FB',
+        height: 6,
+        borderRadius: theme.radius.full,
+        backgroundColor: theme.colors.neutral[100],
         overflow: 'hidden',
         marginBottom: 6,
     },
     progressFill: {
         height: '100%',
-        borderRadius: 10,
+        borderRadius: theme.radius.full,
     },
     sizeText: {
-        fontSize: 11,
-        color: '#8892A4',
-        fontWeight: '500',
+        fontSize: theme.typography.metadata.fontSize,
+        color: theme.colors.neutral[500],
+        fontWeight: theme.typography.metadata.fontWeight,
     },
 });
 
-export default React.memo(UploadProgress);
+export default React.memo(UploadProgress, (prev, next) => {
+    return prev.task === next.task;
+});

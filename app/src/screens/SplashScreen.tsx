@@ -59,12 +59,12 @@ export default function SplashScreen({ onFinish }: Props) {
             }),
 
             // ── Hold for a beat ──
-            Animated.delay(800),
+            Animated.delay(250),
 
             // ── Exit fade ──
             Animated.timing(exitOpacity, {
                 toValue: 1,
-                duration: 300,
+                duration: 250,
                 useNativeDriver: ND,
             }),
         ]).start(() => {

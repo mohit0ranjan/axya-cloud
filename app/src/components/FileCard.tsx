@@ -101,31 +101,31 @@ export default function FileCard({ item, onPress, onTrash, onStar, onRestore, sh
                     >
                         <Star
                             color={item.is_starred ? '#FCBD0B' : theme.colors.textBody}
-                            size={18}
+                            size={20}
                             fill={item.is_starred ? '#FCBD0B' : 'transparent'}
                         />
                     </TouchableOpacity>
                 )}
                 {showRestore && onRestore && (
                     <TouchableOpacity
-                        style={[styles.actionBtn, { backgroundColor: 'rgba(31,212,90,0.1)' }]}
+                        style={[styles.actionBtnRestore]}
                         onPress={(e) => {
                             e.stopPropagation();
                             onRestore();
                         }}
                     >
-                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#1FD45A' }}>Restore</Text>
+                        <Text style={styles.actionBtnRestoreText}>Restore</Text>
                     </TouchableOpacity>
                 )}
                 {onTrash && (
                     <TouchableOpacity
-                        style={[styles.actionBtn, { backgroundColor: 'rgba(239,68,68,0.08)' }]}
+                        style={[styles.actionBtnTrash]}
                         onPress={(e) => {
                             e.stopPropagation();
                             onTrash();
                         }}
                     >
-                        <Trash2 color={theme.colors.danger} size={18} />
+                        <Trash2 color={theme.colors.danger} size={20} />
                     </TouchableOpacity>
                 )}
             </View>
@@ -143,6 +143,9 @@ const styles = StyleSheet.create({
     info: { flex: 1, marginHorizontal: 14 },
     name: { fontSize: 15, fontWeight: '600', color: theme.colors.textHeading, marginBottom: 3 },
     meta: { fontSize: 12, color: theme.colors.textBody, fontWeight: '500' },
-    actions: { flexDirection: 'row', gap: 6 },
-    actionBtn: { width: 36, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.background },
+    actions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    actionBtn: { width: 44, height: 44, borderRadius: 12, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.background },
+    actionBtnRestore: { paddingHorizontal: 16, height: 44, borderRadius: 12, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(31,212,90,0.1)' },
+    actionBtnRestoreText: { fontSize: 13, fontWeight: '700', color: '#1FD45A' },
+    actionBtnTrash: { width: 44, height: 44, borderRadius: 12, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(239,68,68,0.08)' },
 });

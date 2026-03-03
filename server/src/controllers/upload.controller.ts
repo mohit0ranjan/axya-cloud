@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { AuthRequest } from '../middlewares/auth.middleware';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import crypto from 'crypto';
 import pool from '../config/db';
 import { getDynamicClient } from '../services/telegram.service';
@@ -210,7 +211,7 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
 
     // ── No duplicate, proceed with upload ──────────────────────────────────
     const uploadId = crypto.randomUUID();
-    const uploadDir = path.join(__dirname, '../../uploads', uploadId);
+    const uploadDir = path.join(os.tmpdir(), 'axya_uploads', uploadId);
     const filePath = path.join(uploadDir, originalname);
     fs.mkdirSync(uploadDir, { recursive: true });
 

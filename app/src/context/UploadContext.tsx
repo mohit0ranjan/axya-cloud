@@ -23,6 +23,8 @@ interface UploadStats {
     cancelledCount: number;
     totalBytes: number;
     uploadedBytes: number;
+    avgUploadSpeedBps: number;
+    currentUploadSpeedBps: number;
     /** 0-100, byte-accurate */
     overallProgress: number;
 }

@@ -348,14 +348,16 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
     // Render each slide
     const renderItem = useCallback(({ item }: { item: any }) => {
-        const isImage = item.mime_type?.includes('image');
-        const isVideo = item.mime_type?.includes('video');
-        const isPdf = item.mime_type?.includes('pdf');
-        const isOfficeDoc = item.mime_type?.includes('word') || item.mime_type?.includes('excel') || item.mime_type?.includes('powerpoint') || item.mime_type?.includes('officedocument');
+        const mime = String(item.mime_type || '').toLowerCase();
+        const isImage = mime.includes('image');
+        const isVideo = mime.includes('video');
+        const isPdf = mime.includes('pdf');
+        const isOfficeDoc = mime.includes('word') || mime.includes('excel') || mime.includes('powerpoint') || mime.includes('officedocument');
         const isDoc = isPdf || isOfficeDoc;
 
         const streamUrl = `${API_BASE}/stream/${item.id}`;
         const downloadUrl = `${API_BASE}/files/${item.id}/download`;
+        const pdfInlineUrl = `${API_BASE}/files/${item.id}/stream`;
 
         if (isImage) {
             return (
@@ -377,12 +379,11 @@ export default function FilePreviewScreen({ route, navigation }: any) {
             );
         }
         if (isDoc && jwt) {
-            // For iOS, direct PDF works in WebView. For Android, it might require google docs viewer for office files, 
-            // but we'll try direct Webview first as standard procedure.
+            const docUrl = isPdf ? pdfInlineUrl : downloadUrl;
             return (
                 <View style={{ width, flex: 1, backgroundColor: theme.colors.neutral[50] }}>
                     <WebView
-                        source={{ uri: downloadUrl, headers: { Authorization: `Bearer ${jwt}` } }}
+                        source={{ uri: docUrl, headers: { Authorization: `Bearer ${jwt}` } }}
                         style={{ flex: 1 }}
                         startInLoadingState={true}
                         renderLoading={() => (
@@ -398,12 +399,16 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                                 <Text style={{ color: theme.colors.neutral[500], marginTop: theme.spacing.sm, fontSize: 14 }}>Try downloading the file instead.</Text>
                             </View>
                         )}
-                        // Prevent navigation away from the document
                         onShouldStartLoadWithRequest={(request) => {
-                            if (request.url !== downloadUrl) {
-                                return false; // Block external navigation
-                            }
-                            return true;
+                            const url = request?.url || '';
+                            // Allow initial/internal/document loads and block external browser hops.
+                            if (
+                                url.startsWith(API_BASE) ||
+                                url.startsWith('about:blank') ||
+                                url.startsWith('blob:') ||
+                                url.startsWith('data:')
+                            ) return true;
+                            return false;
                         }}
                     />
                 </View>

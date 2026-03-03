@@ -132,6 +132,7 @@ class UploadManager {
     private readonly CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB chunks
     // ✅ Throttle notify to ~200ms to avoid excessive React re-renders
     private readonly NOTIFY_THROTTLE_MS = 200;
+    private readonly SPEED_WINDOW_MS = 3000;
 
     // ── Historical stats for auto-cleared tasks ──
     private clearedCompletedCount = 0;
@@ -142,6 +143,9 @@ class UploadManager {
 
     // ── Cached stats (invalidated on every notify) ──
     private cachedStats: ReturnType<UploadManager['computeStats']> | null = null;
+    private speedSamples: Array<{ ts: number; uploadedBytes: number }> = [];
+    private emaUploadSpeedBps = 0;
+    private lastSpeedSampleTs = 0;
 
     private get activeUploads(): number {
         return this.tasks.filter(t => t.status === 'uploading').length;
@@ -362,13 +366,17 @@ class UploadManager {
         // Combined historic + active stats
         const totalFiles = this.clearedTotalFiles + this.tasks.length;
         const uploadedCount = this.clearedCompletedCount + activeUploadedCount;
-        const failedCount = this.clearedFailedCount + activeFailedCount;
+        const failedCount = activeFailedCount;
         const totalBytes = this.clearedTotalBytes + activeTotalBytes;
         const uploadedBytes = this.clearedUploadedBytes + activeUploadedBytes;
 
         const overallProgress = totalBytes > 0
             ? Math.round(Math.min((uploadedBytes / totalBytes) * 100, 100))
             : 0;
+        const { avgUploadSpeedBps, currentUploadSpeedBps } = this.computeUploadSpeeds(
+            uploadedBytes,
+            uploadingCount > 0
+        );
 
         return {
             totalFiles,
@@ -381,7 +389,49 @@ class UploadManager {
             cancelledCount,
             totalBytes,
             uploadedBytes,
+            avgUploadSpeedBps,
+            currentUploadSpeedBps,
             overallProgress,
+        };
+    }
+
+    private computeUploadSpeeds(uploadedBytes: number, isActivelyUploading: boolean) {
+        const now = Date.now();
+        let currentUploadSpeedBps = 0;
+
+        if (!isActivelyUploading) {
+            this.speedSamples = [{ ts: now, uploadedBytes }];
+            this.emaUploadSpeedBps = 0;
+            this.lastSpeedSampleTs = now;
+            return { avgUploadSpeedBps: 0, currentUploadSpeedBps: 0 };
+        }
+
+        if (!this.lastSpeedSampleTs || (now - this.lastSpeedSampleTs) >= this.NOTIFY_THROTTLE_MS) {
+            this.speedSamples.push({ ts: now, uploadedBytes });
+            this.lastSpeedSampleTs = now;
+        }
+
+        const cutoff = now - this.SPEED_WINDOW_MS;
+        this.speedSamples = this.speedSamples.filter(s => s.ts >= cutoff);
+
+        if (this.speedSamples.length >= 2) {
+            const first = this.speedSamples[0];
+            const last = this.speedSamples[this.speedSamples.length - 1];
+            const deltaBytes = Math.max(last.uploadedBytes - first.uploadedBytes, 0);
+            const deltaTimeSec = Math.max((last.ts - first.ts) / 1000, 0.001);
+            currentUploadSpeedBps = deltaBytes / deltaTimeSec;
+        }
+
+        if (currentUploadSpeedBps > 0) {
+            const alpha = 0.4;
+            this.emaUploadSpeedBps = this.emaUploadSpeedBps === 0
+                ? currentUploadSpeedBps
+                : (alpha * currentUploadSpeedBps) + ((1 - alpha) * this.emaUploadSpeedBps);
+        }
+
+        return {
+            avgUploadSpeedBps: Math.max(this.emaUploadSpeedBps, 0),
+            currentUploadSpeedBps: Math.max(currentUploadSpeedBps, 0),
         };
     }
 

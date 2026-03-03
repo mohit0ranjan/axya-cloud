@@ -16,15 +16,50 @@ export default function TrashScreen({ navigation }: any) {
     const [isLoading, setIsLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [files, setFiles] = useState<any[]>([]);
+    const [loadError, setLoadError] = useState<string | null>(null);
+
+    const normalizeTrashFiles = useCallback((input: any): any[] => {
+        if (!Array.isArray(input)) return [];
+        return input
+            .map((row, index) => {
+                if (!row || typeof row !== 'object') return null;
+                const rawId = row.id ?? row.file_id;
+                if (!rawId) return null;
+                const name = typeof row.name === 'string' ? row.name : row.file_name;
+                if (!name || typeof name !== 'string') return null;
+                const createdAtMs = new Date(row.created_at).getTime();
+                const createdAt = Number.isFinite(createdAtMs) ? row.created_at : new Date().toISOString();
+                return {
+                    ...row,
+                    id: String(rawId),
+                    name,
+                    file_name: row.file_name || name,
+                    size: Number.isFinite(Number(row.size)) ? Number(row.size) : 0,
+                    created_at: createdAt,
+                    _fallbackKey: `trash-${index}`,
+                };
+            })
+            .filter(Boolean);
+    }, []);
 
     useEffect(() => { fetchTrash(); }, []);
 
     const fetchTrash = async () => {
         setIsLoading(true);
+        setLoadError(null);
         try {
             const res = await apiClient.get('/files/trash');
-            if (res.data.success) setFiles(res.data.files);
-        } catch { showToast('Could not load trash', 'error'); }
+            if (res.data?.success) {
+                const safeFiles = normalizeTrashFiles(res.data?.files);
+                setFiles(safeFiles);
+                return;
+            }
+            throw new Error(res.data?.error || 'Unexpected trash response');
+        } catch {
+            setFiles([]);
+            setLoadError('Could not load trash right now');
+            showToast('Could not load trash', 'error');
+        }
         finally { setIsLoading(false); setRefreshing(false); }
     };
 
@@ -73,7 +108,7 @@ export default function TrashScreen({ navigation }: any) {
             item={f}
             onPress={() => navigation.navigate('FilePreview', {
                 files,
-                initialIndex: files.findIndex(x => x.id === f.id),
+                initialIndex: Math.max(files.findIndex(x => x.id === f.id), 0),
                 file: f,
             })}
             onTrash={() => handleDelete(f.id)}
@@ -84,7 +119,7 @@ export default function TrashScreen({ navigation }: any) {
         />
     ), [files, token]);
 
-    const keyExtractor = useCallback((item: any) => item.id, []);
+    const keyExtractor = useCallback((item: any, index: number) => item?.id || item?._fallbackKey || `trash-item-${index}`, []);
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
@@ -104,6 +139,15 @@ export default function TrashScreen({ navigation }: any) {
                 <View style={styles.content}>
                     {[1, 2, 3].map(i => <FileCardSkeleton key={i} />)}
                 </View>
+            ) : loadError ? (
+                <EmptyState
+                    title="Trash unavailable"
+                    description={loadError}
+                    iconType="error"
+                    buttonText="Try Again"
+                    onButtonPress={fetchTrash}
+                    style={{ paddingVertical: 80, flex: 1 }}
+                />
             ) : files.length === 0 ? (
                 <EmptyState
                     title="Trash is empty"

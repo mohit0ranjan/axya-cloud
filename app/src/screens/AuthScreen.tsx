@@ -4,7 +4,7 @@ import {
     ActivityIndicator, Dimensions, StatusBar,
     Animated, Easing, KeyboardAvoidingView, Platform,
     TouchableOpacity, SafeAreaView, ScrollView, Keyboard,
-    TouchableWithoutFeedback, Pressable,
+    Pressable,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { ArrowRight, ArrowLeft, Shield, Zap, HardDrive } from 'lucide-react-native';
@@ -102,6 +102,7 @@ export default function AuthScreen({ navigation }: any) {
     // Telegram specific session info
     const [tempSession, setTempSession] = useState('');
     const [phoneCodeHash, setPhoneCodeHash] = useState('');
+    const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
 
     // Animations
     const heroOpacity = useRef(new Animated.Value(0)).current;
@@ -144,12 +145,14 @@ export default function AuthScreen({ navigation }: any) {
         const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
 
         const onShow = () => {
+            setIsKeyboardVisible(true);
             Animated.parallel([
                 Animated.timing(heroShrink, { toValue: 0.55, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
                 Animated.timing(heroFadeOut, { toValue: 0.0, duration: 200, useNativeDriver: true }),
             ]).start();
         };
         const onHide = () => {
+            setIsKeyboardVisible(false);
             Animated.parallel([
                 Animated.timing(heroShrink, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
                 Animated.timing(heroFadeOut, { toValue: 1, duration: 280, useNativeDriver: true }),
@@ -223,6 +226,7 @@ export default function AuthScreen({ navigation }: any) {
     const floatY = floatAnim.interpolate({ inputRange: [0, 1], outputRange: [0, -10] });
     const stepFadeIn = stepAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
     const stepSlide = stepAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] });
+    const keyboardOffset = Platform.OS === 'ios' ? 24 : 12;
 
     return (
         <SafeAreaView style={styles.root}>
@@ -247,19 +251,26 @@ export default function AuthScreen({ navigation }: any) {
             </TouchableOpacity>
 
             <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                keyboardVerticalOffset={keyboardOffset}
                 style={{ flex: 1 }}
             >
-                <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-                    <ScrollView
-                        bounces={false}
-                        showsVerticalScrollIndicator={false}
-                        keyboardShouldPersistTaps="handled"
-                        contentContainerStyle={{ flexGrow: 1 }}
-                    >
+                <ScrollView
+                    bounces={false}
+                    showsVerticalScrollIndicator={false}
+                    keyboardShouldPersistTaps="always"
+                    keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+                    contentInsetAdjustmentBehavior="always"
+                    onScrollBeginDrag={Keyboard.dismiss}
+                    contentContainerStyle={[
+                        styles.scrollContainer,
+                        { paddingBottom: isKeyboardVisible ? 22 : 32 },
+                    ]}
+                >
                         {/* Hero — shrinks when keyboard opens */}
                         <Animated.View style={[
                             styles.heroArea,
+                            isKeyboardVisible && styles.heroAreaKeyboard,
                             {
                                 opacity: Animated.multiply(heroOpacity, heroFadeOut),
                                 transform: [{ scale: Animated.multiply(heroScale, heroShrink) }],
@@ -297,6 +308,7 @@ export default function AuthScreen({ navigation }: any) {
                         <Animated.View style={[styles.sheet, {
                             opacity: sheetOpacity,
                             transform: [{ translateY: sheetY }],
+                            maxHeight: isKeyboardVisible ? height * 0.86 : height * 0.76,
                         }]}>
                             <View style={styles.sheetHandle} />
 
@@ -367,8 +379,7 @@ export default function AuthScreen({ navigation }: any) {
                                 </Text>
                             </View>
                         </Animated.View>
-                    </ScrollView>
-                </TouchableWithoutFeedback>
+                </ScrollView>
             </KeyboardAvoidingView>
         </SafeAreaView>
     );
@@ -376,6 +387,7 @@ export default function AuthScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
     root: { flex: 1, backgroundColor: '#F4F6FB' },
+    scrollContainer: { flexGrow: 1, justifyContent: 'flex-end' },
     backBtn: {
         padding: 14,
         marginTop: Platform.OS === 'ios' ? 8 : 12,
@@ -389,6 +401,11 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         overflow: 'hidden',
         minHeight: 180,
+    },
+    heroAreaKeyboard: {
+        flex: 0,
+        minHeight: 24,
+        maxHeight: 84,
     },
     // Refined concentric background circles
     blobOuter: {
@@ -436,7 +453,6 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: -6 },
         shadowOpacity: 0.06, shadowRadius: 20,
         elevation: 16,
-        maxHeight: height * 0.72,
     },
     scrollContent: { alignItems: 'center', gap: 16, paddingBottom: 8 },
     sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: '#E2E8F0', marginBottom: 4 },
@@ -451,7 +467,7 @@ const styles = StyleSheet.create({
         lineHeight: 21, fontWeight: '500',
     },
     stepDots: { flexDirection: 'row', gap: 6, alignItems: 'center' },
-    stepDot: { height: 8, borderRadius: 4, transition: 'width 0.3s' },
+    stepDot: { height: 8, borderRadius: 4 },
 
     formArea: { width: '100%', gap: 20 },
 

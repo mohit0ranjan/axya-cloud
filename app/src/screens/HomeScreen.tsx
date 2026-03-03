@@ -29,6 +29,8 @@ import AxyaLogo from '../components/AxyaLogo';
 import { useServerKeepAlive } from '../hooks/useServerKeepAlive';
 
 const { width } = Dimensions.get('window');
+const HOME_RECENT_FILES_PREVIEW_LIMIT = 3;
+const HOME_ACTIVITY_PREVIEW_LIMIT = 3;
 
 // ── Static color tokens (used by StyleSheet.create which runs outside render) ──
 const CS = {
@@ -178,7 +180,7 @@ export default function HomeScreen({ navigation }: any) {
                     apiClient.get('/files?limit=10&sort=created_at&order=DESC'),
                     apiClient.get('/files/folders'),
                     apiClient.get('/files/recent-accessed').catch(() => ({ data: { files: [] } })),
-                    apiClient.get('/files/activity?limit=5').catch(() => ({ data: { success: true, activity: [] } })),
+                    apiClient.get(`/files/activity?limit=${HOME_ACTIVITY_PREVIEW_LIMIT}`).catch(() => ({ data: { success: true, activity: [] } })),
                 ]);
             } else {
                 // Cold start — stagger to avoid 5-request burst hitting Render wake-up
@@ -191,7 +193,7 @@ export default function HomeScreen({ navigation }: any) {
                 // These two are non-critical, fire together after core data
                 [recentAccessedRes, activityRes] = await Promise.all([
                     apiClient.get('/files/recent-accessed').catch(() => ({ data: { files: [] } })),
-                    apiClient.get('/files/activity?limit=5').catch(() => ({ data: { success: true, activity: [] } })),
+                    apiClient.get(`/files/activity?limit=${HOME_ACTIVITY_PREVIEW_LIMIT}`).catch(() => ({ data: { success: true, activity: [] } })),
                 ]);
             }
 
@@ -310,12 +312,9 @@ export default function HomeScreen({ navigation }: any) {
     // Smart Insights Logic
     const unusedGBNum = Math.max(0, quotaGBNum - usedGBNum);
 
-    const largestFile = useMemo(() => {
-        if (!recentFiles || recentFiles.length === 0) return null;
-        return [...recentFiles].sort((a, b) => b.size - a.size)[0];
-    }, [recentFiles]);
-
-    const displayItems = searchQuery ? searchResults : recentFiles;
+    const displayItems = searchQuery
+        ? searchResults
+        : recentFiles.slice(0, HOME_RECENT_FILES_PREVIEW_LIMIT);
 
     return (
         <SafeAreaView style={[s.root, { backgroundColor: C.bg }]}>
@@ -368,7 +367,7 @@ export default function HomeScreen({ navigation }: any) {
                     STORAGE CARD
                 ═══════════════════════════════════════════════════════════ */}
                 {!searchQuery && (
-                    <View style={{ marginBottom: staticTheme.spacing['4xl'] }}>
+                    <View style={{ marginBottom: staticTheme.spacing.lg }}>
                         {/* Storage Card with Soft Mesh Gradient simulated */}
                         <View style={s.storageCard}>
                             {/* Decorative background blurs to simulate mesh */}
@@ -417,29 +416,6 @@ export default function HomeScreen({ navigation }: any) {
                             </View>
                         </View>
 
-                        {/* Smart Storage Insights Row */}
-                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: staticTheme.spacing.xl, gap: staticTheme.spacing.md }}>
-                            <View style={[s.insightPill, { backgroundColor: C.success + '1A' }]}>
-                                <View style={[s.insightIconBox, { backgroundColor: C.success + '33' }]}>
-                                    <Activity color={C.success} size={14} />
-                                </View>
-                                <View>
-                                    <Text style={s.insightLabel}>{unusedGBNum.toFixed(1)} GB Free</Text>
-                                    <Text style={s.insightSub}>Available space</Text>
-                                </View>
-                            </View>
-                            {largestFile && (
-                                <View style={[s.insightPill, { backgroundColor: C.accent + '1A' }]}>
-                                    <View style={[s.insightIconBox, { backgroundColor: C.accent + '33' }]}>
-                                        <HardDrive color={C.accent} size={14} />
-                                    </View>
-                                    <View>
-                                        <Text style={s.insightLabel} numberOfLines={1}>{largestFile.name}</Text>
-                                        <Text style={s.insightSub}>Largest file ({formatSize(largestFile.size)})</Text>
-                                    </View>
-                                </View>
-                            )}
-                        </ScrollView>
                     </View>
 
                 )}
@@ -706,7 +682,7 @@ export default function HomeScreen({ navigation }: any) {
                     <View style={{ marginTop: 32, paddingHorizontal: 20 }}>
                         <Text style={s.sectionLabel}>RECENT ACTIVITY</Text>
                         <View style={s.activityList}>
-                            {activity.map((act, i) => (
+                            {activity.slice(0, HOME_ACTIVITY_PREVIEW_LIMIT).map((act, i) => (
                                 <View key={act.id || i} style={[s.activityItem, { backgroundColor: C.card }]}>
                                     <View style={s.activityIcon}>
                                         <Activity color={C.primary} size={14} />
@@ -972,6 +948,7 @@ const s = StyleSheet.create({
         borderCurve: 'continuous',
     },
     insightIconBox: { width: 36, height: 36, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+    insightTextWrap: { maxWidth: 170 },
     insightLabel: { fontSize: 13, fontWeight: '700', color: CS.text, marginBottom: 2 },
     insightSub: { fontSize: 11, color: CS.muted, fontWeight: '500' },
 
@@ -1163,7 +1140,18 @@ const s = StyleSheet.create({
         shadowColor: CS.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
     },
     btnConfirmTxt: { fontWeight: '700', color: '#fff', fontSize: 14 },
-    // Recently Opened chips
+    // Recent Files strip
+    recentStripWrap: { marginTop: 4 },
+    recentStripList: { paddingHorizontal: 20, gap: 12 },
+    recentStripEmpty: {
+        marginHorizontal: 20,
+        backgroundColor: CS.card,
+        borderRadius: 14,
+        paddingVertical: 14,
+        alignItems: 'center',
+    },
+    recentStripEmptyText: { fontSize: 13, fontWeight: '600', color: CS.muted },
+    // Recent chips
     recentChip: {
         width: 88, alignItems: 'center', marginBottom: 4,
     },

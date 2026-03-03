@@ -33,8 +33,8 @@ export function EmptyState({
         },
         file: {
             Icon: FileSearch,
-            color: theme.colors.info,
-            bg: theme.colors.info + '1A',
+            color: theme.colors.primary,
+            bg: theme.colors.primary + '1A',
         },
         error: {
             Icon: AlertCircle,
@@ -43,13 +43,13 @@ export function EmptyState({
         },
         network: {
             Icon: WifiOff,
-            color: theme.colors.warning,
-            bg: theme.colors.warning + '1A',
+            color: theme.colors.accent,
+            bg: theme.colors.accent + '1A',
         },
         search: {
             Icon: FileSearch,
-            color: theme.colors.neutral[500],
-            bg: theme.colors.neutral[200],
+            color: theme.colors.muted,
+            bg: theme.colors.border,
         }
     };
 
@@ -61,8 +61,8 @@ export function EmptyState({
             <View style={[styles.iconWrapper, { backgroundColor: config.bg }]}>
                 <Icon color={config.color} size={36} strokeWidth={1.5} />
             </View>
-            <Text style={[styles.title, { color: theme.colors.neutral[900] }]}>{title}</Text>
-            <Text style={[styles.description, { color: theme.colors.neutral[500] }]}>{description}</Text>
+            <Text style={[styles.title, { color: theme.colors.textHeading }]}>{title}</Text>
+            <Text style={[styles.description, { color: theme.colors.muted }]}>{description}</Text>
 
             {buttonText && onButtonPress && (
                 <TouchableOpacity

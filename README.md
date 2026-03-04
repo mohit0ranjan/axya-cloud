@@ -6,11 +6,14 @@ Modern self-hosted cloud storage inspired by Teledrive.
 Upload, organize, preview and stream your files with a smooth React Native mobile experience and reliable Node.js backend.
 
 <p align="center">
-  <img src="https://via.placeholder.com/720x320/0d1117/58a6ff?text=ANYX+Smart+Cloud+Drive&font=roboto" alt="ANYX Banner" width="720"/>
-  <br/>
-  <sub>Fast previews • Background uploads • Native feel</sub>
+  <img src="./axya.png" alt="Axya — Telegram Powered Cloud Drive" width="900"/>
 </p>
 
+<h1 align="center">Axya</h1>
+
+<p align="center">
+Telegram-Powered Cloud Drive with instant uploads, streaming, and unlimited storage.
+</p>
 [![GitHub stars](https://img.shields.io/github/stars/your-username/anyx?style=social)](https://github.com/your-username/anyx)
 [![GitHub forks](https://img.shields.io/github/forks/your-username/anyx?style=social)](https://github.com/your-username/anyx/fork)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)

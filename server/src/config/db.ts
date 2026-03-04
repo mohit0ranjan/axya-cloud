@@ -38,6 +38,10 @@ const pool = new Pool({
 
 // Detailed error logging
 pool.on('error', (err) => {
+    if (err.message.includes('Connection terminated unexpectedly')) {
+        console.warn('⚡ [DB] Neon serverless connection dropped (DB sleeping). Will auto-reconnect on next query.');
+        return; // Non-fatal — pool self-heals
+    }
     console.error('🧨 [Database Pool Error]', err.message);
     if (err.message.includes('SSL')) {
         console.error('💡 SSL issue. Check DATABASE_URL sslmode param.');

@@ -137,6 +137,7 @@ const styles = StyleSheet.create({
         borderRadius: 16,
         borderWidth: 2,
         height: 62,
+        minHeight: 48,
         paddingHorizontal: 14,
     },
     countryPicker: {
@@ -166,8 +167,7 @@ const styles = StyleSheet.create({
         color: '#1A1F36',
         fontWeight: '600',
         letterSpacing: 1.5,
-        paddingVertical: Platform.OS === 'ios' ? 0 : 0,
-        // Ensures vertical centering on both platforms
+        height: '100%',
         textAlignVertical: 'center',
     },
     iconBox: {
@@ -189,7 +189,9 @@ const styles = StyleSheet.create({
         fontSize: 13,
         fontWeight: '500',
         marginLeft: 4,
-    }
+    },
 });
 
 export default PhoneInput;
+
+

@@ -2,7 +2,7 @@
 import {
     View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView,
     Alert, Platform, Modal, TextInput, KeyboardAvoidingView,
-    Dimensions, FlatList, Animated,
+    Dimensions, FlatList, Animated, ActivityIndicator,
 } from 'react-native';
 import {
     ArrowLeft, Trash2, FileText, Image as ImageIcon, Plus, Folder,
@@ -41,6 +41,7 @@ const SORT_OPTIONS = [
 ];
 
 const COLORS = ['#4B6EF5', '#1FD45A', '#FCBD0B', '#EF4444', '#9333EA', '#0D9488', '#F97316', '#EC4899'];
+const PAGE_SIZE = 50;
 
 function formatSize(bytes: number) {
     if (!bytes) return '0 B';
@@ -71,6 +72,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     const [isLoading, setIsLoading] = useState(true);
     const [files, setFiles] = useState<any[]>([]);
     const [searchQuery, setSearchQuery] = useState('');
+
+    // Client-side pagination — render in batches of PAGE_SIZE
+    const [displayLimit, setDisplayLimit] = useState(PAGE_SIZE);
 
     // View state
     const [filterTab, setFilterTab] = useState('all');
@@ -108,6 +112,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     const [moveTarget, setMoveTarget] = useState<any>(null);
 
     useEffect(() => { fetchFolderFiles(); }, [folderId, sortKey]);
+
+    // Reset display limit when filter/search changes
+    useEffect(() => { setDisplayLimit(PAGE_SIZE); }, [filterTab, searchQuery]);
 
     const fetchFolderFiles = async () => {
         setIsLoading(true);
@@ -247,6 +254,33 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             ]
         );
     };
+
+    // ── Delete current folder ────────────────────────────────────────────
+    const handleDeleteCurrentFolder = () => {
+        Alert.alert(
+            'Move Folder to Trash',
+            `Move "${folderName}" and all its contents to trash?`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Move to Trash',
+                    style: 'destructive',
+                    onPress: async () => {
+                        try {
+                            await apiClient.delete(`/files/folder/${folderId}`);
+                            navigation.goBack();
+                        } catch (e: any) {
+                            Alert.alert('Error', e.response?.data?.error || 'Could not delete folder');
+                        }
+                    }
+                }
+            ]
+        );
+    };
+
+    const handleLoadMore = useCallback(() => {
+        setDisplayLimit(prev => prev + PAGE_SIZE);
+    }, []);
 
 
     const handleCreateFolder = async () => {
@@ -463,6 +497,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                             <TouchableOpacity style={styles.iconBtn} onPress={() => setIsGridView(v => !v)}>{isGridView ? <List color={theme.colors.textHeading} size={20} /> : <Grid color={theme.colors.textHeading} size={20} />}</TouchableOpacity>
                             <TouchableOpacity style={styles.iconBtn} onPress={() => setShowSortModal(true)}><SortAsc color={theme.colors.textHeading} size={20} /></TouchableOpacity>
                             <TouchableOpacity style={styles.iconBtn} onPress={() => setCreateModalVisible(true)}><Plus color={theme.colors.textHeading} size={22} /></TouchableOpacity>
+                            <TouchableOpacity style={styles.iconBtn} onPress={handleDeleteCurrentFolder}><Trash2 color={theme.colors.danger} size={20} /></TouchableOpacity>
                         </>
                     )}
                 </View>
@@ -501,21 +536,32 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 </View>
             </View>
 
-            {/* ✅ FlatList replaces ScrollView+map — virtualises large file lists */}
+            {/* ✅ FlatList with client-side pagination — loads PAGE_SIZE at a time */}
             <FlatList
                 style={styles.scrollArea}
-                data={isLoading ? [] : filteredFiles}
+                data={isLoading ? [] : filteredFiles.slice(0, displayLimit)}
                 keyExtractor={(item) => String(item.id)}
                 renderItem={({ item }) => renderCard(item)}
                 numColumns={isGridView ? 2 : 1}
-                key={isGridView ? 'grid' : 'list'}  // force re-layout on view toggle
+                key={isGridView ? 'grid' : 'list'}
                 columnWrapperStyle={isGridView ? styles.gridContainer : undefined}
                 contentContainerStyle={{ paddingBottom: 100, marginTop: isGridView ? 12 : 0 }}
                 showsVerticalScrollIndicator={false}
                 windowSize={10}
                 maxToRenderPerBatch={20}
                 initialNumToRender={15}
-                removeClippedSubviews
+                onEndReached={handleLoadMore}
+                onEndReachedThreshold={0.5}
+                ListFooterComponent={
+                    !isLoading && filteredFiles.length > displayLimit ? (
+                        <View style={{ paddingVertical: 20, alignItems: 'center' }}>
+                            <ActivityIndicator size="small" color={staticTheme.colors.primary} />
+                            <Text style={{ fontSize: 12, color: staticTheme.colors.textBody, marginTop: 8 }}>
+                                Showing {Math.min(displayLimit, filteredFiles.length)} of {filteredFiles.length}
+                            </Text>
+                        </View>
+                    ) : null
+                }
                 ListEmptyComponent={
                     isLoading ? (
                         <View style={{ paddingTop: 12 }}>

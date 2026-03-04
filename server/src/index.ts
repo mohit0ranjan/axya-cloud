@@ -2,6 +2,9 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import rateLimit from 'express-rate-limit';
 import { initSchema } from './services/db.service';
 import pool from './config/db';
@@ -139,9 +142,30 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // ── Startup ──────────────────────────────────────────────────────────────────
+
+/**
+ * ✅ Fix 2.3: Wipe orphaned partial upload chunks on startup.
+ * If the server was killed during an upload the temp files stay forever.
+ * This runs synchronously before accepting any traffic.
+ */
+function cleanOrphanedUploads(): void {
+    const tmpDir = path.join(os.tmpdir(), 'axya_uploads');
+    try {
+        if (fs.existsSync(tmpDir)) {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+            console.log('🧹 Cleaned orphaned upload temp directory.');
+        }
+        fs.mkdirSync(tmpDir, { recursive: true });
+    } catch (e: any) {
+        // Non-fatal — log and continue
+        console.warn('⚠️  Could not clean temp uploads dir:', e.message);
+    }
+}
+
 const start = async () => {
     try {
         console.log(`⏳ Starting Axya on Port ${port}...`);
+        cleanOrphanedUploads();
         await initSchema();
 
         app.listen(port, '0.0.0.0', () => {

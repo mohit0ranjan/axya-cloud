@@ -118,6 +118,53 @@ export const initSchema = async () => {
     // ✅ FIX C3: Clean up existing duplicate rows before creating the unique index to prevent migration failure
     `DELETE FROM files WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER(PARTITION BY user_id, sha256_hash ORDER BY created_at DESC) as row_num FROM files WHERE sha256_hash IS NOT NULL AND is_trashed = false) t WHERE t.row_num > 1)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS files_user_sha256_unique ON files (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL AND is_trashed = false`,
+
+    // ✅ Fix 1.3: Trigger-based storage counters — eliminate live SUM()/COUNT() scans
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS storage_used_bytes BIGINT DEFAULT 0`,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS total_files_count INT DEFAULT 0`,
+    // Back-fill existing data once (idempotent via UPDATE ... FROM)
+    `UPDATE users u SET
+       storage_used_bytes = COALESCE(s.used_bytes, 0),
+       total_files_count  = COALESCE(s.cnt, 0)
+     FROM (
+       SELECT user_id, SUM(file_size) AS used_bytes, COUNT(*)::int AS cnt
+       FROM files
+       WHERE is_trashed = false
+       GROUP BY user_id
+     ) s
+     WHERE u.id = s.user_id`,
+    // Trigger function: adjusts counters on INSERT, DELETE, and is_trashed UPDATE
+    `CREATE OR REPLACE FUNCTION update_user_storage_counters()
+     RETURNS TRIGGER LANGUAGE plpgsql AS $$
+     BEGIN
+       IF TG_OP = 'INSERT' AND NOT NEW.is_trashed THEN
+         UPDATE users SET storage_used_bytes = storage_used_bytes + COALESCE(NEW.file_size,0),
+                          total_files_count  = total_files_count  + 1
+         WHERE id = NEW.user_id;
+       ELSIF TG_OP = 'DELETE' AND NOT OLD.is_trashed THEN
+         UPDATE users SET storage_used_bytes = GREATEST(0, storage_used_bytes - COALESCE(OLD.file_size,0)),
+                          total_files_count  = GREATEST(0, total_files_count  - 1)
+         WHERE id = OLD.user_id;
+       ELSIF TG_OP = 'UPDATE' AND OLD.is_trashed <> NEW.is_trashed THEN
+         IF NEW.is_trashed THEN
+           -- file trashed: subtract
+           UPDATE users SET storage_used_bytes = GREATEST(0, storage_used_bytes - COALESCE(NEW.file_size,0)),
+                            total_files_count  = GREATEST(0, total_files_count  - 1)
+           WHERE id = NEW.user_id;
+         ELSE
+           -- file restored: add back
+           UPDATE users SET storage_used_bytes = storage_used_bytes + COALESCE(NEW.file_size,0),
+                            total_files_count  = total_files_count  + 1
+           WHERE id = NEW.user_id;
+         END IF;
+       END IF;
+       RETURN NULL;
+     END;
+     $$`,
+    `DROP TRIGGER IF EXISTS trg_user_storage_counters ON files`,
+    `CREATE TRIGGER trg_user_storage_counters
+     AFTER INSERT OR DELETE OR UPDATE OF is_trashed, file_size ON files
+     FOR EACH ROW EXECUTE FUNCTION update_user_storage_counters()`,
   ];
 
   try {

@@ -16,6 +16,7 @@ import { Platform, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import * as ExpoSplashScreen from 'expo-splash-screen';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AuthProvider, AuthContext } from './src/context/AuthContext';
 import { ToastProvider } from './src/context/ToastContext';
@@ -179,19 +180,21 @@ export default function App() {
     return (
         <AppErrorBoundary>
             <GestureHandlerRootView style={{ flex: 1 }}>
-                <ThemeProvider>
-                    <ServerStatusProvider>
-                        <UploadProvider>
-                            <DownloadProvider>
-                                <AuthProvider>
-                                    <ToastProvider>
-                                        <RootNavigator />
-                                    </ToastProvider>
-                                </AuthProvider>
-                            </DownloadProvider>
-                        </UploadProvider>
-                    </ServerStatusProvider>
-                </ThemeProvider>
+                <SafeAreaProvider>
+                    <ThemeProvider>
+                        <ServerStatusProvider>
+                            <UploadProvider>
+                                <DownloadProvider>
+                                    <AuthProvider>
+                                        <ToastProvider>
+                                            <RootNavigator />
+                                        </ToastProvider>
+                                    </AuthProvider>
+                                </DownloadProvider>
+                            </UploadProvider>
+                        </ServerStatusProvider>
+                    </ThemeProvider>
+                </SafeAreaProvider>
             </GestureHandlerRootView>
         </AppErrorBoundary>
     );

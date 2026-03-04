@@ -152,6 +152,8 @@ const styles = StyleSheet.create({
     inputBox: {
         flex: 1,
         height: 60,
+        minHeight: 56,
+        minWidth: 44,
         backgroundColor: '#F4F6FB',
         borderRadius: 14,
         borderWidth: 1.5,

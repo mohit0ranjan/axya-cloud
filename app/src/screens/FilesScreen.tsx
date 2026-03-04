@@ -61,6 +61,9 @@ export default function FilesScreen({ navigation }: any) {
     const [refreshing, setRefreshing] = useState(false);
     const [files, setFiles] = useState<any[]>([]);
 
+    // ✅ Fix 1.1: client-side pagination — renders 50 rows at a time
+    const [displayLimit, setDisplayLimit] = useState(50);
+
     // Sort + Filter
     const [sortKey, setSortKey] = useState('created_at_DESC');
     const [filterTab, setFilterTab] = useState('all');
@@ -74,6 +77,8 @@ export default function FilesScreen({ navigation }: any) {
     // Debounced markAccessed tracker — fileId → last accessed timestamp
     const lastAccessedRef = useRef<Map<string, number>>(new Map());
 
+    // Reset display limit when filter/search/sort changes
+    useEffect(() => { setDisplayLimit(50); }, [filterTab, searchQuery]);
     useEffect(() => { fetchFiles(); }, [sortKey]);
 
     const fetchFiles = async () => {
@@ -225,7 +230,7 @@ export default function FilesScreen({ navigation }: any) {
                 />
             ) : (
                 <FlatList
-                    data={filteredFiles}
+                    data={filteredFiles.slice(0, displayLimit)}
                     keyExtractor={item => item.id}
                     contentContainerStyle={styles.listPad}
                     renderItem={({ item, index }) => (
@@ -245,9 +250,13 @@ export default function FilesScreen({ navigation }: any) {
                             tintColor={C.primary}
                         />
                     }
+                    // ✅ Fix 2.1: getItemLayout for O(1) scroll — prevents blank gaps
+                    getItemLayout={(_data, index) => ({ length: 72, offset: 72 * index, index })}
+                    // ✅ Fix 1.1: load more rows when user reaches bottom
+                    onEndReached={() => setDisplayLimit(prev => prev + 50)}
+                    onEndReachedThreshold={0.3}
                     windowSize={10}
                     maxToRenderPerBatch={20}
-                    removeClippedSubviews
                 />
             )}
 

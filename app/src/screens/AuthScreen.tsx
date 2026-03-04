@@ -3,9 +3,10 @@ import {
     View, Text, StyleSheet,
     ActivityIndicator, Dimensions, StatusBar,
     Animated, Easing, KeyboardAvoidingView, Platform,
-    TouchableOpacity, SafeAreaView, Keyboard,
+    TouchableOpacity, Keyboard,
     Pressable,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { ArrowRight, ArrowLeft, Shield, Zap, HardDrive } from 'lucide-react-native';
 import apiClient from '../services/apiClient';
@@ -251,125 +252,125 @@ export default function AuthScreen({ navigation }: any) {
             </TouchableOpacity>
 
             <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                 keyboardVerticalOffset={keyboardOffset}
                 style={styles.keyboardContainer}
             >
                 <Pressable style={styles.contentContainer} onPress={Keyboard.dismiss}>
-                        {/* Hero — shrinks when keyboard opens */}
-                        <Animated.View style={[
-                            styles.heroArea,
-                            isKeyboardVisible && styles.heroAreaKeyboard,
-                            {
-                                opacity: Animated.multiply(heroOpacity, heroFadeOut),
-                                transform: [{ scale: Animated.multiply(heroScale, heroShrink) }],
-                            },
-                        ]}>
-                            <Animated.View style={{
-                                transform: [{ translateY: floatY }],
-                                alignItems: 'center',
-                            }}>
-                                {/* Refined background circles */}
-                                <View style={styles.blobOuter} />
-                                <View style={styles.blobInner} />
-                                <View style={styles.logoCircle}>
-                                    <Image
-                                        source={require('../../assets/axya_logo.png')}
-                                        style={styles.logoImg}
-                                        contentFit="contain"
-                                    />
-                                </View>
-                                <View style={styles.featureRow}>
-                                    {FEATURES.map((f) => {
-                                        const FIcon = f.icon;
-                                        return (
-                                            <View key={f.label} style={[styles.featurePill, { backgroundColor: f.bg }]}>
-                                                <FIcon color={f.color} size={13} strokeWidth={2.5} />
-                                                <Text style={[styles.featurePillText, { color: f.color }]}>{f.label}</Text>
-                                            </View>
-                                        );
-                                    })}
-                                </View>
-                            </Animated.View>
-                        </Animated.View>
-
-                        {/* Form sheet */}
-                        <Animated.View style={[styles.sheet, {
-                            opacity: sheetOpacity,
-                            transform: [{ translateY: sheetY }],
-                            marginBottom: isKeyboardVisible ? 14 : 0,
-                        }]}>
-                            <View style={styles.sheetHandle} />
-
-                            <View style={styles.scrollContent}>
-                                <View style={styles.sheetHeader}>
-                                    <Text style={styles.sheetTitle}>
-                                        {step === 'phone' ? 'Sign in with Telegram' : 'Enter the code'}
-                                    </Text>
-                                    <Text style={styles.sheetSubtitle}>
-                                        {step === 'phone'
-                                            ? 'Enter your mobile number to\nsecurely log in via Telegram.'
-                                            : `A verification code was sent to\n+91 ${phone.substring(0, 5)} ${phone.substring(5)}`
-                                        }
-                                    </Text>
-                                </View>
-
-                                <View style={styles.stepDots}>
-                                    <View style={[styles.stepDot, { backgroundColor: '#4B6EF5', width: step === 'phone' ? 24 : 8 }]} />
-                                    <View style={[styles.stepDot, { backgroundColor: step === 'otp' ? '#4B6EF5' : '#E2E8F0', width: step === 'otp' ? 24 : 8 }]} />
-                                </View>
-
-                                {step === 'phone' ? (
-                                    <View style={styles.formArea}>
-                                        <PhoneInput
-                                            value={phone}
-                                            onChangeText={setPhone}
-                                            error={error}
-                                            editable={!isLoading}
-                                            autoFocus={step === 'phone' && !isLoading}
-                                            onSubmitEditing={handleSendCode}
-                                        />
-
-                                        <CTAButton
-                                            onPress={handleSendCode}
-                                            disabled={phone.length !== 10}
-                                            loading={isLoading}
-                                            label="Send Verification Code"
-                                        />
-                                    </View>
-                                ) : (
-                                    <Animated.View style={[styles.formArea, { opacity: stepFadeIn, transform: [{ translateY: stepSlide }] }]}>
-                                        <OTPInput
-                                            value={otp}
-                                            onChange={(val) => {
-                                                setOtp(val);
-                                                if (val.length === 5) handleVerifyOtp(val);
-                                            }}
-                                            length={5}
-                                            onResend={handleSendCode}
-                                            loading={isLoading}
-                                            error={error}
-                                        />
-
-                                        <CTAButton
-                                            onPress={() => handleVerifyOtp()}
-                                            disabled={otp.length < 5}
-                                            loading={isLoading}
-                                            label="Verify & Sign In"
-                                        />
-
-                                        <TouchableOpacity onPress={() => setStep('phone')} style={styles.backLink} disabled={isLoading}>
-                                            <ArrowLeft color="#64748B" size={16} />
-                                            <Text style={styles.backLinkText}>Wrong number? Change it</Text>
-                                        </TouchableOpacity>
-                                    </Animated.View>
-                                )}
-
-                                <Text style={styles.finePrint}>
-                                    By continuing you agree to Axya's Terms · No passwords stored
-                                </Text>
+                    {/* Hero — shrinks when keyboard opens */}
+                    <Animated.View style={[
+                        styles.heroArea,
+                        isKeyboardVisible && styles.heroAreaKeyboard,
+                        {
+                            opacity: Animated.multiply(heroOpacity, heroFadeOut),
+                            transform: [{ scale: Animated.multiply(heroScale, heroShrink) }],
+                        },
+                    ]}>
+                        <Animated.View style={{
+                            transform: [{ translateY: floatY }],
+                            alignItems: 'center',
+                        }}>
+                            {/* Refined background circles */}
+                            <View style={styles.blobOuter} />
+                            <View style={styles.blobInner} />
+                            <View style={styles.logoCircle}>
+                                <Image
+                                    source={require('../../assets/axya_logo.png')}
+                                    style={styles.logoImg}
+                                    contentFit="contain"
+                                />
+                            </View>
+                            <View style={styles.featureRow}>
+                                {FEATURES.map((f) => {
+                                    const FIcon = f.icon;
+                                    return (
+                                        <View key={f.label} style={[styles.featurePill, { backgroundColor: f.bg }]}>
+                                            <FIcon color={f.color} size={13} strokeWidth={2.5} />
+                                            <Text style={[styles.featurePillText, { color: f.color }]}>{f.label}</Text>
+                                        </View>
+                                    );
+                                })}
                             </View>
                         </Animated.View>
+                    </Animated.View>
+
+                    {/* Form sheet */}
+                    <Animated.View style={[styles.sheet, {
+                        opacity: sheetOpacity,
+                        transform: [{ translateY: sheetY }],
+                        marginBottom: isKeyboardVisible ? 14 : 0,
+                    }]}>
+                        <View style={styles.sheetHandle} />
+
+                        <View style={styles.scrollContent}>
+                            <View style={styles.sheetHeader}>
+                                <Text style={styles.sheetTitle}>
+                                    {step === 'phone' ? 'Sign in with Telegram' : 'Enter the code'}
+                                </Text>
+                                <Text style={styles.sheetSubtitle}>
+                                    {step === 'phone'
+                                        ? 'Enter your mobile number to\nsecurely log in via Telegram.'
+                                        : `A verification code was sent to\n+91 ${phone.substring(0, 5)} ${phone.substring(5)}`
+                                    }
+                                </Text>
+                            </View>
+
+                            <View style={styles.stepDots}>
+                                <View style={[styles.stepDot, { backgroundColor: '#4B6EF5', width: step === 'phone' ? 24 : 8 }]} />
+                                <View style={[styles.stepDot, { backgroundColor: step === 'otp' ? '#4B6EF5' : '#E2E8F0', width: step === 'otp' ? 24 : 8 }]} />
+                            </View>
+
+                            {step === 'phone' ? (
+                                <View style={styles.formArea}>
+                                    <PhoneInput
+                                        value={phone}
+                                        onChangeText={setPhone}
+                                        error={error}
+                                        editable={!isLoading}
+                                        autoFocus={step === 'phone' && !isLoading}
+                                        onSubmitEditing={handleSendCode}
+                                    />
+
+                                    <CTAButton
+                                        onPress={handleSendCode}
+                                        disabled={phone.length !== 10}
+                                        loading={isLoading}
+                                        label="Send Verification Code"
+                                    />
+                                </View>
+                            ) : (
+                                <Animated.View style={[styles.formArea, { opacity: stepFadeIn, transform: [{ translateY: stepSlide }] }]}>
+                                    <OTPInput
+                                        value={otp}
+                                        onChange={(val) => {
+                                            setOtp(val);
+                                            if (val.length === 5) handleVerifyOtp(val);
+                                        }}
+                                        length={5}
+                                        onResend={handleSendCode}
+                                        loading={isLoading}
+                                        error={error}
+                                    />
+
+                                    <CTAButton
+                                        onPress={() => handleVerifyOtp()}
+                                        disabled={otp.length < 5}
+                                        loading={isLoading}
+                                        label="Verify & Sign In"
+                                    />
+
+                                    <TouchableOpacity onPress={() => setStep('phone')} style={styles.backLink} disabled={isLoading}>
+                                        <ArrowLeft color="#64748B" size={16} />
+                                        <Text style={styles.backLinkText}>Wrong number? Change it</Text>
+                                    </TouchableOpacity>
+                                </Animated.View>
+                            )}
+
+                            <Text style={styles.finePrint}>
+                                By continuing you agree to Axya's Terms · No passwords stored
+                            </Text>
+                        </View>
+                    </Animated.View>
                 </Pressable>
             </KeyboardAvoidingView>
         </SafeAreaView>
@@ -396,8 +397,8 @@ const styles = StyleSheet.create({
     },
     heroAreaKeyboard: {
         flex: 0,
-        minHeight: 24,
-        maxHeight: 84,
+        minHeight: 0,
+        maxHeight: 0,
     },
     // Refined concentric background circles
     blobOuter: {

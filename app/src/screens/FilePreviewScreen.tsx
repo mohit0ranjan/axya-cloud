@@ -5,6 +5,10 @@ import {
     FlatList,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { Paths } from 'expo-file-system';
+import * as LegacyFileSystem from 'expo-file-system/legacy';
+import * as IntentLauncher from 'expo-intent-launcher';
+import * as Sharing from 'expo-sharing';
 import { ArrowLeft, Download, Trash2, FileText, FolderInput, Star, Link, CheckCircle, X } from 'lucide-react-native';
 
 import { Image } from 'expo-image';
@@ -200,6 +204,109 @@ function ImagePreviewItem({
 }
 
 // ─────────────────────────────────────────────────────────────
+// PdfOpenButton — downloads PDF to cache, opens with system app
+// Works in Expo Go (no native modules needed)
+// ─────────────────────────────────────────────────────────────
+function PdfOpenButton({ url, jwt, fileName }: { url: string; jwt: string; fileName: string }) {
+    const [downloading, setDownloading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const openPdfExternally = async () => {
+        setDownloading(true);
+        setError(null);
+        try {
+            // Sanitize filename for filesystem
+            const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+            const localUri = `${Paths.cache.uri}${safeName}`;
+
+            // Download PDF with auth header using legacy API (proven pattern in this project)
+            const downloadResult = await LegacyFileSystem.downloadAsync(url, localUri, {
+                headers: { Authorization: `Bearer ${jwt}` },
+            });
+
+            if (downloadResult.status !== 200) {
+                throw new Error(`Download failed with status ${downloadResult.status}`);
+            }
+
+            if (Platform.OS === 'android') {
+                // Convert file:// URI to content:// URI for Android intent
+                const contentUri = await LegacyFileSystem.getContentUriAsync(downloadResult.uri);
+                await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+                    data: contentUri,
+                    type: 'application/pdf',
+                    flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+                });
+            } else {
+                // iOS: use sharing sheet as fallback
+                if (await Sharing.isAvailableAsync()) {
+                    await Sharing.shareAsync(downloadResult.uri, {
+                        mimeType: 'application/pdf',
+                        UTI: 'com.adobe.pdf',
+                    });
+                } else {
+                    throw new Error('Sharing is not available on this device');
+                }
+            }
+        } catch (err: any) {
+            console.warn('PDF open error:', err);
+            // Don't show error for user-cancelled intents
+            if (!err?.message?.includes('cancel') && !err?.message?.includes('Cancel')) {
+                setError(err?.message || 'Could not open PDF');
+            }
+        } finally {
+            setDownloading(false);
+        }
+    };
+
+    return (
+        <View style={{ width, flex: 1, backgroundColor: '#0a0a0f', justifyContent: 'center', alignItems: 'center', padding: 32 }}>
+            <FileText color="rgba(255,255,255,0.35)" size={80} strokeWidth={1} />
+            <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700', marginTop: 20, textAlign: 'center' }} numberOfLines={2}>
+                {fileName}
+            </Text>
+            <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13, marginTop: 8, textAlign: 'center' }}>
+                PDF files open in your preferred viewer app
+            </Text>
+
+            <TouchableOpacity
+                style={{
+                    marginTop: 28,
+                    backgroundColor: theme.colors.primary,
+                    paddingHorizontal: 36,
+                    paddingVertical: 16,
+                    borderRadius: theme.radius.card,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 10,
+                    opacity: downloading ? 0.7 : 1,
+                }}
+                onPress={openPdfExternally}
+                disabled={downloading}
+                activeOpacity={0.8}
+            >
+                {downloading ? (
+                    <>
+                        <ActivityIndicator color="#fff" size="small" />
+                        <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Downloading…</Text>
+                    </>
+                ) : (
+                    <>
+                        <FileText color="#fff" size={20} />
+                        <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Open PDF</Text>
+                    </>
+                )}
+            </TouchableOpacity>
+
+            {error && (
+                <Text style={{ color: theme.colors.danger, fontSize: 13, marginTop: 16, textAlign: 'center' }}>
+                    {error}
+                </Text>
+            )}
+        </View>
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
 // Main Screen
 // ─────────────────────────────────────────────────────────────
 export default function FilePreviewScreen({ route, navigation }: any) {
@@ -378,12 +485,14 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                 </View>
             );
         }
-        if (isDoc && jwt) {
-            const docUrl = isPdf ? pdfInlineUrl : downloadUrl;
+        if (isPdf && jwt) {
+            return <PdfOpenButton url={pdfInlineUrl} jwt={jwt} fileName={item.name || item.file_name || 'document.pdf'} />;
+        }
+        if (isOfficeDoc && jwt) {
             return (
                 <View style={{ width, flex: 1, backgroundColor: theme.colors.neutral[50] }}>
                     <WebView
-                        source={{ uri: docUrl, headers: { Authorization: `Bearer ${jwt}` } }}
+                        source={{ uri: downloadUrl, headers: { Authorization: `Bearer ${jwt}` } }}
                         style={{ flex: 1 }}
                         startInLoadingState={true}
                         renderLoading={() => (
@@ -401,7 +510,6 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                         )}
                         onShouldStartLoadWithRequest={(request) => {
                             const url = request?.url || '';
-                            // Allow initial/internal/document loads and block external browser hops.
                             if (
                                 url.startsWith(API_BASE) ||
                                 url.startsWith('about:blank') ||

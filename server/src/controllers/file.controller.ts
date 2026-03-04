@@ -138,6 +138,9 @@ export const searchFiles = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
     const { q, type, folder_id } = req.query;
+    // ✅ Fix 2.2: Accept limit/offset for paginated search (hardcoded LIMIT 50 removed)
+    const limit = Math.min(parseInt((req.query.limit as string) || '50', 10), 200);
+    const offset = parseInt((req.query.offset as string) || '0', 10);
     if (!q) return res.status(400).json({ success: false, error: 'Search query required.' });
 
     try {
@@ -157,7 +160,10 @@ export const searchFiles = async (req: AuthRequest, res: Response) => {
             filesQuery += ` AND f.mime_type ILIKE $${params.length}`;
         }
 
-        filesQuery += ` ORDER BY f.created_at DESC LIMIT 50`;
+        params.push(limit);
+        filesQuery += ` ORDER BY f.created_at DESC LIMIT $${params.length}`;
+        params.push(offset);
+        filesQuery += ` OFFSET $${params.length}`;
 
         let foldersQuery = `
             SELECT id, name, parent_id as folder_id, 0 as file_size, 'inode/directory' as mime_type, created_at, updated_at,
@@ -172,7 +178,8 @@ export const searchFiles = async (req: AuthRequest, res: Response) => {
             foldersQuery += ` AND parent_id = $3`;
         }
 
-        foldersQuery += ` LIMIT 20`;
+        folderParams.push(limit);
+        foldersQuery += ` ORDER BY name ASC LIMIT $${folderParams.length}`;
 
         const [filesRes, foldersRes] = await Promise.all([
             pool.query(filesQuery, params),
@@ -186,7 +193,8 @@ export const searchFiles = async (req: AuthRequest, res: Response) => {
 
         res.json({
             success: true,
-            results: merged
+            results: merged,
+            pagination: { limit, offset, returned: merged.length },
         });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });

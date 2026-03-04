@@ -63,14 +63,11 @@
     "runtimeVersion": {
       "policy": "appVersion"
     },
-    "updates": {
-      "url": "https://u.expo.dev/9ccda867-5b6b-40b2-8c59-bec205538bba"
-    },
     "extra": {
       "eas": {
-        "projectId": "9ccda867-5b6b-40b2-8c59-bec205538bba"
+        "projectId": "07889e0f-db9c-4dc8-9828-cbb821f5a1e9"
       }
     },
-    "owner": "mohit342"
+    "owner": "mohit234"
   }
 }

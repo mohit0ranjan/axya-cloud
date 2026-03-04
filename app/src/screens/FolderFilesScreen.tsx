@@ -60,6 +60,92 @@ function getIconConfig(mime: string) {
     return { color: staticTheme.colors.primary, bg: '#EEF1FD', Icon: FileText };
 }
 
+// ✅ Fix: React.memo wrapper prevents unchanged files from re-rendering when selectedIds updates
+const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode, theme, token, onAction }: any) => {
+    const isFolder = item.result_type === 'folder' || item.mime_type === 'inode/directory';
+    const { color, bg, Icon } = getIconConfig(item.mime_type);
+    const isMedia = item.mime_type?.includes('image') || item.mime_type?.includes('video');
+
+    return (
+        <TouchableOpacity
+            style={[isGridView ? styles.gridCard : styles.fileCard,
+            { backgroundColor: theme.colors.card },
+            isSelected && styles.fileCardSelected]}
+            onPress={() => onAction(selectMode ? 'toggle' : isFolder ? 'openFolder' : 'preview', item)}
+            onLongPress={() => onAction('longPress', item)}
+        >
+            {isGridView ? (
+                <>
+                    <View style={styles.gridIcon}>
+                        {isMedia ? (
+                            <Image
+                                source={{ uri: `${apiClient.defaults.baseURL}/files/${item.id}/thumbnail`, headers: { Authorization: `Bearer ${token}` } }}
+                                style={styles.gridImage}
+                                contentFit="cover" cachePolicy="disk"
+                            />
+                        ) : <Icon color={color} size={32} />}
+                    </View>
+                    <View style={styles.gridLabel}>
+                        <Text style={styles.gridName} numberOfLines={1}>{item.name || item.file_name}</Text>
+                    </View>
+                    {selectMode && (
+                        <View style={styles.gridCheckbox}>
+                            {isSelected && <Check color={theme.colors.primary} size={14} />}
+                        </View>
+                    )}
+                </>
+            ) : (
+                <>
+                    <View style={[styles.fileIconBox, { backgroundColor: bg }]}>
+                        {isMedia ? (
+                            <Image
+                                source={{ uri: `${apiClient.defaults.baseURL}/files/${item.id}/thumbnail`, headers: { Authorization: `Bearer ${token}` } }}
+                                style={{ width: '100%', height: '100%', borderRadius: 12 }}
+                                contentFit="cover" cachePolicy="disk"
+                            />
+                        ) : <Icon color={color} size={22} />}
+                    </View>
+                    <View style={styles.fileDetails}>
+                        <Text style={styles.fileName} numberOfLines={1}>{item.name || item.file_name}</Text>
+                        <Text style={styles.fileMeta}>
+                            {isFolder
+                                ? `Folder${item.file_count != null ? ` · ${item.file_count} items` : ''}`
+                                : `${formatSize(item.size)} · ${new Date(item.created_at).toLocaleDateString()}`
+                            }
+                        </Text>
+                    </View>
+                    {!selectMode && (
+                        <TouchableOpacity
+                            hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                            onPress={() => {
+                                Alert.alert(item.name || item.file_name, 'Choose action', [
+                                    { text: 'Cancel', style: 'cancel' },
+                                    { text: '✏️ Rename', onPress: () => onAction('rename', item) },
+                                    { text: 'ℹ️ Info & Tags', onPress: () => onAction('info', item) },
+                                    { text: item.is_starred ? '★ Unstar' : '⭐ Star', onPress: () => onAction('star', item) },
+                                    { text: '📦 Move to Folder', onPress: () => onAction('move', item) },
+                                    { text: '🗑 Move to Trash', style: 'destructive', onPress: () => onAction('trash', item) },
+                                ]);
+                            }}
+                        >
+                            <MoreHorizontal color={theme.colors.textBody} size={18} />
+                        </TouchableOpacity >
+                    )}
+                </>
+            )}
+        </TouchableOpacity>
+    );
+}, (prev, next) => {
+    // Custom comparator to skip massive re-renders
+    return prev.item.id === next.item.id &&
+        prev.item.updated_at === next.item.updated_at &&
+        prev.item.is_starred === next.item.is_starred &&
+        prev.item.name === next.item.name &&
+        prev.isSelected === next.isSelected &&
+        prev.isGridView === next.isGridView &&
+        prev.selectMode === next.selectMode;
+});
+
 export default function FolderFilesScreen({ route, navigation }: any) {
     const { folderId, folderName, breadcrumb = [] } = route.params;
     const { theme } = useTheme();
@@ -353,127 +439,42 @@ export default function FolderFilesScreen({ route, navigation }: any) {
         } catch { Alert.alert('Error', 'Pick failed'); }
     };
 
-
-    const renderCard = (item: any) => {
-        const isSelected = selectedIds.has(item.id);
-        const isFolder = item.result_type === 'folder' || item.mime_type === 'inode/directory';
-        const { color, bg, Icon } = getIconConfig(item.mime_type);
-        const isMedia = item.mime_type?.includes('image') || item.mime_type?.includes('video');
-
-        return (
-            <TouchableOpacity
-                key={item.id}
-                style={[isGridView ? styles.gridCard : styles.fileCard,
-                { backgroundColor: theme.colors.card },
-                isSelected && styles.fileCardSelected]}
-                onPress={() => {
-                    if (selectMode) toggleSelect(item.id);
-                    else if (isFolder) navigation.push('FolderFiles', { folderId: item.id, folderName: item.name, breadcrumb: currentBreadcrumb });
-                    else {
-                        // Debounced markAccessed: only write once per 5 min per file
-                        const now = Date.now();
-                        const last = lastAccessedRef.current.get(item.id) ?? 0;
-                        if (now - last > 5 * 60 * 1000) {
-                            lastAccessedRef.current.set(item.id, now);
-                            apiClient.post(`/files/${item.id}/accessed`).catch(() => { });
-                        }
-                        const previewableFiles = filteredFiles.filter(f => f.mime_type !== 'inode/directory');
-                        const idx = previewableFiles.findIndex(f => f.id === item.id);
-                        navigation.navigate('FilePreview', { files: previewableFiles, initialIndex: idx === -1 ? 0 : idx });
-                    }
-
-                }}
-                onLongPress={() => { if (!selectMode) { setSelectMode(true); toggleSelect(item.id); } }}
-            >
-                {isGridView ? (
-                    <>
-                        <View style={styles.gridIcon}>
-                            {isMedia ? (
-                                <Image
-                                    source={{ uri: `${apiClient.defaults.baseURL}/files/${item.id}/thumbnail`, headers: { Authorization: `Bearer ${token}` } }}
-                                    style={styles.gridImage}
-                                    contentFit="cover" cachePolicy="disk"
-                                />
-                            ) : <Icon color={color} size={32} />}
-                        </View>
-                        <View style={styles.gridLabel}>
-                            <Text style={styles.gridName} numberOfLines={1}>{item.name || item.file_name}</Text>
-                        </View>
-                        {selectMode && (
-                            <View style={styles.gridCheckbox}>
-                                {isSelected && <Check color={theme.colors.primary} size={14} />}
-                            </View>
-                        )}
-                    </>
-                ) : (
-                    <>
-                        <View style={[styles.fileIconBox, { backgroundColor: bg }]}>
-                            {isMedia ? (
-                                <Image
-                                    source={{ uri: `${apiClient.defaults.baseURL}/files/${item.id}/thumbnail`, headers: { Authorization: `Bearer ${token}` } }}
-                                    style={{ width: '100%', height: '100%', borderRadius: 12 }}
-                                    contentFit="cover" cachePolicy="disk"
-                                />
-                            ) : <Icon color={color} size={22} />}
-                        </View>
-                        <View style={styles.fileDetails}>
-                            <Text style={styles.fileName} numberOfLines={1}>{item.name || item.file_name}</Text>
-                            <Text style={styles.fileMeta}>
-                                {isFolder
-                                    ? `Folder${item.file_count != null ? ` · ${item.file_count} items` : ''}`
-                                    : `${formatSize(item.size)} · ${new Date(item.created_at).toLocaleDateString()}`
-                                }
-                            </Text>
-                        </View>
-                        {!selectMode && (
-                            <TouchableOpacity
-                                hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-                                onPress={() => {
-                                    Alert.alert(item.name || item.file_name, 'Choose action', [
-                                        { text: 'Cancel', style: 'cancel' },
-                                        { text: '✏️ Rename', onPress: () => { setRenameTarget(item); setRenameValue(item.name || item.file_name); setRenameModalVisible(true); } },
-                                        { text: 'ℹ️ Info & Tags', onPress: () => openInfoSheet(item) },
-                                        {
-                                            text: item.is_starred ? '★ Unstar' : '⭐ Star',
-                                            onPress: async () => {
-                                                try {
-                                                    await apiClient.patch(`/files/${item.id}/star`);
-                                                    fetchFolderFiles();
-                                                } catch {
-                                                    Alert.alert('Error', 'Could not update star');
-                                                }
-                                            }
-                                        },
-                                        {
-                                            text: '📦 Move to Folder',
-                                            onPress: async () => {
-                                                try {
-                                                    const res = await apiClient.get('/files/folders');
-                                                    if (res.data.success) {
-                                                        setAllFolders(res.data.folders);
-                                                        setMoveTarget({ ids: [item.id] });
-                                                        setMoveModalVisible(true);
-                                                    }
-                                                } catch {
-                                                    Alert.alert('Error', 'Could not load folders');
-                                                }
-                                            }
-                                        },
-                                        { text: '🗑 Move to Trash', style: 'destructive', onPress: () => handleDelete(item) },
-
-                                    ]);
-                                }}
-                            >
-                                <MoreHorizontal color={theme.colors.textBody} size={18} />
-                            </TouchableOpacity >
-                        )}
-                    </>
-                )}
-            </TouchableOpacity >
-        );
-    };
-
     const currentBreadcrumb = [...breadcrumb, { id: folderId, name: folderName }];
+
+    const handleCardAction = useCallback((action: string, item: any) => {
+        if (action === 'toggle' || action === 'longPress') {
+            if (action === 'longPress' && !selectMode) setSelectMode(true);
+            toggleSelect(item.id);
+        } else if (action === 'openFolder') {
+            navigation.push('FolderFiles', { folderId: item.id, folderName: item.name, breadcrumb: currentBreadcrumb });
+        } else if (action === 'preview') {
+            const now = Date.now();
+            const last = lastAccessedRef.current.get(item.id) ?? 0;
+            if (now - last > 5 * 60 * 1000) {
+                lastAccessedRef.current.set(item.id, now);
+                apiClient.post(`/files/${item.id}/accessed`).catch(() => { });
+            }
+            const previewableFiles = filteredFiles.filter(f => f.mime_type !== 'inode/directory');
+            const idx = previewableFiles.findIndex(f => f.id === item.id);
+            navigation.navigate('FilePreview', { files: previewableFiles, initialIndex: idx === -1 ? 0 : idx });
+        } else if (action === 'rename') {
+            setRenameTarget(item); setRenameValue(item.name || item.file_name); setRenameModalVisible(true);
+        } else if (action === 'info') {
+            openInfoSheet(item);
+        } else if (action === 'star') {
+            apiClient.patch(`/files/${item.id}/star`).then(fetchFolderFiles).catch(() => Alert.alert('Error', 'Could not update star'));
+        } else if (action === 'move') {
+            apiClient.get('/files/folders').then((res: any) => {
+                if (res.data.success) {
+                    setAllFolders(res.data.folders);
+                    setMoveTarget({ ids: [item.id] });
+                    setMoveModalVisible(true);
+                }
+            }).catch(() => Alert.alert('Error', 'Could not load folders'));
+        } else if (action === 'trash') {
+            handleDelete(item);
+        }
+    }, [selectMode, navigation, toggleSelect, currentBreadcrumb, filteredFiles, fetchFolderFiles]);
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
@@ -541,7 +542,17 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 style={styles.scrollArea}
                 data={isLoading ? [] : filteredFiles.slice(0, displayLimit)}
                 keyExtractor={(item) => String(item.id)}
-                renderItem={({ item }) => renderCard(item)}
+                renderItem={({ item }) => (
+                    <MemoizedFileItem
+                        item={item}
+                        isSelected={selectedIds.has(item.id)}
+                        isGridView={isGridView}
+                        selectMode={selectMode}
+                        theme={theme}
+                        token={token}
+                        onAction={handleCardAction}
+                    />
+                )}
                 numColumns={isGridView ? 2 : 1}
                 key={isGridView ? 'grid' : 'list'}
                 columnWrapperStyle={isGridView ? styles.gridContainer : undefined}

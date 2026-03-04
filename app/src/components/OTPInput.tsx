@@ -1,5 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, TextInput, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { View, Text, TextInput, StyleSheet, TouchableOpacity, Animated } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 
 interface OTPInputProps {
     value: string;
@@ -11,43 +12,53 @@ interface OTPInputProps {
     length?: number;
 }
 
-const OTPInput: React.FC<OTPInputProps> = ({
+export default React.memo(function OTPInput({
     value,
     onChange,
     onResend,
     loading,
     error,
     resendSeconds = 30,
-    length = 5,   // ✅ Telegram sends 5-digit codes — default to 5
-}) => {
+    length = 5,
+}: OTPInputProps) {
     const [timer, setTimer] = useState(resendSeconds);
     const [otp, setOtp] = useState<string[]>(Array(length).fill(''));
     const inputRefs = useRef<TextInput[]>([]);
+    const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    // Dynamic underline color animations
+    const focusAnims = useRef(Array(length).fill(0).map(() => new Animated.Value(0))).current;
 
     useEffect(() => {
-        let interval: ReturnType<typeof setInterval>;
         if (timer > 0) {
-            interval = setInterval(() => setTimer(prev => prev - 1), 1000);
+            intervalRef.current = setInterval(() => {
+                setTimer(prev => {
+                    if (prev <= 1) {
+                        if (intervalRef.current) clearInterval(intervalRef.current);
+                        return 0;
+                    }
+                    return prev - 1;
+                });
+            }, 1000);
         }
-        return () => clearInterval(interval);
-    }, [timer]);
+        return () => {
+            if (intervalRef.current) clearInterval(intervalRef.current);
+        };
+    }, [timer > 0 ? 'running' : 'stopped']);
 
-    useEffect(() => {
-        // Handle external value updates (e.g. from SMS auto-fill)
-        if (value && value.length === length) {
-            setOtp(value.split('').slice(0, length));
-        }
-    }, [value, length]);
+    // Removed value sync useEffect (Fix #5) — component manages its own otp array state
 
-    // Reset OTP boxes when length changes
-    useEffect(() => {
-        setOtp(Array(length).fill(''));
-    }, [length]);
+    const animateFocus = useCallback((index: number, isFocused: boolean) => {
+        Animated.timing(focusAnims[index], {
+            toValue: isFocused ? 1 : 0,
+            duration: 200,
+            useNativeDriver: false,
+        }).start();
+    }, [focusAnims]);
 
     const handleTextChange = (text: string, index: number) => {
         const cleaned = text.replace(/[^0-9]/g, '');
 
-        // Handle paste: if pasted text length > 1, fill multiple boxes
         if (cleaned.length > 1) {
             const newOtp = [...otp];
             for (let i = 0; i < length && i < cleaned.length; i++) {
@@ -56,7 +67,6 @@ const OTPInput: React.FC<OTPInputProps> = ({
             setOtp(newOtp);
             const joined = newOtp.join('');
             onChange(joined);
-            // Focus last filled box
             const lastIdx = Math.min(index + cleaned.length - 1, length - 1);
             inputRefs.current[lastIdx]?.focus();
             return;
@@ -68,7 +78,6 @@ const OTPInput: React.FC<OTPInputProps> = ({
         const currentOtp = newOtp.join('');
         onChange(currentOtp);
 
-        // Auto focus next
         if (cleaned && index < length - 1) {
             inputRefs.current[index + 1]?.focus();
         }
@@ -93,103 +102,139 @@ const OTPInput: React.FC<OTPInputProps> = ({
         }
     };
 
+    const checkClipboardForOTP = async () => {
+        try {
+            const hasText = await Clipboard.hasStringAsync();
+            if (hasText) {
+                const text = await Clipboard.getStringAsync();
+                const cleaned = text.replace(/[^0-9]/g, '');
+                if (cleaned.length === length) {
+                    setOtp(cleaned.split(''));
+                    inputRefs.current[length - 1]?.focus();
+                }
+            }
+        } catch (e) {
+            // Ignore clipboard errors
+        }
+    };
+
+    useEffect(() => {
+        checkClipboardForOTP();
+    }, []);
+
     return (
         <View style={styles.container}>
             <View style={styles.otpRow}>
-                {otp.map((digit, i) => (
-                    <View
-                        key={i}
-                        style={[
-                            styles.inputBox,
-                            digit ? styles.inputFilled : null,
-                            error ? styles.inputError : null,
-                        ]}
-                    >
-                        <TextInput
-                            ref={el => (inputRefs.current[i] = el as any)}
-                            style={styles.input}
-                            keyboardType="number-pad"
-                            maxLength={length}  // allow paste of full code into first box
-                            value={digit}
-                            onChangeText={text => handleTextChange(text, i)}
-                            onKeyPress={e => handleKeyPress(e, i)}
-                            editable={!loading}
-                            autoFocus={i === 0}
-                            textContentType="oneTimeCode"   // iOS SMS auto-fill
-                            selectTextOnFocus
-                        />
-                    </View>
-                ))}
+                {otp.map((digit, i) => {
+                    const borderColor = error
+                        ? '#EF4444'
+                        : focusAnims[i].interpolate({
+                            inputRange: [0, 1],
+                            outputRange: ['#CBD5E1', '#4B6EF5']
+                        });
+
+                    return (
+                        <View key={i} style={styles.inputBoxWrapper}>
+                            <Animated.View style={[
+                                styles.underline,
+                                { borderBottomColor: borderColor as unknown as string }
+                            ]} />
+
+                            <TextInput
+                                ref={el => (inputRefs.current[i] = el as any)}
+                                style={styles.input}
+                                keyboardType="number-pad"
+                                maxLength={1}
+                                value={digit}
+                                onChangeText={text => handleTextChange(text, i)}
+                                onKeyPress={e => handleKeyPress(e, i)}
+                                onFocus={() => animateFocus(i, true)}
+                                onBlur={() => animateFocus(i, false)}
+                                editable={!loading}
+                                autoFocus={i === 0 && !loading}
+                                textContentType="oneTimeCode"
+                                autoComplete="sms-otp"
+                                selectTextOnFocus
+                            />
+                        </View>
+                    );
+                })}
             </View>
 
             {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
             <View style={styles.footer}>
                 {timer > 0 ? (
-                    <Text style={styles.timerText}>Resend in {timer}s</Text>
+                    <Text style={styles.timerText}>
+                        <Text style={styles.timerSub}>Resend code in </Text>
+                        <Text style={styles.timerBold}>{timer}s</Text>
+                    </Text>
                 ) : (
-                    <TouchableOpacity onPress={handleResend} disabled={loading}>
-                        <Text style={styles.resendBtnText}>Resend OTP</Text>
+                    <TouchableOpacity onPress={handleResend} disabled={loading} style={styles.resendBtn}>
+                        <Text style={styles.resendBtnText}>Resend Code</Text>
                     </TouchableOpacity>
                 )}
             </View>
         </View>
     );
-};
+});
 
 const styles = StyleSheet.create({
     container: {
         width: '100%',
-        gap: 16,
+        gap: 24,
         alignItems: 'center',
     },
     otpRow: {
         flexDirection: 'row',
-        justifyContent: 'space-between',
+        justifyContent: 'center',
         width: '100%',
-        gap: 10,
+        gap: 16,
     },
-    inputBox: {
-        flex: 1,
-        height: 60,
-        minHeight: 56,
-        minWidth: 44,
-        backgroundColor: '#F4F6FB',
-        borderRadius: 14,
-        borderWidth: 1.5,
-        borderColor: '#EAEDF3',
+    inputBoxWrapper: {
+        width: 48,
+        height: 56,
         justifyContent: 'center',
         alignItems: 'center',
+        position: 'relative',
     },
-    inputFilled: {
-        borderColor: '#4B6EF5',
-        backgroundColor: '#EEF1FD',
-    },
-    inputError: {
-        borderColor: '#EF4444',
-        backgroundColor: '#FEF2F2',
+    underline: {
+        position: 'absolute',
+        bottom: 0,
+        width: '100%',
+        borderBottomWidth: 2,
     },
     input: {
-        fontSize: 26,
+        fontSize: 32,
         fontWeight: '700',
-        color: '#1A1F36',
+        color: '#0F172A',
         textAlign: 'center',
         width: '100%',
         height: '100%',
     },
     errorText: {
         color: '#EF4444',
-        fontSize: 13,
+        fontSize: 14,
         fontWeight: '500',
         textAlign: 'center',
     },
     footer: {
         alignItems: 'center',
+        justifyContent: 'center',
     },
     timerText: {
-        color: '#8892A4',
-        fontSize: 14,
+        fontSize: 15,
+    },
+    timerSub: {
+        color: '#64748B',
         fontWeight: '500',
+    },
+    timerBold: {
+        color: '#0F172A',
+        fontWeight: '700',
+    },
+    resendBtn: {
+        paddingVertical: 8,
     },
     resendBtnText: {
         color: '#4B6EF5',
@@ -197,5 +242,3 @@ const styles = StyleSheet.create({
         fontWeight: '700',
     },
 });
-
-export default OTPInput;

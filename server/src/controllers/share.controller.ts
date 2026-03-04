@@ -2,26 +2,43 @@ import { Request, Response } from 'express';
 import { AuthRequest } from '../middlewares/auth.middleware';
 import pool from '../config/db';
 import { getDynamicClient } from '../services/telegram.service';
+import bcrypt from 'bcryptjs';
+import archiver from 'archiver';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CREATE A PUBLIC SHARE LINK
+// CREATE A PUBLIC SHARE LINK (File or Folder)
 // ─────────────────────────────────────────────────────────────────────────────
 export const createShareLink = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
-    const { id } = req.params;
-    const { expires_in_hours } = req.body;
+
+    // We expect either file_id or folder_id, plus sharing options
+    const { file_id, folder_id, expires_in_hours, password, allow_download = true, view_only = false } = req.body;
+
+    if (!file_id && !folder_id) {
+        return res.status(400).json({ success: false, error: 'Must provide either file_id or folder_id' });
+    }
 
     try {
-        const fileCheck = await pool.query('SELECT id FROM files WHERE id = $1 AND user_id = $2', [id, req.user.id]);
-        if (fileCheck.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
+        // Verify ownership
+        if (file_id) {
+            const fileCheck = await pool.query('SELECT id FROM files WHERE id = $1 AND user_id = $2', [file_id, req.user.id]);
+            if (fileCheck.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
+        } else if (folder_id) {
+            const folderCheck = await pool.query('SELECT id FROM folders WHERE id = $1 AND user_id = $2', [folder_id, req.user.id]);
+            if (folderCheck.rows.length === 0) return res.status(404).json({ success: false, error: 'Folder not found' });
+        }
 
         const expiresAt = expires_in_hours ? new Date(Date.now() + parseInt(expires_in_hours) * 3600000) : null;
+        const passwordHash = password ? await bcrypt.hash(password, 10) : null;
 
-        // Delete old link and create fresh one
-        await pool.query(`DELETE FROM shared_links WHERE file_id = $1 AND created_by = $2`, [id, req.user.id]);
+        // Delete old link (if any for this exact file/folder) and create fresh one
+        if (file_id) await pool.query(`DELETE FROM shared_links WHERE file_id = $1 AND created_by = $2`, [file_id, req.user.id]);
+        if (folder_id) await pool.query(`DELETE FROM shared_links WHERE folder_id = $1 AND created_by = $2`, [folder_id, req.user.id]);
+
         const result = await pool.query(
-            `INSERT INTO shared_links (file_id, created_by, expires_at) VALUES ($1, $2, $3) RETURNING token, expires_at`,
-            [id, req.user.id, expiresAt]
+            `INSERT INTO shared_links (file_id, folder_id, created_by, expires_at, password_hash, allow_download, view_only) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING token, expires_at`,
+            [file_id || null, folder_id || null, req.user.id, expiresAt, passwordHash, allow_download, view_only]
         );
 
         res.json({ success: true, token: result.rows[0].token, expires_at: result.rows[0].expires_at });
@@ -35,9 +52,9 @@ export const createShareLink = async (req: AuthRequest, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 export const revokeShareLink = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
-    const { id } = req.params;
+    const { id } = req.params; // This can be token or file/folder id depending on router setup
     try {
-        await pool.query(`DELETE FROM shared_links WHERE file_id = $1 AND created_by = $2`, [id, req.user.id]);
+        await pool.query(`DELETE FROM shared_links WHERE (file_id = $1 OR folder_id = $1 OR token = $1) AND created_by = $2`, [id, req.user.id]);
         res.json({ success: true, message: 'Share link revoked.' });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
@@ -45,14 +62,69 @@ export const revokeShareLink = async (req: AuthRequest, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PUBLIC SHARE WEB PAGE  (HTML preview — no auth required)
+// LIST USER'S SHARED LINKS
+// ─────────────────────────────────────────────────────────────────────────────
+export const getUserSharedLinks = async (req: AuthRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+    try {
+        const result = await pool.query(`
+            SELECT sl.id, sl.token, sl.file_id, sl.folder_id, sl.created_at, sl.expires_at, sl.views, sl.download_count,
+                   f.file_name, fo.name as folder_name
+            FROM shared_links sl
+            LEFT JOIN files f ON f.id = sl.file_id
+            LEFT JOIN folders fo ON fo.id = sl.folder_id
+            WHERE sl.created_by = $1
+            ORDER BY sl.created_at DESC
+        `, [req.user.id]);
+
+        res.json({ success: true, links: result.rows });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VALIDATE PASSWORD
+// ─────────────────────────────────────────────────────────────────────────────
+export const validatePassword = async (req: Request, res: Response) => {
+    const { token } = req.params;
+    const { password } = req.body;
+
+    try {
+        const linkResult = await pool.query('SELECT id, password_hash FROM shared_links WHERE token = $1', [token]);
+        if (linkResult.rows.length === 0) return res.status(404).json({ success: false, error: 'Share link not found.' });
+
+        const link = linkResult.rows[0];
+        if (!link.password_hash) return res.json({ success: true }); // No password requested
+
+        const isValid = await bcrypt.compare(password, link.password_hash);
+        if (!isValid) return res.status(401).json({ success: false, error: 'Incorrect password.' });
+
+        // Set a cookie to remember auth for this token
+        res.cookie(`share_auth_${token}`, 'true', { maxAge: 24 * 60 * 60 * 1000, httpOnly: true });
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUBLIC SHARE WEB PAGE  (HTML preview — no auth required, cookie for password)
 // ─────────────────────────────────────────────────────────────────────────────
 export const shareWebPage = async (req: Request, res: Response) => {
     const { token } = req.params;
     try {
+        // Increment view count immediately
+        pool.query('UPDATE shared_links SET views = views + 1 WHERE token = $1', [token]).catch(() => { });
+
         const linkResult = await pool.query(
-            `SELECT sl.*, f.file_name, f.file_size, f.mime_type, f.sha256_hash
-             FROM shared_links sl JOIN files f ON f.id = sl.file_id
+            `SELECT sl.*, 
+                    f.file_name, f.file_size, f.mime_type, f.sha256_hash,
+                    fo.name as folder_name
+             FROM shared_links sl 
+             LEFT JOIN files f ON f.id = sl.file_id
+             LEFT JOIN folders fo ON fo.id = sl.folder_id
              WHERE sl.token = $1`,
             [token]
         );
@@ -66,7 +138,46 @@ export const shareWebPage = async (req: Request, res: Response) => {
             return res.status(410).send(errorPage('Link Expired', 'This share link has expired.'));
         }
 
-        const { file_name, file_size, mime_type, sha256_hash } = link;
+        // Check password protection via cookie
+        if (link.password_hash && !req.headers.cookie?.includes(`share_auth_${token}=true`)) {
+            return res.send(`
+            <!DOCTYPE html><html lang="en"><head><title>Password Required — Axya</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+            <style>
+              *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+              body{font-family:'Inter',sans-serif;background:#0D0F1A;color:#E8EAF0;display:flex;flex-direction:column;align-items:center;padding-top:100px;}
+              .card{background:#1A1E2E;border-radius:24px;padding:40px;width:90%;max-width:400px;text-align:center;}
+              h1{font-size:20px;margin-bottom:12px;}
+              p{color:#6B7A99;font-size:14px;margin-bottom:24px;}
+              input{width:100%;background:#0D0F1A;border:1px solid #252A3E;border-radius:12px;padding:16px;color:#fff;font-size:16px;margin-bottom:16px;outline:none;}
+              input:focus{border-color:#5B7FFF;}
+              button{width:100%;background:linear-gradient(135deg, #5B7FFF, #4B6EF5);color:#fff;border:none;border-radius:12px;padding:16px;font-size:16px;font-weight:600;cursor:pointer;}
+              .err{color:#FF5252;font-size:13px;margin-bottom:16px;display:none;}
+            </style>
+            </head><body>
+              <div class="card">
+                <h1>Password Protected</h1>
+                <p>Please enter the password to view this shared link.</p>
+                <div class="err" id="err">Incorrect password</div>
+                <input type="password" id="pw" placeholder="Enter password" />
+                <button onclick="submitPw()">Access Link</button>
+              </div>
+              <script>
+                async function submitPw() {
+                  const pw = document.getElementById('pw').value;
+                  const res = await fetch('/share/${token}/password', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({password: pw})
+                  });
+                  if (res.ok) window.location.reload();
+                  else document.getElementById('err').style.display = 'block';
+                }
+              </script>
+            </body></html>
+            `);
+        }
+
         const formatSize = (b: number) => {
             if (!b) return '0 B';
             const k = 1024, s = ['B', 'KB', 'MB', 'GB'];
@@ -74,18 +185,71 @@ export const shareWebPage = async (req: Request, res: Response) => {
             return (b / Math.pow(k, i)).toFixed(1) + ' ' + s[i];
         };
 
-        const isImage = mime_type?.startsWith('image/');
-        const isVideo = mime_type?.startsWith('video/');
-        const isPdf = mime_type === 'application/pdf';
+        let content = '';
 
-        const downloadUrl = `/share/${token}/download`;
-        const preview = isImage
-            ? `<img src="${downloadUrl}" alt="${file_name}" class="preview-img" />`
-            : isVideo
-                ? `<video controls class="preview-video"><source src="${downloadUrl}" type="${mime_type}" />Your browser does not support video playback.</video>`
-                : isPdf
-                    ? `<iframe src="${downloadUrl}" class="preview-pdf" title="${file_name}"></iframe>`
-                    : `<div class="no-preview"><span class="file-emoji">${getTypeEmoji(mime_type)}</span><p>No preview available</p></div>`;
+        if (link.folder_id) {
+            // RENDERING FOLDER VIEW
+            const filesRes = await pool.query(
+                `SELECT id, file_name, file_size, mime_type FROM files WHERE folder_id = $1 AND is_trashed = false ORDER BY created_at DESC`,
+                [link.folder_id]
+            );
+            const files = filesRes.rows;
+            const totalSize = files.reduce((acc, f) => acc + (Number(f.file_size) || 0), 0);
+
+            let filesHtml = files.map(f => `
+                <div class="file-item">
+                    <div class="f-icon">${getTypeEmoji(f.mime_type)}</div>
+                    <div class="f-meta">
+                        <div class="f-name">${escHtml(f.file_name)}</div>
+                        <div class="f-size">${formatSize(f.file_size)}</div>
+                    </div>
+                </div>
+            `).join('');
+
+            if (files.length === 0) filesHtml = `<div class="no-preview" style="grid-column: 1 / -1;"><p>This folder is empty.</p></div>`;
+
+            content = `
+                <div class="file-info">
+                  <div class="file-icon" style="background:#5B7FFF20;color:#5B7FFF">📁</div>
+                  <div class="file-meta">
+                    <h1>${escHtml(link.folder_name)}</h1>
+                    <div class="details">${files.length} files &nbsp;·&nbsp; ${formatSize(totalSize)}</div>
+                  </div>
+                </div>
+                <div class="folder-grid">
+                    ${filesHtml}
+                </div>
+                ${link.allow_download ? `<a href="/share/${token}/download-all" class="btn-download" download>⬇ Download All (ZIP)</a>` : ''}
+            `;
+        } else {
+            // RENDERING SINGLE FILE VIEW
+            const { file_name, file_size, mime_type, sha256_hash } = link;
+            const isImage = mime_type?.startsWith('image/');
+            const isVideo = mime_type?.startsWith('video/');
+            const isPdf = mime_type === 'application/pdf';
+
+            const downloadUrl = `/share/${token}/download`;
+            const preview = isImage
+                ? `<img src="${downloadUrl}" alt="${file_name}" class="preview-img" />`
+                : isVideo
+                    ? `<video controls class="preview-video"><source src="${downloadUrl}" type="${mime_type}" />Your browser does not support video playback.</video>`
+                    : isPdf
+                        ? `<iframe src="${downloadUrl}" class="preview-pdf" title="${file_name}"></iframe>`
+                        : `<div class="no-preview"><span class="file-emoji">${getTypeEmoji(mime_type)}</span><p>No preview available</p></div>`;
+
+            content = `
+                <div class="file-info">
+                  <div class="file-icon">${getTypeEmoji(mime_type)}</div>
+                  <div class="file-meta">
+                    <h1>${escHtml(file_name)}</h1>
+                    <div class="details">${formatSize(file_size)} &nbsp;·&nbsp; ${mime_type || 'Unknown type'}</div>
+                  </div>
+                </div>
+                ${preview}
+                ${link.allow_download ? `<a href="${downloadUrl}" class="btn-download" download="${escHtml(file_name)}">⬇ Download File</a>` : ''}
+                ${sha256_hash ? `<div class="hash"><span>SHA-256 Verified:</span> ${sha256_hash}</div>` : ''}
+            `;
+        }
 
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.send(`<!DOCTYPE html>
@@ -93,8 +257,7 @@ export const shareWebPage = async (req: Request, res: Response) => {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${file_name} — Axya</title>
-  <meta name="description" content="Shared file: ${file_name} (${formatSize(file_size)})">
+  <title>${escHtml(link.folder_name || link.file_name)} — Axya Shared</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
   <style>
@@ -118,28 +281,22 @@ export const shareWebPage = async (req: Request, res: Response) => {
     .hash span { color: #1FD45A; font-weight: 700; }
     .footer { margin-top: 32px; font-size: 12px; color: #4F5B76; text-align: center; }
     .footer a { color: #5B7FFF; text-decoration: none; }
+    .folder-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin-top: 20px;}
+    .file-item { background: #0D0F1A; border: 1px solid #252A3E; border-radius: 16px; padding: 16px; display: flex; align-items: center; gap: 12px;}
+    .f-icon { font-size: 24px; }
+    .f-meta { overflow: hidden; }
+    .f-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .f-size { font-size: 12px; color: #6B7A99; margin-top: 4px; }
   </style>
 </head>
 <body>
   <div class="logo">Tele<span>Drive</span></div>
   <div class="card">
-    <div class="file-info">
-      <div class="file-icon">${getTypeEmoji(mime_type)}</div>
-      <div class="file-meta">
-        <h1>${escHtml(file_name)}</h1>
-        <div class="details">${formatSize(file_size)} &nbsp;·&nbsp; ${mime_type || 'Unknown type'}</div>
-      </div>
-    </div>
-
-    ${preview}
-
-    <a href="${downloadUrl}" class="btn-download" download="${escHtml(file_name)}">⬇ Download File</a>
-
-    ${sha256_hash ? `<div class="hash"><span>SHA-256 Verified:</span> ${sha256_hash}</div>` : ''}
+    ${content}
   </div>
 
   <div class="footer">
-    Powered by <a href="https://Axya.app">Axya</a> — Telegram-secured cloud storage.<br/>
+    Powered by <a href="https://axya.cloud">Axya</a> — Telegram-based secure cloud drive.<br/>
     ${link.expires_at ? `Link expires ${new Date(link.expires_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}` : 'Link has no expiry'}
   </div>
 </body>
@@ -171,6 +328,12 @@ export const downloadSharedFile = async (req: Request, res: Response) => {
         if (link.expires_at && new Date(link.expires_at) < new Date()) {
             return res.status(410).json({ success: false, error: 'This share link has expired.' });
         }
+        if (!link.allow_download) {
+            return res.status(403).json({ success: false, error: 'Downloads are disabled for this link.' });
+        }
+        if (link.password_hash && !req.headers.cookie?.includes(`share_auth_${token}=true`)) {
+            return res.status(401).json({ success: false, error: 'Password authentication required.' });
+        }
 
         await pool.query(`UPDATE shared_links SET download_count = download_count + 1 WHERE token = $1`, [token]);
 
@@ -187,6 +350,77 @@ export const downloadSharedFile = async (req: Request, res: Response) => {
         res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(file_name)}"`);
         res.set('Content-Length', buffer.length.toString());
         res.send(buffer);
+    } catch (err: any) {
+        if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUBLIC FOLDER DOWNLOAD (ZIP)
+// ─────────────────────────────────────────────────────────────────────────────
+export const downloadAllShared = async (req: Request, res: Response) => {
+    const { token } = req.params;
+    try {
+        const linkResult = await pool.query(
+            `SELECT sl.*, fo.name as folder_name, u.session_string
+             FROM shared_links sl
+             JOIN folders fo ON fo.id = sl.folder_id
+             JOIN users u ON u.id = sl.created_by
+             WHERE sl.token = $1`,
+            [token]
+        );
+
+        if (linkResult.rows.length === 0) return res.status(404).json({ success: false, error: 'Folder share link not found.' });
+
+        const link = linkResult.rows[0];
+        if (link.expires_at && new Date(link.expires_at) < new Date()) {
+            return res.status(410).json({ success: false, error: 'This share link has expired.' });
+        }
+        if (!link.allow_download) {
+            return res.status(403).json({ success: false, error: 'Downloads are disabled for this link.' });
+        }
+        if (link.password_hash && !req.headers.cookie?.includes(`share_auth_${token}=true`)) {
+            return res.status(401).json({ success: false, error: 'Password authentication required.' });
+        }
+
+        const filesRes = await pool.query(
+            `SELECT file_name, telegram_message_id, telegram_chat_id 
+             FROM files 
+             WHERE folder_id = $1 AND is_trashed = false`,
+            [link.folder_id]
+        );
+
+        const files = filesRes.rows;
+        if (files.length === 0) return res.status(404).json({ success: false, error: 'Folder is empty.' });
+
+        await pool.query(`UPDATE shared_links SET download_count = download_count + 1 WHERE token = $1`, [token]);
+
+        const client = await getDynamicClient(link.session_string);
+
+        res.set('Content-Type', 'application/zip');
+        res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(link.folder_name)}.zip"`);
+
+        const archive = archiver('zip', { zlib: { level: 5 } });
+        archive.on('error', (err) => res.status(500).send({ error: err.message }));
+        archive.pipe(res);
+
+        // Download files dynamically and stream into archiver
+        for (const file of files) {
+            try {
+                const msgs = await client.getMessages(file.telegram_chat_id, { ids: parseInt(file.telegram_message_id, 10) });
+                if (msgs && msgs.length > 0) {
+                    const buffer = await client.downloadMedia(msgs[0] as any);
+                    if (buffer) {
+                        archive.append(buffer, { name: file.file_name });
+                    }
+                }
+            } catch (err: any) {
+                console.warn(`Failed to include file ${file.file_name} in ZIP:`, err.message);
+            }
+        }
+
+        await archive.finalize();
+
     } catch (err: any) {
         if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
     }

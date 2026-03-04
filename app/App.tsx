@@ -35,6 +35,7 @@ import StarredScreen from './src/screens/StarredScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import FilesScreen from './src/screens/FilesScreen';
+import SharedLinksScreen from './src/screens/SharedLinksScreen';
 import UploadProgressOverlay from './src/components/UploadProgressOverlay';
 import DownloadProgressOverlay from './src/components/DownloadProgressOverlay';
 import ServerWakingOverlay from './src/components/ServerWakingOverlay';
@@ -108,6 +109,7 @@ function RootNavigator() {
                             <Stack.Screen name="Settings" component={SettingsScreen} />
                             <Stack.Screen name="Analytics" component={AnalyticsScreen} />
                             <Stack.Screen name="Files" component={FilesScreen} />
+                            <Stack.Screen name="SharedLinks" component={SharedLinksScreen} />
                         </>
                     )}
                 </Stack.Navigator>

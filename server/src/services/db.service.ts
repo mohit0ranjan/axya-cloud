@@ -50,9 +50,14 @@ export const initSchema = async () => {
         CREATE TABLE IF NOT EXISTS shared_links (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             file_id UUID REFERENCES files(id) ON DELETE CASCADE,
+            folder_id UUID REFERENCES folders(id) ON DELETE CASCADE,
             token TEXT UNIQUE NOT NULL DEFAULT encode(gen_random_bytes(24), 'hex'),
             expires_at TIMESTAMP,
             created_by UUID REFERENCES users(id),
+            password_hash TEXT,
+            allow_download BOOLEAN DEFAULT true,
+            view_only BOOLEAN DEFAULT false,
+            views INT DEFAULT 0,
             is_public BOOLEAN DEFAULT true,
             download_count INT DEFAULT 0,
             created_at TIMESTAMP DEFAULT NOW()
@@ -111,6 +116,13 @@ export const initSchema = async () => {
     `CREATE INDEX IF NOT EXISTS idx_files_user_hash ON files (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_files_md5 ON files (md5_hash) WHERE md5_hash IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_files_user_md5 ON files (user_id, md5_hash) WHERE md5_hash IS NOT NULL`,
+    // shared_links folder support and security columns
+    `ALTER TABLE shared_links ADD COLUMN IF NOT EXISTS folder_id UUID REFERENCES folders(id) ON DELETE CASCADE`,
+    `ALTER TABLE shared_links ADD COLUMN IF NOT EXISTS password_hash TEXT`,
+    `ALTER TABLE shared_links ADD COLUMN IF NOT EXISTS allow_download BOOLEAN DEFAULT true`,
+    `ALTER TABLE shared_links ADD COLUMN IF NOT EXISTS view_only BOOLEAN DEFAULT false`,
+    `ALTER TABLE shared_links ADD COLUMN IF NOT EXISTS views INT DEFAULT 0`,
+    `ALTER TABLE shared_links ALTER COLUMN file_id DROP NOT NULL`,
     // ✅ Composite index for fast sort queries (name, date, size) per user+folder
     `CREATE INDEX IF NOT EXISTS idx_files_sort_date ON files (user_id, folder_id, created_at DESC) WHERE is_trashed = false`,
     `CREATE INDEX IF NOT EXISTS idx_files_sort_name ON files (user_id, folder_id, file_name ASC) WHERE is_trashed = false`,

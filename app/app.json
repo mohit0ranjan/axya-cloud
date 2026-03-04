@@ -31,6 +31,13 @@
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
         "USE_BIOMETRIC",
+        "USE_FINGERPRINT",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "CAMERA",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE",
+        "USE_BIOMETRIC",
         "USE_FINGERPRINT"
       ],
       "adaptiveIcon": {
@@ -68,6 +75,9 @@
         "projectId": "07889e0f-db9c-4dc8-9828-cbb821f5a1e9"
       }
     },
-    "owner": "mohit234"
+    "owner": "mohit234",
+    "updates": {
+      "url": "https://u.expo.dev/07889e0f-db9c-4dc8-9828-cbb821f5a1e9"
+    }
   }
 }

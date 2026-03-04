@@ -18,6 +18,7 @@ import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
 import { EmptyState } from '../ui/EmptyState';
 import { FileCardSkeleton } from '../ui/Skeleton';
+import ShareFolderModal from '../components/ShareFolderModal';
 
 
 const { width } = Dimensions.get('window');
@@ -120,6 +121,7 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
                             onPress={() => {
                                 Alert.alert(item.name || item.file_name, 'Choose action', [
                                     { text: 'Cancel', style: 'cancel' },
+                                    { text: '🔗 Share Link', onPress: () => onAction('shareLink', item) },
                                     { text: '✏️ Rename', onPress: () => onAction('rename', item) },
                                     { text: 'ℹ️ Info & Tags', onPress: () => onAction('info', item) },
                                     { text: item.is_starred ? '★ Unstar' : '⭐ Star', onPress: () => onAction('star', item) },
@@ -191,6 +193,10 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     const [infoTags, setInfoTags] = useState<string[]>([]);
     const [infoShareLink, setInfoShareLink] = useState<any>(null);
     const [newTagInput, setNewTagInput] = useState('');
+
+    // Share Modal
+    const [isShareModalVisible, setShareModalVisible] = useState(false);
+    const [shareTarget, setShareTarget] = useState<any>(null);
 
     // Move modal
     const [isMoveModalVisible, setMoveModalVisible] = useState(false);
@@ -461,6 +467,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             setRenameTarget(item); setRenameValue(item.name || item.file_name); setRenameModalVisible(true);
         } else if (action === 'info') {
             openInfoSheet(item);
+        } else if (action === 'shareLink') {
+            setShareTarget(item);
+            setShareModalVisible(true);
         } else if (action === 'star') {
             apiClient.patch(`/files/${item.id}/star`).then(fetchFolderFiles).catch(() => Alert.alert('Error', 'Could not update star'));
         } else if (action === 'move') {
@@ -707,6 +716,13 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     </View>
                 </TouchableOpacity>
             </Modal>
+
+            {/* ── Share Folder Modal ─────────────────────────────────────── */}
+            <ShareFolderModal
+                visible={isShareModalVisible}
+                onClose={() => { setShareModalVisible(false); setShareTarget(null); }}
+                targetItem={shareTarget}
+            />
 
         </SafeAreaView>
     );

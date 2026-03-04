@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import {
     ArrowLeft, Shield, HardDrive, Bell, Moon, Info,
-    LogOut, Trash2, ChevronRight, CheckCircle, BarChart2,
+    LogOut, Trash2, ChevronRight, CheckCircle, BarChart2, Link as LinkIcon
 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthContext } from '../context/AuthContext';
@@ -264,14 +264,21 @@ export default function SettingsScreen({ navigation }: any) {
                     />
                 </View>
 
-                {/* ── Insights ── */}
-                <Text style={[st.sectionLabel, { color: C.muted }]}>INSIGHTS</Text>
+                {/* ── Insights & Sharing ── */}
+                <Text style={[st.sectionLabel, { color: C.muted }]}>INSIGHTS & SHARING</Text>
                 <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
                     <Row
                         icon={<BarChart2 color={C.primary} size={20} />}
                         title="Storage Analytics"
                         subtitle="Breakdown by file type"
                         onPress={() => navigation.navigate('Analytics')}
+                    />
+                    <View style={[st.divider, { backgroundColor: C.border }]} />
+                    <Row
+                        icon={<LinkIcon color="#10B981" size={20} />}
+                        title="Shared Links"
+                        subtitle="Manage active public links"
+                        onPress={() => navigation.navigate('SharedLinks')}
                     />
                 </View>
 

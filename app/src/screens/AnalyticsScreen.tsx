@@ -134,13 +134,15 @@ export default function AnalyticsScreen({ navigation }: any) {
                 ) : (
                     <>
                         {/* ── Storage Quota Card ── */}
+                        {/* UI shows unlimited storage, but progress is still calculated
+                            relative to the original 5GB reference to visualize usage growth. */}
                         <View style={[styles.quotaCard, { backgroundColor: C.card }]}>
                             <HardDrive color={C.primary} size={22} />
                             <View style={{ flex: 1, marginLeft: 14 }}>
                                 <Text style={[styles.quotaTitle, { color: C.textBody }]}>Storage Used</Text>
                                 <Text style={[styles.quotaValues, { color: C.textHeading }]}>
                                     {formatSize(totalBytes)}{' '}
-                                    <Text style={{ color: C.textBody, fontWeight: '400' }}>/ 5 GB</Text>
+                                    <Text style={{ color: C.textBody, fontWeight: '400', fontSize: 24 }}>/ ∞</Text>
                                 </Text>
                                 <View style={[styles.quotaBarTrack, { backgroundColor: C.border }]}>
                                     <View style={[styles.quotaBarFill, { width: `${usedPct.toFixed(0)}%` as any, backgroundColor: C.primary }]} />

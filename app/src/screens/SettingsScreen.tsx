@@ -206,7 +206,7 @@ export default function SettingsScreen({ navigation }: any) {
                     <Row
                         icon={<HardDrive color={C.primary} size={20} />}
                         title="Storage Plan"
-                        subtitle="Free — 5 GB included"
+                        subtitle="Free — Unlimited Storage"
                         onPress={() => showToast('Upgrade coming soon!')}
                     />
                     <View style={[st.divider, { backgroundColor: C.border }]} />

@@ -354,6 +354,8 @@ export default function HomeScreen({ navigation }: any) {
     };
 
     // ── Storage card percentage ────────────────────────────────────────────
+    // UI shows unlimited storage (∞), but progress bar is still calculated
+    // relative to the original 5GB reference to visualize usage growth.
     const totalBytes = stats.total_size || stats.totalBytes || 0;
     const usedGBNum = totalBytes / (1024 ** 3);
     const quotaGBNum = 5;
@@ -467,14 +469,13 @@ export default function HomeScreen({ navigation }: any) {
                             <View style={s.storageSizeRow}>
                                 <Text style={s.storageBig}>{animatedGB}</Text>
                                 <Text style={s.storageGBLabel}>GB</Text>
-                                <Text style={s.storageOf}>/ {quotaGBNum} GB</Text>
+                                <Text style={s.storageOf}>/ ∞</Text>
                             </View>
 
                             {/* Progress bar */}
                             <View style={s.progressTrack}>
                                 <View style={[s.progressFill, { width: `${pct}%` as any }]} />
                             </View>
-
                             {/* Stats row */}
                             <View style={s.storageStats}>
                                 <View style={s.storageStat}>
@@ -1035,7 +1036,7 @@ const s = StyleSheet.create({
     upgradeBadge: { backgroundColor: 'rgba(255,255,255,0.25)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12 },
     upgradeText: { color: '#fff', fontSize: 13, fontWeight: '700' },
     storageBig: { fontSize: 34, fontWeight: '800', color: '#fff', letterSpacing: -0.5 },
-    storageOf: { fontSize: 16, color: 'rgba(255,255,255,0.6)', marginLeft: 6, fontWeight: '500' },
+    storageOf: { fontSize: 28, color: 'rgba(255,255,255,0.6)', marginLeft: 6, fontWeight: '500' },
     progressTrack: {
         height: 6, backgroundColor: 'rgba(255,255,255,0.25)', borderRadius: 3, marginBottom: 16,
     },

@@ -1,10 +1,5 @@
-# ANYX — Smart Cloud Drive
 
-🚀 **Telegram-powered • Private • Unlimited • Beautiful**
-
-Modern self-hosted cloud storage inspired by Teledrive.  
-Upload, organize, preview and stream your files with a smooth React Native mobile experience and reliable Node.js backend.
-
+<h1 align="center">ANYX — Smart Telegram-Powered Cloud Drive </h1>
 <p align="center">
   <img src="./axya.png" alt="Axya — Telegram Powered Cloud Drive" width="900"/>
 </p>
@@ -13,132 +8,393 @@ Upload, organize, preview and stream your files with a smooth React Native mobil
 
 <p align="center">
 Telegram-Powered Cloud Drive with instant uploads, streaming, and unlimited storage.
+</p>>
+
+<p align="center">
+  <b>Private • Unlimited • Self-Hosted Cloud Storage</b><br/>
+  Turn Telegram into your personal unlimited cloud drive.
 </p>
-[![GitHub stars](https://img.shields.io/github/stars/your-username/anyx?style=social)](https://github.com/your-username/anyx)
-[![GitHub forks](https://img.shields.io/github/forks/your-username/anyx?style=social)](https://github.com/your-username/anyx/fork)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## ✨ Features
+<p align="center">
+  <img src="https://img.shields.io/badge/Platform-React%20Native-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"/>
+  <img src="https://img.shields.io/badge/Backend-Node.js-339933?style=for-the-badge&logo=node.js&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Framework-Express-000000?style=for-the-badge&logo=express&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Database-PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Storage-Telegram%20API-26A5E4?style=for-the-badge&logo=telegram&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Mobile-Expo-000020?style=for-the-badge&logo=expo&logoColor=white"/>
+</p>
 
-### File & Folder Management
-- Create / rename / delete folders
-- Upload any file type (images, videos, documents, archives…)
-- Sort by name • date • size (ascending & descending)
-- Breadcrumb + smooth folder navigation
+---
 
-### Smart Previews
-- Image viewer with horizontal swipe + pinch-to-zoom
-- Video streaming with native player controls
-- Progressive loading (metadata → thumbnail → full preview)
+# ✨ What is ANYX?
 
-### Upload Experience
-- Background / resumable uploads
-- Real-time progress + speed + ETA
-- Automatic retry on connection loss
-- Pause & resume support
+**ANYX** is a self-hosted cloud storage system that uses **Telegram as the storage backend**.
 
-### User Profile
-- Storage usage statistics
-- File count & quota overview
-- Safe profile editing with validation
+Instead of paying for Google Drive or Dropbox subscriptions, ANYX stores files inside your **private Telegram channel** while giving you a **modern cloud-drive interface** via a mobile app.
 
-### UI/UX Details
-- Fluid animations (Reanimated 2/3)
-- Keyboard-aware forms & scroll views
-- Clean minimal design (dark/light mode ready)
+Think of it as:
 
-## 🏗 Tech Stack
+> **Google Drive + Telegram + Self Hosting**
 
-| Layer         | Technology                                 |
-|---------------|--------------------------------------------|
-| Mobile        | Expo React Native (SDK 54) • TypeScript    |
-| Navigation    | React Navigation v6                        |
-| Animations    | React Native Reanimated                    |
-| Backend       | Node.js + Express                          |
-| Database      | PostgreSQL (Neon serverless recommended)   |
-| File Storage  | Telegram Bot API (Teledrive-style)         |
-| API Client    | Axios + centralized service                |
+ANYX provides unlimited cloud storage, modern UI, and full control over your files.
 
-## 🚀 Quick Start
+---
 
-### Prerequisites
-- Node.js ≥ 18
-- npm / yarn / pnpm
-- Expo CLI (`npm install -g expo-cli`)
-- Telegram Bot Token + Channel (via @BotFather)
+# 🚀 Key Highlights
 
-### 1. Clone repository
+• Unlimited storage via Telegram
+• Self-hosted backend
+• Modern React Native mobile app
+• Video streaming and media preview
+• Folder-based organization
+• Background uploads and resumable transfers
+
+---
+
+# 📱 App Preview
+
+<p align="center">
+  <img src="docs/screenshots/home.png" width="260"/>
+  <img src="docs/screenshots/upload.png" width="260"/>
+  <img src="docs/screenshots/video.png" width="260"/>
+</p>
+
+Example screens:
+
+• Folder navigation
+• Upload progress
+• Media streaming
+
+*(Replace with real screenshots or GIF demos for best results.)*
+
+---
+
+# ⚙️ How It Works
+
+```
+Mobile App (React Native)
+        │
+        │ REST API
+        ▼
+Backend Server (Node.js + Express)
+        │
+        ├── PostgreSQL (metadata)
+        │
+        ▼
+Telegram Bot API
+        │
+        ▼
+Private Telegram Channel
+(File storage)
+```
+
+Workflow:
+
+1. User uploads file in ANYX app
+2. Backend processes the upload
+3. Telegram bot uploads file to private channel
+4. File metadata stored in PostgreSQL
+5. App streams or downloads files directly
+
+Telegram acts as the **actual storage engine**, while ANYX manages structure and access.
+
+---
+
+# 🌟 Features
+
+## 📂 File Management
+
+• Create and manage folders
+• Rename, move, and delete files
+• Sort files by name, size, or date
+• Breadcrumb navigation
+
+---
+
+## 🎥 Media Preview
+
+• Image gallery with zoom support
+• Built-in video player
+• Progressive media loading
+
+---
+
+## ⬆️ Upload Engine
+
+• Background uploads
+• Pause and resume support
+• Auto retry on connection failure
+• Upload speed and progress stats
+
+---
+
+## 📊 User Dashboard
+
+• Storage usage overview
+• File statistics
+• Account settings
+
+---
+
+## 🎨 Modern UX
+
+• Smooth animations using Reanimated
+• Dark mode support
+• Mobile optimized layout
+• Responsive UI
+
+---
+
+# 🧠 ANYX Philosophy
+
+ANYX is built on a simple idea:
+
+> **Your data should belong to you.**
+
+Traditional cloud services impose limits and monthly subscriptions.
+ANYX leverages Telegram infrastructure to provide **free, unlimited storage while maintaining control and privacy**.
+
+Core principles:
+
+• Ownership of data
+• Open source transparency
+• Self-hosted freedom
+• Mobile-first experience
+
+---
+
+# ⚔️ Comparison
+
+| Feature           | ANYX | Google Drive | Dropbox |
+| ----------------- | ---- | ------------ | ------- |
+| Unlimited storage | ✅    | ❌            | ❌       |
+| Self-hosted       | ✅    | ❌            | ❌       |
+| Telegram powered  | ✅    | ❌            | ❌       |
+| Mobile app        | ✅    | ✅            | ✅       |
+| Free              | ✅    | ❌            | ❌       |
+
+---
+
+# 🛠 Tech Stack
+
+| Layer      | Technology              |
+| ---------- | ----------------------- |
+| Mobile     | Expo React Native       |
+| Language   | TypeScript              |
+| Navigation | React Navigation        |
+| Animations | React Native Reanimated |
+| Backend    | Node.js + Express       |
+| Database   | PostgreSQL              |
+| Storage    | Telegram Bot API        |
+| Networking | Axios                   |
+
+---
+
+# 📡 API Overview
+
+Example backend endpoints.
+
+### Authentication
+
+```
+POST /auth/register
+POST /auth/login
+GET /auth/me
+```
+
+### Files
+
+```
+GET /files
+POST /files/upload
+DELETE /files/:id
+GET /files/:id/stream
+```
+
+### Folders
+
+```
+GET /folders
+POST /folders
+DELETE /folders/:id
+PATCH /folders/:id
+```
+
+---
+
+# 📦 Project Structure
+
+```
+anyx
+│
+├── app
+│   ├── screens
+│   ├── components
+│   ├── hooks
+│   └── services
+│
+├── server
+│   ├── routes
+│   ├── controllers
+│   ├── middleware
+│   └── utils
+│
+├── docs
+│   └── screenshots
+│
+└── README.md
+```
+
+---
+
+# 🚀 Quick Start
+
+## 1. Clone Repository
+
 ```bash
 git clone https://github.com/your-username/anyx.git
 cd anyx
-2. Install dependencies
-Bash# Frontend (mobile)
+```
+
+---
+
+## 2. Install Dependencies
+
+Mobile app
+
+```bash
 cd app
 npm install
+```
 
-# Backend
-cd ../server
+Backend
+
+```bash
+cd server
 npm install
-3. Configure environment
-Create server/.env:
-envPORT=5000
-DATABASE_URL=postgresql://user:pass@your-neon-host.neon.tech/anyx?sslmode=require
-TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
-TELEGRAM_CHANNEL_ID=-1001234567890          # or @channelusername
-JWT_SECRET=change-this-to-a-very-long-secret
-4. Start backend
-Bashcd server
+```
+
+---
+
+## 3. Configure Environment
+
+Create file:
+
+```
+server/.env
+```
+
+Example:
+
+```
+PORT=5000
+
+DATABASE_URL=postgresql://user:password@host/db
+
+TELEGRAM_BOT_TOKEN=your_bot_token
+
+TELEGRAM_CHANNEL_ID=-100xxxxxxxxxx
+
+JWT_SECRET=supersecret
+```
+
+---
+
+## 4. Run Development
+
+Backend
+
+```
+cd server
 npm run dev
-5. Start mobile app
-Bashcd ../app
+```
+
+Mobile
+
+```
+cd app
 npx expo start
-# or
-npx expo start --dev-client
-Open Expo Go or your dev client → scan QR code.
-🔧 Recent Improvements
+```
 
-Unified sorting logic (backend + frontend)
-Gesture-based image gallery with correct indexing
-Proper KeyboardAvoidingView + SafeArea handling
-Robust error boundaries & loading states
-Centralized API client with interceptors & retries
+Scan QR code using **Expo Go**.
 
-📊 Data Flow
-textMobile App
-   ↓ (Axios)
-Express API → PostgreSQL (metadata + user info)
-   ↓ (Telegram Bot API)
-Files stored in private Telegram channel
-   ↑
-Preview / Stream ← Progressive URLs
-⚠️ Current Limitations
+---
 
-iOS/Android may pause background uploads when app is force-quit
-Very large videos (>2GB) can buffer slowly on weak connections
-No built-in E2E encryption (Telegram cloud storage)
+# ☁️ Deployment
 
-🛤️ Roadmap
+Recommended infrastructure.
 
- Offline upload queue & auto-sync
- Public & password-protected sharing links
- AI-powered file tagging & smart search
- Multi-account / team folders
- Optional E2EE layer
- Web client (React)
+Backend
 
-🤝 Contributing
-Pull requests welcome!
+• Railway
+• Render
+• Fly.io
+• VPS
 
-Fork & create feature branch (git checkout -b feat/amazing-thing)
-Commit (git commit -m 'Add amazing thing')
-Push (git push origin feat/amazing-thing)
-Open Pull Request
+Database
 
-Please discuss major changes via issue first.
-📜 License
+• Neon
+• Supabase
+• PostgreSQL
+
+Mobile Build
+
+```
+eas build
+```
+
+---
+
+# 🔐 Security
+
+• Files stored in private Telegram channel
+• JWT authentication
+• HTTPS recommended in production
+• No analytics or tracking
+
+---
+
+# 🛤 Roadmap
+
+Upcoming features:
+
+• Web client interface
+• Offline upload queue
+• Public share links
+• Multi-user collaboration
+• AI file search
+• Client-side encryption
+
+---
+
+# 🤝 Contributing
+
+Contributions are welcome.
+
+1. Fork repository
+2. Create feature branch
+3. Commit changes
+4. Push branch
+5. Open pull request
+
+---
+
+# ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=your-username/anyx\&type=Date)](https://star-history.com/#your-username/anyx)
+
+---
+
+# 📜 License
+
 MIT License
 
-ANYX — Your files. Your cloud. No limits.
-textJust copy everything inside the ```markdown
+---
 
-Replace placeholders (`your-username`, banner image URL, Telegram values, etc.) with your real information
+<p align="center">
+Built with ❤️ in Punjab
+</p>
+
+<p align="center">
+⭐ Star the project if you find it useful
+</p>

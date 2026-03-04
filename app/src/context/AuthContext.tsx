@@ -36,11 +36,16 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
                         } else {
                             throw new Error('Invalid token');
                         }
-                    } catch (e) {
+                    } catch (e: any) {
+                        const status = e?.response?.status;
                         console.warn('[Auth] Token verification failed:', e);
-                        // Optional: Offline fallback if network error
-                        // For now, clear it if explicit 401/403
-                        await logout();
+                        // Keep session on transient network/server failures.
+                        // Only clear auth on explicit unauthorized responses.
+                        if (status === 401 || status === 403) {
+                            await logout();
+                        } else {
+                            setIsAuthenticated(true);
+                        }
                     }
                 }
             } catch (e) {

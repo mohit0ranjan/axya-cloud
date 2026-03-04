@@ -205,8 +205,13 @@ class UploadManager {
             if (stored) {
                 const parsed: UploadTask[] = JSON.parse(stored);
                 this.tasks = parsed.map(t =>
-                    t.status === 'uploading' || t.status === 'retrying'
-                        ? { ...t, status: 'paused' as UploadStatus, progress: 0, bytesUploaded: 0 }
+                    (
+                        t.status === 'uploading'
+                        || t.status === 'retrying'
+                        || t.status === 'waiting_retry'
+                        || t.status === 'pending'
+                    )
+                        ? { ...t, status: 'queued' as UploadStatus, progress: 0, bytesUploaded: 0, uploadId: undefined }
                         : t
                 );
             }
@@ -223,6 +228,10 @@ class UploadManager {
 
             if (stored || statsStored) {
                 this.notifyListeners(true); // force, bypass throttle for initial load
+            }
+            if (this.tasks.some(t => t.status === 'queued' || t.status === 'retrying')) {
+                // Resume queue automatically after app restart/background wake.
+                this.processQueue();
             }
         } catch (e) {
             console.error('[UploadManager] Failed to load queue:', e);

@@ -7,9 +7,17 @@ import { logger } from '../utils/logger';
 
 const PRODUCTION_URL = 'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net';
 const PORT = '3000';
+const LOCAL_NATIVE_DEV_URL = Platform.OS === 'android'
+    ? `http://10.0.2.2:${PORT}`
+    : `http://localhost:${PORT}`;
 
-export const API_BASE: string = process.env.EXPO_PUBLIC_API_URL || (() => {
+const ENV_API_BASE = process.env.EXPO_PUBLIC_API_URL?.trim();
+export const API_BASE: string = ENV_API_BASE || (() => {
     if (Platform.OS === 'web') return `http://localhost:${PORT}`;
+    if (__DEV__) {
+        console.warn('[API] EXPO_PUBLIC_API_URL is missing, using local native dev server URL.');
+        return LOCAL_NATIVE_DEV_URL;
+    }
     return PRODUCTION_URL;
 })();
 

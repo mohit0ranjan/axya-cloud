@@ -10,6 +10,7 @@
  */
 
 import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import { uploadManager, UploadTask, FileAsset } from '../services/UploadManager';
 
 interface UploadStats {
@@ -56,6 +57,18 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             setTasks(newTasks);
         });
         return unsubscribe;
+    }, []);
+
+    useEffect(() => {
+        const appStateRef = { current: AppState.currentState };
+        const sub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
+            const wasBackground = /inactive|background/.test(appStateRef.current);
+            if (wasBackground && nextState === 'active') {
+                uploadManager.resumeAllBackground();
+            }
+            appStateRef.current = nextState;
+        });
+        return () => sub.remove();
     }, []);
 
     // ── Actions ───────────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ import {
     View, Text, StyleSheet,
     ActivityIndicator, Dimensions, StatusBar,
     Animated, Easing, KeyboardAvoidingView, Platform,
-    TouchableOpacity, SafeAreaView, ScrollView, Keyboard,
+    TouchableOpacity, SafeAreaView, Keyboard,
     Pressable,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -253,20 +253,9 @@ export default function AuthScreen({ navigation }: any) {
             <KeyboardAvoidingView
                 behavior={Platform.OS === 'ios' ? 'padding' : undefined}
                 keyboardVerticalOffset={keyboardOffset}
-                style={{ flex: 1 }}
+                style={styles.keyboardContainer}
             >
-                <ScrollView
-                    bounces={false}
-                    showsVerticalScrollIndicator={false}
-                    keyboardShouldPersistTaps="handled"
-                    keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-                    contentInsetAdjustmentBehavior="always"
-                    onScrollBeginDrag={Keyboard.dismiss}
-                    contentContainerStyle={[
-                        styles.scrollContainer,
-                        { paddingBottom: isKeyboardVisible ? 22 : 32 },
-                    ]}
-                >
+                <Pressable style={styles.contentContainer} onPress={Keyboard.dismiss}>
                         {/* Hero — shrinks when keyboard opens */}
                         <Animated.View style={[
                             styles.heroArea,
@@ -308,6 +297,7 @@ export default function AuthScreen({ navigation }: any) {
                         <Animated.View style={[styles.sheet, {
                             opacity: sheetOpacity,
                             transform: [{ translateY: sheetY }],
+                            marginBottom: isKeyboardVisible ? 14 : 0,
                         }]}>
                             <View style={styles.sheetHandle} />
 
@@ -380,7 +370,7 @@ export default function AuthScreen({ navigation }: any) {
                                 </Text>
                             </View>
                         </Animated.View>
-                </ScrollView>
+                </Pressable>
             </KeyboardAvoidingView>
         </SafeAreaView>
     );
@@ -388,7 +378,8 @@ export default function AuthScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
     root: { flex: 1, backgroundColor: '#F4F6FB' },
-    scrollContainer: { flexGrow: 1, justifyContent: 'flex-end' },
+    keyboardContainer: { flex: 1 },
+    contentContainer: { flex: 1, justifyContent: 'flex-end' },
     backBtn: {
         padding: 14,
         marginTop: Platform.OS === 'ios' ? 8 : 12,

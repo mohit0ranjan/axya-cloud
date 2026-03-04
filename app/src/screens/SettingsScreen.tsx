@@ -57,6 +57,7 @@ export default function SettingsScreen({ navigation }: any) {
 
     const [notificationsEnabled, setNotificationsEnabled] = useState(true);
     const [autoBackup, setAutoBackup] = useState(false);
+    const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
     // Fade-in
     const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -92,27 +93,42 @@ export default function SettingsScreen({ navigation }: any) {
         }
     }, [logout, showToast]);
 
+    const deleteAccount = useCallback(async () => {
+        if (isDeletingAccount) return;
+        setIsDeletingAccount(true);
+        try {
+            const res = await apiClient.delete('/auth/account');
+            if (!res?.data?.success) {
+                throw new Error(res?.data?.error || 'Delete failed');
+            }
+            showToast('Account deleted permanently', 'success');
+            await logout();
+        } catch (e: any) {
+            const message = e?.response?.data?.error || e?.message || 'Could not delete account. Contact support.';
+            showToast(message, 'error');
+        } finally {
+            setIsDeletingAccount(false);
+        }
+    }, [isDeletingAccount, logout, showToast]);
+
     const handleDeleteAccount = useCallback(() => {
+        const confirmationText = 'This will permanently delete your account and all files. This cannot be undone.';
+        if (Platform.OS === 'web') {
+            if (window.confirm(confirmationText)) {
+                void deleteAccount();
+            }
+            return;
+        }
+
         Alert.alert(
             'Delete Account',
-            'This will permanently delete your account and all files. This cannot be undone.',
+            confirmationText,
             [
                 { text: 'Cancel', style: 'cancel' },
-                {
-                    text: 'Delete Everything',
-                    style: 'destructive',
-                    onPress: async () => {
-                        try {
-                            await apiClient.delete('/auth/account');
-                            await logout();
-                        } catch {
-                            showToast('Could not delete account. Contact support.', 'error');
-                        }
-                    },
-                },
+                { text: 'Delete Everything', style: 'destructive', onPress: () => void deleteAccount() },
             ]
         );
-    }, [logout, showToast]);
+    }, [deleteAccount]);
 
     // ── Row Component ────────────────────────────────────────────────────────
 
@@ -291,9 +307,9 @@ export default function SettingsScreen({ navigation }: any) {
                     <View style={[st.divider, { backgroundColor: C.border }]} />
                     <Row
                         icon={<Trash2 color={C.danger} size={20} />}
-                        title="Delete Account"
+                        title={isDeletingAccount ? 'Deleting Account...' : 'Delete Account'}
                         subtitle="Permanently removes all data"
-                        onPress={handleDeleteAccount}
+                        onPress={isDeletingAccount ? undefined : handleDeleteAccount}
                         danger
                     />
                 </View>

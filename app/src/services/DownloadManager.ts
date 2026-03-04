@@ -9,6 +9,7 @@
  */
 
 import { File, Paths } from 'expo-file-system';
+import * as LegacyFileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
@@ -46,10 +47,10 @@ class DownloadManager {
     private listeners: ((tasks: DownloadTask[]) => void)[] = [];
 
     /**
-     * Map of taskId → AbortController.
-     * Aborting signals the running download to stop.
+     * Map of taskId → DownloadResumable.
+     * Allows true transport-level cancellation via cancelAsync().
      */
-    private abortControllers: Map<string, AbortController> = new Map();
+    private downloadWorkers: Map<string, LegacyFileSystem.DownloadResumable> = new Map();
 
     // ── Subscription ─────────────────────────────────────────────────────────
 
@@ -181,7 +182,10 @@ class DownloadManager {
         if (['queued', 'downloading'].includes(task.status)) {
             task.status = 'cancelled';
             task.progress = 0;
-            this.abortControllers.get(id)?.abort();
+            const worker = this.downloadWorkers.get(id);
+            if (worker) {
+                worker.cancelAsync().catch(() => { });
+            }
             this.notifyListeners();
         }
     }
@@ -195,7 +199,10 @@ class DownloadManager {
             if (task.status === 'queued' || task.status === 'downloading') {
                 task.status = 'cancelled';
                 task.progress = 0;
-                this.abortControllers.get(task.id)?.abort();
+                const worker = this.downloadWorkers.get(task.id);
+                if (worker) {
+                    worker.cancelAsync().catch(() => { });
+                }
                 changed = true;
             }
         });
@@ -249,7 +256,7 @@ class DownloadManager {
                 nextTask.error = e?.message || 'Download failed';
             }
         } finally {
-            this.abortControllers.delete(nextTask.id);
+            this.downloadWorkers.delete(nextTask.id);
             this.activeDownloads = Math.max(0, this.activeDownloads - 1);
             this.notifyListeners();
             this.processQueue(jwt); // Chain next download
@@ -259,11 +266,8 @@ class DownloadManager {
     // ── Core Download Logic ──────────────────────────────────────────────────
 
     private async performDownload(task: DownloadTask, jwt: string): Promise<void> {
-        const abort = new AbortController();
-        this.abortControllers.set(task.id, abort);
-
         const throwIfCancelled = () => {
-            if (task.status === 'cancelled' || abort.signal.aborted) {
+            if (task.status === 'cancelled') {
                 throw new Error('Cancelled');
             }
         };
@@ -273,22 +277,32 @@ class DownloadManager {
         const downloadUrl = `${API_BASE}/files/${task.fileId}/download`;
         const destFile = new File(Paths.document, task.fileName);
 
-        // expo-file-system SDK 55 File.downloadFileAsync
-        // Note: This API does not support abort natively, so we track the abort
-        // state and skip post-processing if cancelled.
-        task.progress = 10; // Starting
+        task.progress = 5; // Starting
         this.notifyListeners();
 
-        const resultFile = await File.downloadFileAsync(
+        const worker = LegacyFileSystem.createDownloadResumable(
             downloadUrl,
-            destFile,
-            { headers: { Authorization: `Bearer ${jwt}` } }
+            destFile.uri,
+            { headers: { Authorization: `Bearer ${jwt}` } },
+            (progressData) => {
+                if (task.status === 'cancelled') return;
+                const total = progressData.totalBytesExpectedToWrite || 0;
+                const written = progressData.totalBytesWritten || 0;
+                if (total > 0) {
+                    // Keep room for post-download processing (share/save).
+                    task.progress = Math.max(5, Math.min(90, Math.round((written / total) * 90)));
+                    this.notifyListeners();
+                }
+            }
         );
+        this.downloadWorkers.set(task.id, worker);
+        const result = await worker.downloadAsync();
+        if (!result?.uri) throw new Error('Download failed');
 
         throwIfCancelled();
 
         task.progress = 85;
-        task.localPath = resultFile.uri;
+        task.localPath = result.uri;
         this.notifyListeners();
 
         // Offer share dialog
@@ -296,7 +310,7 @@ class DownloadManager {
             throwIfCancelled();
             task.progress = 95;
             this.notifyListeners();
-            await Sharing.shareAsync(resultFile.uri, { mimeType: task.mimeType });
+            await Sharing.shareAsync(result.uri, { mimeType: task.mimeType });
         }
 
         task.progress = 100;

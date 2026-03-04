@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, TouchableOpacity,
-    Animated, Dimensions, FlatList,
+    Animated, Dimensions, FlatList, Alert, Platform,
 } from 'react-native';
 import {
     ChevronUp, ChevronDown, CheckCircle2, AlertTriangle, X
@@ -28,7 +28,7 @@ function formatSpeed(bytesPerSecond: number, isIdle: boolean): string {
 function UploadProgressOverlay() {
     const {
         tasks,
-        cancelUpload, pauseUpload, resumeUpload, clearCompleted,
+        cancelUpload, pauseUpload, resumeUpload, clearCompleted, cancelAll,
         totalFiles, uploadedCount, queuedCount, failedCount,
         activeCount, overallProgress, totalBytes, uploadedBytes,
         avgUploadSpeedBps,
@@ -108,7 +108,26 @@ function UploadProgressOverlay() {
     };
 
     const handleDismiss = () => {
-        setIsDismissed(true);
+        const hasRunningOrQueued = activeCount > 0 || queuedCount > 0;
+        if (!hasRunningOrQueued) {
+            setIsDismissed(true);
+            return;
+        }
+
+        const confirmText = 'Cancel all current and queued uploads?';
+        if (Platform.OS === 'web') {
+            if (window.confirm(confirmText)) cancelAll();
+            return;
+        }
+
+        Alert.alert(
+            'Cancel All Uploads',
+            confirmText,
+            [
+                { text: 'Keep Uploading', style: 'cancel' },
+                { text: 'Cancel All', style: 'destructive', onPress: cancelAll },
+            ]
+        );
     };
 
     return (

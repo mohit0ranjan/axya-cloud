@@ -64,6 +64,38 @@ export const initSchema = async () => {
               CHECK ((file_id IS NOT NULL AND folder_id IS NULL) OR (file_id IS NULL AND folder_id IS NOT NULL))
         );
 
+        CREATE TABLE IF NOT EXISTS shared_spaces (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name TEXT NOT NULL,
+            owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            password_hash TEXT,
+            allow_upload BOOLEAN NOT NULL DEFAULT false,
+            allow_download BOOLEAN NOT NULL DEFAULT true,
+            expires_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS shared_files (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            space_id UUID NOT NULL REFERENCES shared_spaces(id) ON DELETE CASCADE,
+            telegram_message_id BIGINT NOT NULL,
+            file_name TEXT NOT NULL,
+            file_size BIGINT NOT NULL DEFAULT 0,
+            mime_type TEXT,
+            uploaded_by UUID REFERENCES users(id) ON DELETE SET NULL,
+            telegram_file_id TEXT,
+            folder_path TEXT NOT NULL DEFAULT '/',
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS access_logs (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            space_id UUID NOT NULL REFERENCES shared_spaces(id) ON DELETE CASCADE,
+            user_ip TEXT NOT NULL,
+            action TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+
         CREATE TABLE IF NOT EXISTS activity_log (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             user_id UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -163,6 +195,13 @@ export const initSchema = async () => {
     `CREATE UNIQUE INDEX IF NOT EXISTS files_user_sha256_unique ON files (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL AND is_trashed = false`,
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS storage_used_bytes BIGINT DEFAULT 0`,
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS total_files_count INT DEFAULT 0`,
+    `ALTER TABLE shared_files ADD COLUMN IF NOT EXISTS telegram_file_id TEXT`,
+    `ALTER TABLE shared_files ADD COLUMN IF NOT EXISTS folder_path TEXT NOT NULL DEFAULT '/'`,
+    `CREATE INDEX IF NOT EXISTS idx_shared_spaces_owner ON shared_spaces (owner_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_shared_spaces_expires ON shared_spaces (expires_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_shared_files_space ON shared_files (space_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_shared_files_space_folder ON shared_files (space_id, folder_path)`,
+    `CREATE INDEX IF NOT EXISTS idx_access_logs_space ON access_logs (space_id, created_at DESC)`,
     `UPDATE users u SET
        storage_used_bytes = COALESCE(s.used_bytes, 0),
        total_files_count  = COALESCE(s.cnt, 0)

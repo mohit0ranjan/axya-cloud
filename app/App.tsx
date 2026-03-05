@@ -13,6 +13,7 @@ import React, { useContext, useState, useEffect, useCallback } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Alert, Platform, View } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import * as ExpoSplashScreen from 'expo-splash-screen';
 import * as Updates from 'expo-updates';
@@ -37,6 +38,7 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import FilesScreen from './src/screens/FilesScreen';
 import SharedLinksScreen from './src/screens/SharedLinksScreen';
+import SharedSpaceScreen from './src/screens/SharedSpaceScreen';
 import UploadProgressOverlay from './src/components/UploadProgressOverlay';
 import DownloadProgressOverlay from './src/components/DownloadProgressOverlay';
 import ServerWakingOverlay from './src/components/ServerWakingOverlay';
@@ -54,6 +56,7 @@ ExpoSplashScreen.preventAutoHideAsync().catch(() => {
 });
 
 const Stack = createNativeStackNavigator();
+const OTA_LAST_RELOADED_UPDATE_ID_KEY = '@ota_last_reloaded_update_id';
 
 // ─── Root Navigator ──────────────────────────────────────────────────────────
 
@@ -111,6 +114,7 @@ function RootNavigator() {
                             <Stack.Screen name="Analytics" component={AnalyticsScreen} />
                             <Stack.Screen name="Files" component={FilesScreen} />
                             <Stack.Screen name="SharedLinks" component={SharedLinksScreen} />
+                            <Stack.Screen name="SharedSpace" component={SharedSpaceScreen} />
                         </>
                     )}
                 </Stack.Navigator>
@@ -196,20 +200,40 @@ export default function App() {
                 const update = await Updates.checkForUpdateAsync();
                 if (!update.isAvailable) return;
 
-                await Updates.fetchUpdateAsync();
+                const fetchResult = await Updates.fetchUpdateAsync();
+                if (!fetchResult.isNew) return;
+
+                const nextUpdateId = (fetchResult.manifest as { id?: string } | undefined)?.id;
+                const lastReloadedUpdateId = await AsyncStorage.getItem(OTA_LAST_RELOADED_UPDATE_ID_KEY);
+                if (nextUpdateId && nextUpdateId === lastReloadedUpdateId) {
+                    logger.warn('frontend.ota', 'Skipping reload to prevent update loop', {
+                        updateId: nextUpdateId,
+                    });
+                    return;
+                }
 
                 Alert.alert(
                     'Update Available',
-                    'A new version of the app is available.',
+                    'Update available — Restart app to apply update.',
                     [
                         {
                             text: 'Later',
                             style: 'cancel',
                         },
                         {
-                            text: 'Update Now',
-                            onPress: () => {
-                                Updates.reloadAsync().catch(() => { });
+                            text: 'Restart',
+                            onPress: async () => {
+                                try {
+                                    if (nextUpdateId) {
+                                        await AsyncStorage.setItem(OTA_LAST_RELOADED_UPDATE_ID_KEY, nextUpdateId);
+                                    }
+                                    await Updates.reloadAsync();
+                                } catch (error: any) {
+                                    logger.error('frontend.ota', 'Failed to reload into OTA update', {
+                                        message: error?.message,
+                                        updateId: nextUpdateId,
+                                    });
+                                }
                             },
                         },
                     ],
@@ -218,6 +242,7 @@ export default function App() {
             } catch (error: any) {
                 logger.warn('frontend.ota', 'OTA check failed', {
                     message: error?.message,
+                    channel: Updates.channel ?? null,
                 });
             }
         };

@@ -13,6 +13,8 @@ import authRoutes from './routes/auth.routes';
 import fileRoutes from './routes/file.routes';
 import shareRoutes from './routes/share.routes';
 import streamRoutes from './routes/stream.routes';
+import spacesRoutes from './routes/spaces.routes';
+import spaceFilesRoutes from './routes/space-files.routes';
 import { logger } from './utils/logger';
 
 dotenv.config();
@@ -89,6 +91,9 @@ const authLimiter = rateLimit({
 app.use('/auth', authLimiter, authRoutes);
 app.use('/files', fileRoutes);
 app.use('/share', shareRoutes);
+app.use('/spaces', spacesRoutes);
+app.use('/api/spaces', spacesRoutes);
+app.use('/api/files', spaceFilesRoutes);
 // Alias for shorter public share URLs
 app.use('/s', (req: Request, res: Response) => {
     res.redirect(301, `/share${req.url}`);

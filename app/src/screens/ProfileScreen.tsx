@@ -381,7 +381,7 @@ export default function ProfileScreen({ navigation }: any) {
                 </TouchableOpacity>
 
                 <Text style={[st.footerText, { color: C.muted }]}>
-                    Axya Cloud v1.0.0
+                    Axya Cloud v1.0.0 (OTA Test 1)
                 </Text>
 
                 <View style={{ height: 40 }} />

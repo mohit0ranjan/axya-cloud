@@ -1,5 +1,5 @@
 import express from 'express';
-import { createShareLink, downloadSharedFile, shareWebPage, validatePassword, downloadAllShared, getUserSharedLinks, revokeShareLink } from '../controllers/share.controller';
+import { createShareLink, downloadSharedFile, shareWebPage, validatePassword, downloadAllShared, getUserSharedLinks, revokeShareLink, sharePasswordGateScript } from '../controllers/share.controller';
 import { requireAuth } from '../middlewares/auth.middleware';
 import { sharePasswordLimiter, shareViewLimiter, shareDownloadLimiter } from '../middlewares/rateLimit.middleware';
 
@@ -9,6 +9,7 @@ const router = express.Router();
 router.get('/', requireAuth, getUserSharedLinks);
 router.post('/', requireAuth, createShareLink);
 router.delete('/:id', requireAuth, revokeShareLink);
+router.get('/client/password-gate.js', sharePasswordGateScript); // CSP-safe script for password page
 
 // Public endpoints — no auth needed
 router.get('/:token', shareViewLimiter, shareWebPage);          // Beautiful HTML preview page / folder grid

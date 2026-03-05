@@ -80,7 +80,7 @@
     "updates": {
       "url": "https://u.expo.dev/07889e0f-db9c-4dc8-9828-cbb821f5a1e9",
       "enabled": true,
-      "checkAutomatically": "ON_LOAD",
+      "checkAutomatically": "ON_ERROR_RECOVERY",
       "fallbackToCacheTimeout": 30000
     }
   }

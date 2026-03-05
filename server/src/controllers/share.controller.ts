@@ -199,6 +199,39 @@ export const validatePassword = async (req: Request, res: Response) => {
     }
 };
 
+export const sharePasswordGateScript = async (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.send(`(() => {
+  const body = document.body;
+  const token = body?.dataset?.shareToken || '';
+  const passwordInput = document.getElementById('pw');
+  const submitBtn = document.getElementById('submitBtn');
+  const errEl = document.getElementById('err');
+
+  if (!token || !passwordInput || !submitBtn || !errEl) return;
+
+  const submitPw = async () => {
+    const pw = passwordInput.value || '';
+    const response = await fetch('/share/' + encodeURIComponent(token) + '/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ password: pw }),
+    });
+    if (response.ok) {
+      window.location.reload();
+      return;
+    }
+    errEl.style.display = 'block';
+  };
+
+  submitBtn.addEventListener('click', submitPw);
+  passwordInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submitPw();
+  });
+})();`);
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC SHARE WEB PAGE  (HTML preview — no auth required, cookie for password)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -249,26 +282,15 @@ export const shareWebPage = async (req: Request, res: Response) => {
               button{width:100%;background:linear-gradient(135deg, #5B7FFF, #4B6EF5);color:#fff;border:none;border-radius:12px;padding:16px;font-size:16px;font-weight:600;cursor:pointer;}
               .err{color:#FF5252;font-size:13px;margin-bottom:16px;display:none;}
             </style>
-            </head><body>
+            </head><body data-share-token="${escHtml(token)}">
               <div class="card">
                 <h1>Password Protected</h1>
                 <p>Please enter the password to view this shared link.</p>
                 <div class="err" id="err">Incorrect password</div>
                 <input type="password" id="pw" placeholder="Enter password" />
-                <button onclick="submitPw()">Access Link</button>
+                <button id="submitBtn">Access Link</button>
               </div>
-              <script>
-                async function submitPw() {
-                  const pw = document.getElementById('pw').value;
-                  const res = await fetch('/share/${token}/password', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    credentials: 'same-origin',
-                    body: JSON.stringify({password: pw})
-                  });
-                  if (res.ok) window.location.reload();
-                  else document.getElementById('err').style.display = 'block';
-                }
-              </script>
+              <script src="/share/client/password-gate.js"></script>
             </body></html>
             `);
         }

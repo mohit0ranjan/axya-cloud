@@ -117,17 +117,24 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
                     </View>
                     {!selectMode && (
                         <TouchableOpacity
+                            style={{ zIndex: 10, padding: 8, margin: -8 }}
                             hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-                            onPress={() => {
-                                Alert.alert(item.name || item.file_name, 'Choose action', [
-                                    { text: 'Cancel', style: 'cancel' },
-                                    { text: '🔗 Share Link', onPress: () => onAction('shareLink', item) },
-                                    { text: '✏️ Rename', onPress: () => onAction('rename', item) },
-                                    { text: 'ℹ️ Info & Tags', onPress: () => onAction('info', item) },
-                                    { text: item.is_starred ? '★ Unstar' : '⭐ Star', onPress: () => onAction('star', item) },
-                                    { text: '📦 Move to Folder', onPress: () => onAction('move', item) },
-                                    { text: '🗑 Move to Trash', style: 'destructive', onPress: () => onAction('trash', item) },
-                                ]);
+                            onPress={(e: any) => {
+                                if (e && e.stopPropagation) e.stopPropagation();
+                                if (e && e.preventDefault) e.preventDefault();
+                                if (Platform.OS === 'web') {
+                                    onAction('options', item);
+                                } else {
+                                    Alert.alert(item.name || item.file_name, 'Choose action', [
+                                        { text: 'Cancel', style: 'cancel' },
+                                        { text: '🔗 Share Link', onPress: () => onAction('shareLink', item) },
+                                        { text: '✏️ Rename', onPress: () => onAction('rename', item) },
+                                        { text: 'ℹ️ Info & Tags', onPress: () => onAction('info', item) },
+                                        { text: item.is_starred ? '★ Unstar' : '⭐ Star', onPress: () => onAction('star', item) },
+                                        { text: '📦 Move to Folder', onPress: () => onAction('move', item) },
+                                        { text: '🗑 Move to Trash', style: 'destructive', onPress: () => onAction('trash', item) },
+                                    ]);
+                                }
                             }}
                         >
                             <MoreHorizontal color={theme.colors.textBody} size={18} />
@@ -202,6 +209,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     const [isMoveModalVisible, setMoveModalVisible] = useState(false);
     const [allFolders, setAllFolders] = useState<any[]>([]);
     const [moveTarget, setMoveTarget] = useState<any>(null);
+
+    // Options Modal
+    const [optionsTarget, setOptionsTarget] = useState<any>(null);
 
     useEffect(() => { fetchFolderFiles(); }, [folderId, sortKey]);
 
@@ -448,7 +458,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     const currentBreadcrumb = [...breadcrumb, { id: folderId, name: folderName }];
 
     const handleCardAction = useCallback((action: string, item: any) => {
-        if (action === 'toggle' || action === 'longPress') {
+        if (action === 'options') {
+            setOptionsTarget(item);
+        } else if (action === 'toggle' || action === 'longPress') {
             if (action === 'longPress' && !selectMode) setSelectMode(true);
             toggleSelect(item.id);
         } else if (action === 'openFolder') {

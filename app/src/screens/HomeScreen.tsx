@@ -353,6 +353,9 @@ export default function HomeScreen({ navigation }: any) {
         } catch (e: any) { showToast(e.response?.data?.error || 'Could not rename folder', 'error'); }
     };
 
+    // Options Modal
+    const [optionsTarget, setOptionsTarget] = useState<any>(null);
+
     // ── Storage card percentage ────────────────────────────────────────────
     // UI shows unlimited storage (∞), but progress bar is still calculated
     // relative to the original 5GB reference to visualize usage growth.
@@ -565,42 +568,46 @@ export default function HomeScreen({ navigation }: any) {
                                                 <TouchableOpacity
                                                     hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
                                                     onPress={() => {
-                                                        Alert.alert(
-                                                            "Folder Options",
-                                                            `Manage "${folder.name}"`,
-                                                            [
-                                                                { text: "Cancel", style: "cancel" },
-                                                                {
-                                                                    text: pinnedFolderIds.includes(normalizeFolderId(folder.id))
-                                                                        ? "Remove from Home"
-                                                                        : "Pin to Home",
-                                                                    onPress: () => toggleFolderPinned(folder)
-                                                                },
-                                                                {
-                                                                    text: "Rename",
-                                                                    onPress: () => {
-                                                                        setRenameFolderTarget(folder);
-                                                                        setRenameFolderName(folder.name);
-                                                                        setRenameFolderModal(true);
-                                                                    }
-                                                                },
-                                                                {
-                                                                    text: "Delete Folder",
-                                                                    style: "destructive",
-                                                                    onPress: async () => {
-                                                                        try {
-                                                                            const res = await apiClient.delete(`/files/folder/${folder.id}`);
-                                                                            if (res.data.success) {
-                                                                                showToast('Folder moved to trash');
-                                                                                load();
+                                                        if (Platform.OS === 'web') {
+                                                            setOptionsTarget(folder);
+                                                        } else {
+                                                            Alert.alert(
+                                                                "Folder Options",
+                                                                `Manage "${folder.name}"`,
+                                                                [
+                                                                    { text: "Cancel", style: "cancel" },
+                                                                    {
+                                                                        text: pinnedFolderIds.includes(normalizeFolderId(folder.id))
+                                                                            ? "Remove from Home"
+                                                                            : "Pin to Home",
+                                                                        onPress: () => toggleFolderPinned(folder)
+                                                                    },
+                                                                    {
+                                                                        text: "Rename",
+                                                                        onPress: () => {
+                                                                            setRenameFolderTarget(folder);
+                                                                            setRenameFolderName(folder.name);
+                                                                            setRenameFolderModal(true);
+                                                                        }
+                                                                    },
+                                                                    {
+                                                                        text: "Delete Folder",
+                                                                        style: "destructive",
+                                                                        onPress: async () => {
+                                                                            try {
+                                                                                const res = await apiClient.delete(`/files/folder/${folder.id}`);
+                                                                                if (res.data.success) {
+                                                                                    showToast('Folder moved to trash');
+                                                                                    load();
+                                                                                }
+                                                                            } catch (e: any) {
+                                                                                showToast(e.response?.data?.error || 'Could not delete folder', 'error');
                                                                             }
-                                                                        } catch (e: any) {
-                                                                            showToast(e.response?.data?.error || 'Could not delete folder', 'error');
                                                                         }
                                                                     }
-                                                                }
-                                                            ]
-                                                        );
+                                                                ]
+                                                            );
+                                                        }
                                                     }}
                                                 >
                                                     <MoreHorizontal color={pal.icon} size={16} opacity={0.6} />
@@ -949,6 +956,50 @@ export default function HomeScreen({ navigation }: any) {
                     </View>
                 </KeyboardAvoidingView>
             </Modal>
+
+            {/* ── Options Modal (Web Fallback) ── */}
+            <Modal visible={!!optionsTarget} transparent animationType="slide">
+                <TouchableOpacity
+                    style={s.overlay}
+                    activeOpacity={1}
+                    onPress={() => setOptionsTarget(null)}
+                >
+                    <View style={[s.sheet, { backgroundColor: C.card }]}>
+                        <View style={s.sheetHandle} />
+                        <Text style={[s.sheetTitle, { color: C.text }]}>Manage "{optionsTarget?.name}"</Text>
+
+                        <TouchableOpacity style={s.sheetRow} onPress={() => { setOptionsTarget(null); toggleFolderPinned(optionsTarget); }}>
+                            <Text style={s.sheetRowTitle}>{pinnedFolderIds.includes(normalizeFolderId(optionsTarget?.id)) ? 'Remove from Home' : 'Pin to Home'}</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity style={s.sheetRow} onPress={() => { setOptionsTarget(null); setRenameFolderTarget(optionsTarget); setRenameFolderName(optionsTarget?.name); setRenameFolderModal(true); }}>
+                            <Text style={s.sheetRowTitle}>Rename Folder</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity style={[s.sheetRow, { borderTopWidth: 1, borderTopColor: C.border, paddingTop: 16, marginTop: 12 }]} onPress={async () => {
+                            const targetId = optionsTarget?.id;
+                            const targetName = optionsTarget?.name;
+                            setOptionsTarget(null);
+                            const ok = window.confirm(`Move "${targetName}" to trash?`);
+                            if (ok) {
+                                try {
+                                    const res = await apiClient.delete(`/files/folder/${targetId}`);
+                                    if (res.data.success) {
+                                        showToast('Folder moved to trash');
+                                        load();
+                                    }
+                                } catch (e: any) {
+                                    showToast(e.response?.data?.error || 'Could not delete folder', 'error');
+                                }
+                            }
+                        }}>
+                            <Text style={[s.sheetRowTitle, { color: 'red', fontWeight: 'bold' }]}>Delete Folder</Text>
+                        </TouchableOpacity>
+                        <View style={{ height: 24 }} />
+                    </View>
+                </TouchableOpacity>
+            </Modal>
+
         </SafeAreaView>
     );
 }

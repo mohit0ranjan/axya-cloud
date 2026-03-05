@@ -30,13 +30,38 @@ export default function SharedSpaceScreen({ route }: any) {
         if (!spaceId) return;
         if (!silent) setLoading(true);
         try {
-            const [spaceMeta, filePayload] = await Promise.all([
-                fetchSharedSpace(spaceId, accessToken || undefined),
-                fetchSharedSpaceFiles(spaceId, nextFolderPath, accessToken || undefined),
-            ]);
-            setSpace(spaceMeta);
+            // Fetch space metadata first
+            let spaceMeta: SharedSpaceDto | null = null;
+            try {
+                spaceMeta = await fetchSharedSpace(spaceId, accessToken || undefined);
+                setSpace(spaceMeta);
+            } catch (error: any) {
+                // Ignore initial load error if no access token
+                if (!accessToken) {
+                    console.warn('[SharedSpaceScreen] Space meta load failed (likely needs password).');
+                } else {
+                    Alert.alert('Error', error?.message || 'Could not load space');
+                }
+                return;
+            }
+
+            // If it needs a password and we don't have access, stop here (gate will show)
+            if (spaceMeta?.requires_password && !spaceMeta?.has_access && !accessToken) {
+                return;
+            }
+
+            // Fetch files now that we know we have access
+            const filePayload = await fetchSharedSpaceFiles(spaceId, nextFolderPath, accessToken || undefined);
+
+            // fetchSharedSpaceFiles also returns the space meta, which we can use to update latest state
+            setSpace(filePayload.space);
             setFiles(filePayload.files);
             setFolders(filePayload.folders);
+
+        } catch (error: any) {
+            // Ignore 401s if a password is required, the gate will handle it
+            if (error?.message?.includes('401') || error?.message?.includes('password')) return;
+            Alert.alert('Error', error?.message || 'Failed to load files');
         } finally {
             setLoading(false);
             setRefreshing(false);
@@ -79,7 +104,7 @@ export default function SharedSpaceScreen({ route }: any) {
 
     const showPasswordGate = useMemo(() => {
         return Boolean(space?.requires_password && !space?.has_access && !accessToken);
-    }, [accessToken, space?.has_access, space?.requires_password]);
+    }, [accessToken, space]);
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>

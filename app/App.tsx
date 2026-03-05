@@ -43,7 +43,7 @@ ExpoSplashScreen.preventAutoHideAsync().catch(() => { });
 const Stack = createNativeStackNavigator();
 const OTA_LAST_RELOADED_UPDATE_ID_KEY = '@ota_last_reloaded_update_id';
 const OTA_LAST_CHECKED_AT_KEY = '@ota_last_checked_at';
-const OTA_FOREGROUND_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+const OTA_FOREGROUND_CHECK_INTERVAL_MS = 1 * 60 * 1000; // 1 minute for testing
 
 function RootNavigator() {
     const auth = useContext(AuthContext);

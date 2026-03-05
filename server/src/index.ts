@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 import { initSchema } from './services/db.service';
 import pool from './config/db';
@@ -41,7 +42,21 @@ app.use((req, res, next) => {
 app.set('trust proxy', 1);
 
 // ── Security Middleware ─────────────────────────────────────────────────────
-app.use(helmet());
+app.use((req, res, next) => {
+    res.locals.nonce = crypto.randomBytes(16).toString('base64');
+    next();
+});
+
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+            "script-src": ["'self'", (req, res) => "'nonce-" + (res as any).locals.nonce + "'"],
+            "script-src-attr": ["'none'"],
+            "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        },
+    },
+}));
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:8081,http://localhost:3000').split(',');
 console.log(`🔒 [CORS] Configured origins:`, allowedOrigins);

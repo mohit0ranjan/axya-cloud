@@ -75,21 +75,32 @@ export default function SharedSpaceClient({ spaceId }: { spaceId: string }) {
     void load(folderPath);
   }, [folderPath, load]);
 
-  const unlock = useCallback(async () => {
+  const unlock = useCallback(async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!password.trim()) return;
+
     setError('');
-    const res = await fetch(`${API_BASE}/api/spaces/${spaceId}/validate-password`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ password }),
-    });
-    const payload = await res.json();
-    if (!res.ok) {
-      setError(payload.error || 'Invalid password');
-      return;
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/spaces/${spaceId}/validate-password`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(payload.error || 'Invalid password');
+        return;
+      }
+      setAccessToken(String(payload.access_token || ''));
+      setPassword('');
+      // Force trigger a reload since headers/token just updated
+    } catch (err: any) {
+      setError(err?.message || 'Network error verifying password');
+    } finally {
+      setLoading(false);
     }
-    setAccessToken(String(payload.access_token || ''));
-    setPassword('');
   }, [password, spaceId]);
 
   const upload = useCallback(async (ev: React.ChangeEvent<HTMLInputElement>) => {
@@ -122,7 +133,7 @@ export default function SharedSpaceClient({ spaceId }: { spaceId: string }) {
         <p style={{ marginTop: 6, color: 'var(--muted)', fontSize: 13 }}>Path: {folderPath}</p>
 
         {isLocked && (
-          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+          <form onSubmit={unlock} style={{ marginTop: 12, display: 'flex', gap: 8 }}>
             <input
               type="password"
               value={password}
@@ -130,8 +141,10 @@ export default function SharedSpaceClient({ spaceId }: { spaceId: string }) {
               placeholder="Enter password"
               style={{ flex: 1, height: 40, borderRadius: 10, border: '1px solid var(--line)', padding: '0 10px' }}
             />
-            <button onClick={() => void unlock()} style={buttonStyle}>Unlock</button>
-          </div>
+            <button type="submit" disabled={loading} style={{ ...buttonStyle, opacity: loading ? 0.7 : 1 }}>
+              {loading ? 'Unlocking...' : 'Unlock'}
+            </button>
+          </form>
         )}
 
         {!isLocked && space?.allow_upload && (

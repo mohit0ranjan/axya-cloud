@@ -53,6 +53,9 @@ export default function FoldersScreen({ navigation }: any) {
     const [shareModalVisible, setShareModalVisible] = useState(false);
     const [shareTarget, setShareTarget] = useState<any>(null);
 
+    // Options Modal
+    const [optionsTarget, setOptionsTarget] = useState<any>(null);
+
     useEffect(() => { fetchFolders(); }, [sortKey]);
     useEffect(() => {
         const loadPinned = async () => {
@@ -142,57 +145,61 @@ export default function FoldersScreen({ navigation }: any) {
     };
 
     const openFolderMenu = (folder: any) => {
-        Alert.alert(
-            'Folder Options',
-            `Manage "${folder.name}"`,
-            [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                    text: pinnedFolderIds.includes(String(folder.id)) ? 'Remove from Home' : 'Pin to Home',
-                    onPress: () => { void togglePinnedOnHome(folder); }
-                },
-                {
-                    text: 'Share Folder',
-                    onPress: () => {
-                        setShareTarget({
-                            id: folder.id,
-                            name: folder.name,
-                            result_type: 'folder',
-                        });
-                        setShareModalVisible(true);
-                    }
-                },
-                {
-                    text: 'Rename',
-                    onPress: () => {
-                        setRenameTarget(folder);
-                        setRenameValue(folder.name);
-                        setRenameModalVisible(true);
-                    }
-                },
-                {
-                    text: 'Delete Folder',
-                    style: 'destructive',
-                    onPress: () => {
-                        Alert.alert('Confirm', `Move "${folder.name}" to trash?`, [
-                            { text: 'Cancel', style: 'cancel' },
-                            {
-                                text: 'Delete',
-                                style: 'destructive',
-                                onPress: async () => {
-                                    try {
-                                        await apiClient.delete(`/files/folder/${folder.id}`);
-                                        fetchFolders();
-                                    } catch (e: any) {
-                                        Alert.alert('Error', e.response?.data?.error || 'Could not delete');
+        if (Platform.OS === 'web') {
+            setOptionsTarget(folder);
+        } else {
+            Alert.alert(
+                'Folder Options',
+                `Manage "${folder.name}"`,
+                [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                        text: pinnedFolderIds.includes(String(folder.id)) ? 'Remove from Home' : 'Pin to Home',
+                        onPress: () => { void togglePinnedOnHome(folder); }
+                    },
+                    {
+                        text: 'Share Folder',
+                        onPress: () => {
+                            setShareTarget({
+                                id: folder.id,
+                                name: folder.name,
+                                result_type: 'folder',
+                            });
+                            setShareModalVisible(true);
+                        }
+                    },
+                    {
+                        text: 'Rename',
+                        onPress: () => {
+                            setRenameTarget(folder);
+                            setRenameValue(folder.name);
+                            setRenameModalVisible(true);
+                        }
+                    },
+                    {
+                        text: 'Delete Folder',
+                        style: 'destructive',
+                        onPress: () => {
+                            Alert.alert('Confirm', `Move "${folder.name}" to trash?`, [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                    text: 'Delete',
+                                    style: 'destructive',
+                                    onPress: async () => {
+                                        try {
+                                            await apiClient.delete(`/files/folder/${folder.id}`);
+                                            fetchFolders();
+                                        } catch (e: any) {
+                                            Alert.alert('Error', e.response?.data?.error || 'Could not delete');
+                                        }
                                     }
                                 }
-                            }
-                        ]);
+                            ]);
+                        }
                     }
-                }
-            ]
-        );
+                ]
+            );
+        }
     };
 
     const filtered = folders.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()));
@@ -260,8 +267,13 @@ export default function FoldersScreen({ navigation }: any) {
                                         <FolderIcon color={folder.color} size={24} fill={folder.color} />
                                     </View>
                                     <TouchableOpacity
+                                        style={{ zIndex: 10, padding: 8, margin: -8 }}
                                         hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
-                                        onPress={() => openFolderMenu(folder)}
+                                        onPress={(e: any) => {
+                                            if (e && e.stopPropagation) e.stopPropagation();
+                                            if (e && e.preventDefault) e.preventDefault();
+                                            openFolderMenu(folder);
+                                        }}
                                     >
                                         <MoreHorizontal color={folder.color} size={20} />
                                     </TouchableOpacity>
@@ -280,17 +292,17 @@ export default function FoldersScreen({ navigation }: any) {
                                     title={searchQuery ? 'No results found' : 'No folders here'}
                                     description={searchQuery ? 'Try a different folder name' : 'Create a folder to organize your files'}
                                     iconType={searchQuery ? 'search' : 'folder'}
-                                    style={{ flex: 0 }}
                                 />
                             </View>
-                        )}
-                    </View>
+                        )
+                        }
+                    </View >
                 )}
                 <View style={{ height: 120 }} />
-            </ScrollView>
+            </ScrollView >
 
             {/* ── Create Folder Modal ── */}
-            <Modal visible={isCreateModalVisible} transparent animationType="fade">
+            < Modal visible={isCreateModalVisible} transparent animationType="fade" >
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
                     <View style={styles.modalCard}>
                         <Text style={styles.modalTitle}>📁 New Folder</Text>
@@ -312,10 +324,10 @@ export default function FoldersScreen({ navigation }: any) {
                         </View>
                     </View>
                 </KeyboardAvoidingView>
-            </Modal>
+            </Modal >
 
             {/* ── Rename Folder Modal ── */}
-            <Modal visible={isRenameModalVisible} transparent animationType="fade">
+            < Modal visible={isRenameModalVisible} transparent animationType="fade" >
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
                     <View style={styles.modalCard}>
                         <Text style={styles.modalTitle}>✏️ Rename Folder</Text>
@@ -337,10 +349,10 @@ export default function FoldersScreen({ navigation }: any) {
                         </View>
                     </View>
                 </KeyboardAvoidingView>
-            </Modal>
+            </Modal >
 
             {/* ── Sort Modal ── */}
-            <Modal visible={showSortModal} transparent animationType="slide">
+            < Modal visible={showSortModal} transparent animationType="slide" >
                 <TouchableOpacity
                     style={styles.sortModalOverlay}
                     activeOpacity={1}
@@ -379,17 +391,67 @@ export default function FoldersScreen({ navigation }: any) {
                         <View style={{ height: 24 }} />
                     </View>
                 </TouchableOpacity>
+            </Modal >
+
+            {/* ── Options Modal (Web Fallback) ── */}
+            <Modal visible={!!optionsTarget} transparent animationType="slide">
+                <TouchableOpacity
+                    style={styles.sortModalOverlay}
+                    activeOpacity={1}
+                    onPress={() => setOptionsTarget(null)}
+                >
+                    <View style={styles.sortSheet}>
+                        <View style={styles.sortHandle} />
+                        <Text style={styles.sortSheetTitle}>Manage "{optionsTarget?.name}"</Text>
+
+                        <TouchableOpacity style={styles.sortRow} onPress={() => { setOptionsTarget(null); void togglePinnedOnHome(optionsTarget); }}>
+                            <Text style={styles.sortRowText}>{pinnedFolderIds.includes(String(optionsTarget?.id)) ? 'Remove from Home' : 'Pin to Home'}</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity style={styles.sortRow} onPress={() => {
+                            setOptionsTarget(null);
+                            setShareTarget({ id: optionsTarget.id, name: optionsTarget.name, result_type: 'folder' });
+                            setShareModalVisible(true);
+                        }}>
+                            <Text style={styles.sortRowText}>Share Folder</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity style={styles.sortRow} onPress={() => { setOptionsTarget(null); setRenameTarget(optionsTarget); setRenameValue(optionsTarget.name); setRenameModalVisible(true); }}>
+                            <Text style={styles.sortRowText}>Rename Folder</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity style={[styles.sortRow, { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 16, marginTop: 12 }]} onPress={async () => {
+                            const targetId = optionsTarget.id;
+                            setOptionsTarget(null);
+                            const ok = window.confirm(`Move "${optionsTarget?.name}" to trash?`);
+                            if (ok) {
+                                try {
+                                    await apiClient.delete(`/files/folder/${targetId}`);
+                                    fetchFolders();
+                                } catch (e: any) {
+                                    window.alert(e.response?.data?.error || 'Could not delete');
+                                }
+                            }
+                        }}>
+                            <Text style={[styles.sortRowText, { color: 'red', fontWeight: 'bold' }]}>Delete Folder</Text>
+                        </TouchableOpacity>
+
+                        <View style={{ height: 24 }} />
+                    </View>
+                </TouchableOpacity>
             </Modal>
 
             {/* ── Share Folder Modal ── */}
-            {shareTarget && (
-                <ShareFolderModal
-                    visible={shareModalVisible}
-                    onClose={() => { setShareModalVisible(false); setShareTarget(null); }}
-                    targetItem={shareTarget}
-                />
-            )}
-        </SafeAreaView>
+            {
+                shareTarget && (
+                    <ShareFolderModal
+                        visible={shareModalVisible}
+                        onClose={() => { setShareModalVisible(false); setShareTarget(null); }}
+                        targetItem={shareTarget}
+                    />
+                )
+            }
+        </SafeAreaView >
     );
 }
 

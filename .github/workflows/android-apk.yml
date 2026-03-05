@@ -89,6 +89,9 @@ jobs:
           java-version: "17"
           cache: gradle
 
+      - name: Set JAVA_HOME
+        run: echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
+
       - name: Install npm dependencies
         run: npm ci --prefer-offline --no-audit --fund=false
 
@@ -102,16 +105,23 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew --build-cache --parallel --no-daemon -x lint -x test assembleRelease
+          ./gradlew --build-cache --parallel --max-workers=2 --no-daemon -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m" -x lint -x test assembleRelease
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: android-release-apk
-          path: app/android/app/build/outputs/apk/release/app-release.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-logs-release
+          path: android/app/build/reports/**
 
   build-debug:
     runs-on: ubuntu-latest
@@ -137,6 +147,9 @@ jobs:
           java-version: "17"
           cache: gradle
 
+      - name: Set JAVA_HOME
+        run: echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
+
       - name: Install npm dependencies
         run: npm ci --prefer-offline --no-audit --fund=false
 
@@ -150,13 +163,20 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew --build-cache --parallel --no-daemon -x lint -x test assembleDebug
+          ./gradlew --build-cache --parallel --max-workers=2 --no-daemon -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m" -x lint -x test assembleDebug
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: android-debug-apk
-          path: app/android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-logs-debug
+          path: android/app/build/reports/**

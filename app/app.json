@@ -4,7 +4,7 @@
     "slug": "axya",
     "version": "1.1.1",
     "orientation": "portrait",
-    "icon": "./assets/axya_logo.png",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "splash": {
       "image": "./assets/axya_logo.png",
@@ -35,7 +35,7 @@
       ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/axya_logo.png"
+        "foregroundImage": "./assets/icon.png"
       }
     },
     "web": {

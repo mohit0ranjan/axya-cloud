@@ -82,6 +82,15 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
 
+      - name: Install npm dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Ensure Android project exists
+        run: |
+          if [ ! -f android/gradlew ]; then
+            npx expo prebuild --platform android --non-interactive
+          fi
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -91,15 +100,6 @@ jobs:
 
       - name: Set JAVA_HOME
         run: echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
-
-      - name: Install npm dependencies
-        run: npm ci --prefer-offline --no-audit --fund=false
-
-      - name: Ensure Android project exists
-        run: |
-          if [ ! -f android/gradlew ]; then
-            npx expo prebuild --platform android --non-interactive
-          fi
 
       - name: Build Release APK
         run: |
@@ -140,6 +140,15 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
 
+      - name: Install npm dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Ensure Android project exists
+        run: |
+          if [ ! -f android/gradlew ]; then
+            npx expo prebuild --platform android --non-interactive
+          fi
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -149,15 +158,6 @@ jobs:
 
       - name: Set JAVA_HOME
         run: echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
-
-      - name: Install npm dependencies
-        run: npm ci --prefer-offline --no-audit --fund=false
-
-      - name: Ensure Android project exists
-        run: |
-          if [ ! -f android/gradlew ]; then
-            npx expo prebuild --platform android --non-interactive
-          fi
 
       - name: Build Debug APK
         run: |

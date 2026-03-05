@@ -94,6 +94,12 @@ jobs:
       - name: Install npm dependencies
         run: npm ci --prefer-offline --no-audit --fund=false
 
+      - name: Ensure Android project exists
+        run: |
+          if [ ! -f android/gradlew ]; then
+            npx expo prebuild --platform android
+          fi
+
       - name: Restore Gradle caches
         uses: actions/cache@v4
         with:
@@ -105,10 +111,9 @@ jobs:
             ${{ runner.os }}-gradle-
 
       - name: Build Release APK
-        working-directory: app/android
         run: |
-          chmod +x gradlew
-          ./gradlew --build-cache --parallel --no-daemon -x lint -x test assembleRelease
+          chmod +x android/gradlew
+          ./android/gradlew --build-cache --parallel --no-daemon -x lint -x test assembleRelease
 
       - name: Upload Release artifact
         uses: actions/upload-artifact@v4
@@ -145,6 +150,12 @@ jobs:
       - name: Install npm dependencies
         run: npm ci --prefer-offline --no-audit --fund=false
 
+      - name: Ensure Android project exists
+        run: |
+          if [ ! -f android/gradlew ]; then
+            npx expo prebuild --platform android
+          fi
+
       - name: Restore Gradle caches
         uses: actions/cache@v4
         with:
@@ -156,10 +167,9 @@ jobs:
             ${{ runner.os }}-gradle-
 
       - name: Build Debug APK
-        working-directory: app/android
         run: |
-          chmod +x gradlew
-          ./gradlew --build-cache --parallel --no-daemon -x lint -x test assembleDebug
+          chmod +x android/gradlew
+          ./android/gradlew --build-cache --parallel --no-daemon -x lint -x test assembleDebug
 
       - name: Upload Debug artifact
         uses: actions/upload-artifact@v4

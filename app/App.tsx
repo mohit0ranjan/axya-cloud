@@ -12,9 +12,10 @@
 import React, { useContext, useState, useEffect, useCallback } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { Platform, View } from 'react-native';
+import { Alert, Platform, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import * as ExpoSplashScreen from 'expo-splash-screen';
+import * as Updates from 'expo-updates';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
@@ -124,6 +125,8 @@ function RootNavigator() {
 // ─── App Entry Point ─────────────────────────────────────────────────────────
 
 export default function App() {
+    const hasCheckedOtaRef = React.useRef(false);
+
     useEffect(() => {
         // Global error handler
         const globalAny = global as any;
@@ -177,6 +180,49 @@ export default function App() {
                 ErrorUtilsRef.setGlobalHandler(existingGlobalHandler);
             }
         };
+    }, []);
+
+    useEffect(() => {
+        // Run only once per app launch and only where expo-updates is supported.
+        if (hasCheckedOtaRef.current) return;
+        hasCheckedOtaRef.current = true;
+
+        if (__DEV__ || !Updates.isEnabled) {
+            return;
+        }
+
+        const checkForOtaUpdate = async () => {
+            try {
+                const update = await Updates.checkForUpdateAsync();
+                if (!update.isAvailable) return;
+
+                await Updates.fetchUpdateAsync();
+
+                Alert.alert(
+                    'Update Available',
+                    'A new version of the app is available.',
+                    [
+                        {
+                            text: 'Later',
+                            style: 'cancel',
+                        },
+                        {
+                            text: 'Update Now',
+                            onPress: () => {
+                                Updates.reloadAsync().catch(() => { });
+                            },
+                        },
+                    ],
+                    { cancelable: true }
+                );
+            } catch (error: any) {
+                logger.warn('frontend.ota', 'OTA check failed', {
+                    message: error?.message,
+                });
+            }
+        };
+
+        void checkForOtaUpdate();
     }, []);
 
     return (

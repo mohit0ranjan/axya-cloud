@@ -34,7 +34,7 @@ const safeUnlink = (p: string) => {
 };
 
 const isShareCookieValid = (req: Request, token: string): boolean => {
-    return !!req.headers.cookie?.includes(`share_auth_${token}=true`);
+    return req.cookies?.[`share_auth_${token}`] === 'true';
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -186,7 +186,13 @@ export const validatePassword = async (req: Request, res: Response) => {
         if (!isValid) return res.status(401).json({ success: false, error: 'Incorrect password.' });
 
         // Set a cookie to remember auth for this token
-        res.cookie(`share_auth_${token}`, 'true', { maxAge: 24 * 60 * 60 * 1000, httpOnly: true });
+        res.cookie(`share_auth_${token}`, 'true', {
+            maxAge: 24 * 60 * 60 * 1000,
+            httpOnly: true,
+            path: `/share/${token}`,
+            sameSite: 'lax',
+            secure: process.env.NODE_ENV === 'production',
+        });
         res.json({ success: true });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
@@ -256,6 +262,7 @@ export const shareWebPage = async (req: Request, res: Response) => {
                   const pw = document.getElementById('pw').value;
                   const res = await fetch('/share/${token}/password', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
+                    credentials: 'same-origin',
                     body: JSON.stringify({password: pw})
                   });
                   if (res.ok) window.location.reload();

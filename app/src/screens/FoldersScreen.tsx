@@ -154,7 +154,11 @@ export default function FoldersScreen({ navigation }: any) {
                 {
                     text: 'Share Folder',
                     onPress: () => {
-                        setShareTarget({ ...folder, type: 'folder' });
+                        setShareTarget({
+                            id: folder.id,
+                            name: folder.name,
+                            result_type: 'folder',
+                        });
                         setShareModalVisible(true);
                     }
                 },
@@ -381,7 +385,7 @@ export default function FoldersScreen({ navigation }: any) {
             {shareTarget && (
                 <ShareFolderModal
                     visible={shareModalVisible}
-                    onClose={() => setShareModalVisible(false)}
+                    onClose={() => { setShareModalVisible(false); setShareTarget(null); }}
                     targetItem={shareTarget}
                 />
             )}

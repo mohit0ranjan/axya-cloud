@@ -79,7 +79,10 @@
     },
     "owner": "mohit234",
     "updates": {
-      "url": "https://u.expo.dev/07889e0f-db9c-4dc8-9828-cbb821f5a1e9"
+      "url": "https://u.expo.dev/07889e0f-db9c-4dc8-9828-cbb821f5a1e9",
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
     }
   }
 }

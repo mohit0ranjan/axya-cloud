@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     View, Text, StyleSheet, Modal, TouchableOpacity, TextInput,
     KeyboardAvoidingView, Platform, Switch, ActivityIndicator, Alert
@@ -27,17 +27,21 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
     const [viewOnly, setViewOnly] = useState(false);
     const [password, setPassword] = useState('');
     const [expiryHours, setExpiryHours] = useState<number | null>(null);
+    const wasVisibleRef = useRef(false);
 
-    // Reset state when modal opens
+    // Reset only on closed -> open transition to avoid flicker loops from parent re-renders.
     useEffect(() => {
-        if (visible) {
-            setGeneratedLink('');
-            setPassword('');
-            setAllowDownload(true);
-            setViewOnly(false);
-            setExpiryHours(null);
-        }
-    }, [visible, targetItem]);
+        const justOpened = visible && !wasVisibleRef.current;
+        wasVisibleRef.current = visible;
+        if (!justOpened) return;
+
+        setIsLoading(false);
+        setGeneratedLink('');
+        setPassword('');
+        setAllowDownload(true);
+        setViewOnly(false);
+        setExpiryHours(null);
+    }, [visible]);
 
     const handleGenerate = async () => {
         if (!targetItem) return;

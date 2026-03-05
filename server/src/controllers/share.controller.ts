@@ -188,7 +188,18 @@ export const validatePassword = async (req: Request, res: Response) => {
         if (!link.password_hash) return res.json({ success: true }); // No password requested
         if (!password) return res.status(400).json({ success: false, error: 'Password is required.' });
 
-        const isValid = await bcrypt.compare(password, link.password_hash);
+        const passwordHash = String(link.password_hash || '');
+        // Guard against malformed legacy hashes so this endpoint never returns 500 for user input.
+        if (!/^\$2[aby]\$\d{2}\$/.test(passwordHash)) {
+            return res.status(401).json({ success: false, error: 'Incorrect password.' });
+        }
+
+        let isValid = false;
+        try {
+            isValid = await bcrypt.compare(password, passwordHash);
+        } catch {
+            return res.status(401).json({ success: false, error: 'Incorrect password.' });
+        }
         if (!isValid) return res.status(401).json({ success: false, error: 'Incorrect password.' });
 
         // Set a cookie to remember auth for this token

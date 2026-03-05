@@ -1,18 +1,7 @@
-/**
- * App.tsx — Production entry point with proper splash screen handling
- *
- * ✅ expo-splash-screen: preventAutoHideAsync() before render
- * ✅ Auth bootstrap runs DURING native splash (not after)
- * ✅ Native splash hides only after auth is ready
- * ✅ Custom animated splash plays AFTER native splash hides
- * ✅ No intermediate ActivityIndicator screen
- * ✅ No flicker between native → JS splash → app
- */
-
-import React, { useContext, useState, useEffect, useCallback } from 'react';
+import React, { useContext, useEffect, useRef, useState, useCallback } from 'react';
+import { Alert, AppState, AppStateStatus, Platform, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { Alert, Platform, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import * as ExpoSplashScreen from 'expo-splash-screen';
@@ -23,6 +12,9 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, AuthContext } from './src/context/AuthContext';
 import { ToastProvider } from './src/context/ToastContext';
 import { ThemeProvider } from './src/context/ThemeContext';
+import { ServerStatusProvider } from './src/context/ServerStatusContext';
+import { UploadProvider } from './src/context/UploadContext';
+import { DownloadProvider } from './src/context/DownloadContext';
 
 import SplashScreen from './src/screens/SplashScreen';
 import WelcomeScreen from './src/screens/WelcomeScreen';
@@ -39,59 +31,37 @@ import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import FilesScreen from './src/screens/FilesScreen';
 import SharedLinksScreen from './src/screens/SharedLinksScreen';
 import SharedSpaceScreen from './src/screens/SharedSpaceScreen';
+
 import UploadProgressOverlay from './src/components/UploadProgressOverlay';
 import DownloadProgressOverlay from './src/components/DownloadProgressOverlay';
 import ServerWakingOverlay from './src/components/ServerWakingOverlay';
 import AppErrorBoundary from './src/components/AppErrorBoundary';
 import { logger } from './src/utils/logger';
 
-import { ServerStatusProvider } from './src/context/ServerStatusContext';
-import { UploadProvider } from './src/context/UploadContext';
-import { DownloadProvider } from './src/context/DownloadContext';
-
-// ─── CRITICAL: Keep native splash visible until we're ready ──────────────────
-// This MUST run at module level (before any component renders)
-ExpoSplashScreen.preventAutoHideAsync().catch(() => {
-    // Silently catch — on web or older SDKs this might not exist
-});
+ExpoSplashScreen.preventAutoHideAsync().catch(() => { });
 
 const Stack = createNativeStackNavigator();
 const OTA_LAST_RELOADED_UPDATE_ID_KEY = '@ota_last_reloaded_update_id';
-
-// ─── Root Navigator ──────────────────────────────────────────────────────────
+const OTA_LAST_CHECKED_AT_KEY = '@ota_last_checked_at';
+const OTA_FOREGROUND_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 
 function RootNavigator() {
     const auth = useContext(AuthContext);
     const isAuthenticated = auth?.isAuthenticated;
     const isLoading = auth?.isLoading;
-
-    // Two-phase splash:
-    // Phase 1: Native splash (visible while auth bootstraps)
-    // Phase 2: Animated JS splash (plays after auth is ready)
     const [nativeSplashHidden, setNativeSplashHidden] = useState(false);
     const [animatedSplashDone, setAnimatedSplashDone] = useState(false);
 
-    // Once auth is done loading, hide the native splash & show animated splash
     useEffect(() => {
         if (!isLoading && !nativeSplashHidden) {
-            // Auth is ready — hide native splash, start animated splash
             ExpoSplashScreen.hideAsync().catch(() => { });
             setNativeSplashHidden(true);
         }
     }, [isLoading, nativeSplashHidden]);
 
-    // Phase 1: While auth is loading, native splash is still visible
-    // We render nothing (native splash covers the screen)
-    if (!nativeSplashHidden) {
-        return null;
-    }
+    if (!nativeSplashHidden) return null;
+    if (!animatedSplashDone) return <SplashScreen onFinish={() => setAnimatedSplashDone(true)} />;
 
-    // Phase 2: Show animated JS splash
-    if (!animatedSplashDone) {
-        return <SplashScreen onFinish={() => setAnimatedSplashDone(true)} />;
-    }
-
-    // Phase 3: App is ready — show navigation
     return (
         <NavigationContainer>
             <View style={{ flex: 1 }}>
@@ -126,13 +96,93 @@ function RootNavigator() {
     );
 }
 
-// ─── App Entry Point ─────────────────────────────────────────────────────────
-
 export default function App() {
-    const hasCheckedOtaRef = React.useRef(false);
+    const hasCheckedOtaRef = useRef(false);
+    const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+
+    const checkForOtaUpdate = useCallback(async (reason: 'launch' | 'foreground') => {
+        if (__DEV__) return;
+
+        if (!Updates.isEnabled) {
+            logger.warn('frontend.ota', 'OTA disabled for this build', {
+                reason,
+                channel: Updates.channel ?? null,
+                runtimeVersion: Updates.runtimeVersion ?? null,
+                updateId: Updates.updateId ?? null,
+            });
+            return;
+        }
+
+        try {
+            const now = Date.now();
+            if (reason === 'foreground') {
+                const lastCheckedRaw = await AsyncStorage.getItem(OTA_LAST_CHECKED_AT_KEY);
+                const lastChecked = Number(lastCheckedRaw || '0');
+                if (Number.isFinite(lastChecked) && now - lastChecked < OTA_FOREGROUND_CHECK_INTERVAL_MS) {
+                    return;
+                }
+            }
+            await AsyncStorage.setItem(OTA_LAST_CHECKED_AT_KEY, String(now));
+
+            logger.info('frontend.ota', 'Checking OTA updates', {
+                reason,
+                channel: Updates.channel ?? null,
+                runtimeVersion: Updates.runtimeVersion ?? null,
+                updateId: Updates.updateId ?? null,
+            });
+
+            const update = await Updates.checkForUpdateAsync();
+            if (!update.isAvailable) return;
+
+            const fetchResult = await Updates.fetchUpdateAsync();
+            if (!fetchResult.isNew) return;
+
+            const nextUpdateId = (fetchResult.manifest as { id?: string } | undefined)?.id;
+            const lastReloadedUpdateId = await AsyncStorage.getItem(OTA_LAST_RELOADED_UPDATE_ID_KEY);
+            if (nextUpdateId && nextUpdateId === lastReloadedUpdateId) {
+                logger.warn('frontend.ota', 'Skipping reload to prevent update loop', {
+                    reason,
+                    updateId: nextUpdateId,
+                });
+                return;
+            }
+
+            Alert.alert(
+                'Update Available',
+                'A new update is ready. Restart now to apply it.',
+                [
+                    { text: 'Later', style: 'cancel' },
+                    {
+                        text: 'Restart',
+                        onPress: async () => {
+                            try {
+                                if (nextUpdateId) {
+                                    await AsyncStorage.setItem(OTA_LAST_RELOADED_UPDATE_ID_KEY, nextUpdateId);
+                                }
+                                await Updates.reloadAsync();
+                            } catch (error: any) {
+                                logger.error('frontend.ota', 'Failed to reload into OTA update', {
+                                    reason,
+                                    message: error?.message,
+                                    updateId: nextUpdateId,
+                                });
+                            }
+                        },
+                    },
+                ],
+                { cancelable: true }
+            );
+        } catch (error: any) {
+            logger.warn('frontend.ota', 'OTA check failed', {
+                reason,
+                message: error?.message,
+                channel: Updates.channel ?? null,
+                runtimeVersion: Updates.runtimeVersion ?? null,
+            });
+        }
+    }, []);
 
     useEffect(() => {
-        // Global error handler
         const globalAny = global as any;
         const ErrorUtilsRef = globalAny?.ErrorUtils;
         const existingGlobalHandler = ErrorUtilsRef?.getGlobalHandler?.();
@@ -144,13 +194,10 @@ export default function App() {
                     stack: error?.stack,
                     isFatal: !!isFatal,
                 });
-                if (existingGlobalHandler) {
-                    existingGlobalHandler(error, isFatal);
-                }
+                if (existingGlobalHandler) existingGlobalHandler(error, isFatal);
             });
         }
 
-        // Set up Android notification channel for file transfers
         if (Platform.OS === 'android') {
             Notifications.setNotificationChannelAsync('upload_channel', {
                 name: 'File Transfers',
@@ -161,14 +208,10 @@ export default function App() {
             });
         }
 
-        // Request notification permissions
         Notifications.requestPermissionsAsync().then(({ status }) => {
-            if (status !== 'granted') {
-                console.warn('[Notifications] Permission not granted');
-            }
+            if (status !== 'granted') console.warn('[Notifications] Permission not granted');
         });
 
-        // Configure foreground notification behavior
         Notifications.setNotificationHandler({
             handleNotification: async () => ({
                 shouldShowAlert: false,
@@ -187,68 +230,21 @@ export default function App() {
     }, []);
 
     useEffect(() => {
-        // Run only once per app launch and only where expo-updates is supported.
         if (hasCheckedOtaRef.current) return;
         hasCheckedOtaRef.current = true;
+        void checkForOtaUpdate('launch');
+    }, [checkForOtaUpdate]);
 
-        if (__DEV__ || !Updates.isEnabled) {
-            return;
-        }
-
-        const checkForOtaUpdate = async () => {
-            try {
-                const update = await Updates.checkForUpdateAsync();
-                if (!update.isAvailable) return;
-
-                const fetchResult = await Updates.fetchUpdateAsync();
-                if (!fetchResult.isNew) return;
-
-                const nextUpdateId = (fetchResult.manifest as { id?: string } | undefined)?.id;
-                const lastReloadedUpdateId = await AsyncStorage.getItem(OTA_LAST_RELOADED_UPDATE_ID_KEY);
-                if (nextUpdateId && nextUpdateId === lastReloadedUpdateId) {
-                    logger.warn('frontend.ota', 'Skipping reload to prevent update loop', {
-                        updateId: nextUpdateId,
-                    });
-                    return;
-                }
-
-                Alert.alert(
-                    'Update Available',
-                    'Update available — Restart app to apply update.',
-                    [
-                        {
-                            text: 'Later',
-                            style: 'cancel',
-                        },
-                        {
-                            text: 'Restart',
-                            onPress: async () => {
-                                try {
-                                    if (nextUpdateId) {
-                                        await AsyncStorage.setItem(OTA_LAST_RELOADED_UPDATE_ID_KEY, nextUpdateId);
-                                    }
-                                    await Updates.reloadAsync();
-                                } catch (error: any) {
-                                    logger.error('frontend.ota', 'Failed to reload into OTA update', {
-                                        message: error?.message,
-                                        updateId: nextUpdateId,
-                                    });
-                                }
-                            },
-                        },
-                    ],
-                    { cancelable: true }
-                );
-            } catch (error: any) {
-                logger.warn('frontend.ota', 'OTA check failed', {
-                    message: error?.message,
-                    channel: Updates.channel ?? null,
-                });
+    useEffect(() => {
+        const subscription = AppState.addEventListener('change', (nextState) => {
+            const wasBackgrounded = appStateRef.current === 'background' || appStateRef.current === 'inactive';
+            appStateRef.current = nextState;
+            if (wasBackgrounded && nextState === 'active') {
+                void checkForOtaUpdate('foreground');
             }
-        };
-
-        void checkForOtaUpdate();
-    }, []);
+        });
+        return () => subscription.remove();
+    }, [checkForOtaUpdate]);
 
     return (
         <AppErrorBoundary>

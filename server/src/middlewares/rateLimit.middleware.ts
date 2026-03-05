@@ -5,7 +5,7 @@ export const sharePasswordLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 5, // Only 5 attempts per 15 mins per IP
     message: { success: false, error: 'Too many password attempts. Please try again later.' },
-    keyGenerator: (req: any) => `${ipKeyGenerator(req.ip)}_${req.params.token}` // Limit per IP + Token, IPv6-safe
+    keyGenerator: (req: any) => `${ipKeyGenerator(req)}_${req.params.token}` // Limit per IP + Token, IPv6-safe
 });
 
 // Throttling for public views

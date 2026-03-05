@@ -52,7 +52,7 @@ router.get('/folders', fetchFolders);
 router.patch('/folder/:id', updateFolder);
 router.delete('/folder/:id', trashFolder);
 
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import {
     initUpload, uploadChunk, completeUpload, checkUploadStatus, cancelUpload
 } from '../controllers/upload.controller';
@@ -64,7 +64,7 @@ const uploadLimiter = rateLimit({
     max: 2000,
     keyGenerator: (req: any) => {
         // Router is already protected by requireAuth, so user id is the safest key.
-        return req.user?.id || req.ip || 'unknown';
+        return req.user?.id || ipKeyGenerator(req) || 'unknown';
     },
     message: { success: false, error: 'Upload rate limit reached. Please wait 15 minutes.' },
 });

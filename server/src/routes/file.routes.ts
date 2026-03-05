@@ -12,7 +12,6 @@ import {
     markAccessed, getRecentlyAccessed,
     getFileDetails,
 } from '../controllers/file.controller';
-import { createShareLink, revokeShareLink } from '../controllers/share.controller';
 import { requireAuth } from '../middlewares/auth.middleware';
 
 const router = express.Router();
@@ -92,10 +91,6 @@ router.post('/bulk', bulkAction);
 
 // ── Recently Accessed ─────────────────────────────────────────────────────────
 router.get('/recent-accessed', getRecentlyAccessed);
-
-// ── Share Links ───────────────────────────────────────────────────────────────
-router.post('/:id/share', createShareLink);
-router.delete('/:id/share', revokeShareLink);
 
 // ── File Tags ────────────────────────────────────────────────────────────────
 router.get('/:id/tags', getFileTags);

@@ -1,5 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
 import fs from 'fs';
@@ -60,6 +61,7 @@ app.use(cors({
 // ⚠️ Reduced from 50mb to 10mb — chunks are sent individually, not whole file
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(cookieParser(process.env.COOKIE_SECRET || 'axya_default_secret'));
 
 // ── Global Rate Limiting ───────────────────────────────────────────────────
 // ✅ Raised from 200 to 1000 — 100 photos × (init + chunks + complete) = 400+ requests
@@ -87,6 +89,10 @@ const authLimiter = rateLimit({
 app.use('/auth', authLimiter, authRoutes);
 app.use('/files', fileRoutes);
 app.use('/share', shareRoutes);
+// Alias for shorter public share URLs
+app.use('/s', (req: Request, res: Response) => {
+    res.redirect(301, `/share${req.url}`);
+});
 app.use('/stream', streamRoutes);
 
 // ── Health Check (Render keep-alive friendly) ────────────────────────────────

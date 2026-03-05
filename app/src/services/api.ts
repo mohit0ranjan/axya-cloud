@@ -10,14 +10,13 @@ export interface ShareOptions {
 }
 
 export const createShareLink = async (options: ShareOptions) => {
-    const id = options.file_id || options.folder_id;
-    if (!id) throw new Error("Must provide file_id or folder_id");
+    if (!options.file_id && !options.folder_id) throw new Error("Must provide file_id or folder_id");
 
-    const { data } = await apiClient.post(`/files/${id}/share`, options);
+    const { data } = await apiClient.post('/share', options);
     return data;
 };
 
 export const revokeShareLink = async (id: string) => {
-    const { data } = await apiClient.delete(`/files/${id}/share`);
+    const { data } = await apiClient.delete(`/share/${id}`);
     return data;
 };

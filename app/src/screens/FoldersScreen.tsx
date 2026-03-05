@@ -6,6 +6,7 @@ import apiClient from '../services/apiClient';
 import { theme } from '../ui/theme';
 import { EmptyState } from '../ui/EmptyState';
 import { FolderCardSkeleton } from '../ui/Skeleton';
+import ShareFolderModal from '../components/ShareFolderModal';
 
 const { width } = Dimensions.get('window');
 const CARD_MARGIN = 12;
@@ -47,6 +48,10 @@ export default function FoldersScreen({ navigation }: any) {
     const [renameTarget, setRenameTarget] = useState<any>(null);
     const [renameValue, setRenameValue] = useState('');
     const [pinnedFolderIds, setPinnedFolderIds] = useState<string[]>([]);
+
+    // Share Folder
+    const [shareModalVisible, setShareModalVisible] = useState(false);
+    const [shareTarget, setShareTarget] = useState<any>(null);
 
     useEffect(() => { fetchFolders(); }, [sortKey]);
     useEffect(() => {
@@ -145,6 +150,13 @@ export default function FoldersScreen({ navigation }: any) {
                 {
                     text: pinnedFolderIds.includes(String(folder.id)) ? 'Remove from Home' : 'Pin to Home',
                     onPress: () => { void togglePinnedOnHome(folder); }
+                },
+                {
+                    text: 'Share Folder',
+                    onPress: () => {
+                        setShareTarget({ ...folder, type: 'folder' });
+                        setShareModalVisible(true);
+                    }
                 },
                 {
                     text: 'Rename',
@@ -364,6 +376,15 @@ export default function FoldersScreen({ navigation }: any) {
                     </View>
                 </TouchableOpacity>
             </Modal>
+
+            {/* ── Share Folder Modal ── */}
+            {shareTarget && (
+                <ShareFolderModal
+                    visible={shareModalVisible}
+                    onClose={() => setShareModalVisible(false)}
+                    targetItem={shareTarget}
+                />
+            )}
         </SafeAreaView>
     );
 }

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, SafeAreaView, FlatList,
-    TouchableOpacity, ActivityIndicator, Alert, Clipboard
+    TouchableOpacity, ActivityIndicator, Alert
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { ArrowLeft, Clock, Eye, Download, Link as LinkIcon, Trash2, Folder, File as FileIcon } from 'lucide-react-native';
 import apiClient from '../services/apiClient';
 import { revokeShareLink } from '../services/api';
@@ -54,9 +55,9 @@ export default function SharedLinksScreen({ navigation }: any) {
         fetchLinks();
     }, []);
 
-    const handleCopy = (token: string) => {
+    const handleCopy = async (token: string) => {
         const baseUrl = apiClient.defaults.baseURL?.replace('/api', '') || 'https://axya.cloud';
-        Clipboard.setString(`${baseUrl}/share/${token}`);
+        await Clipboard.setStringAsync(`${baseUrl}/share/${token}`);
         Alert.alert('Copied!', 'Link copied to clipboard.');
     };
 
@@ -122,7 +123,7 @@ export default function SharedLinksScreen({ navigation }: any) {
                 </View>
 
                 <View style={[styles.actions, { borderTopColor: theme.colors.border }]}>
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => handleCopy(item.token)}>
+                    <TouchableOpacity style={styles.actionBtn} onPress={() => void handleCopy(item.token)}>
                         <LinkIcon color={theme.colors.primary} size={16} />
                         <Text style={[styles.actionText, { color: theme.colors.primary }]}>Copy Link</Text>
                     </TouchableOpacity>

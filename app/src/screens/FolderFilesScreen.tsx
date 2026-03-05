@@ -399,10 +399,10 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             const tagsRes = await apiClient.get(`/files/${item.id}/tags`).catch(() => ({ data: { tags: [] } }));
             setInfoTags(tagsRes.data.tags || []);
 
-            // ✅ Share link: use POST /files/:id/share → returns { token, expires_at }
+            // ✅ Share link: use POST /share → returns { token, expires_at }
             // Server returns `token` not `link` — build full URL from token
             if (item.result_type !== 'folder') {
-                const shareRes = await apiClient.post(`/files/${item.id}/share`, { expires_in_hours: 72 })
+                const shareRes = await apiClient.post('/share', { file_id: item.id, expires_in_hours: 72 })
                     .catch(() => ({ data: { token: null } }));
                 const tok = shareRes.data?.token;
                 setInfoShareLink(tok ? `${apiClient.defaults.baseURL?.replace('/api', '')}/share/${tok}` : null);

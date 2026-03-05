@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, Modal, TouchableOpacity, TextInput,
-    KeyboardAvoidingView, Platform, Switch, ActivityIndicator, Alert, Clipboard
+    KeyboardAvoidingView, Platform, Switch, ActivityIndicator, Alert
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { X, Copy, Link as LinkIcon, ShieldAlert } from 'lucide-react-native';
 import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
@@ -42,7 +43,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
         if (!targetItem) return;
         setIsLoading(true);
         try {
-            const isFolder = targetItem.result_type === 'folder' || targetItem.mime_type === 'inode/directory';
+            const isFolder = targetItem.type === 'folder' || targetItem.result_type === 'folder' || targetItem.mime_type === 'inode/directory';
 
             const options = {
                 file_id: !isFolder ? targetItem.id : undefined,
@@ -68,9 +69,9 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
         }
     };
 
-    const handleCopy = () => {
+    const handleCopy = async () => {
         if (generatedLink) {
-            Clipboard.setString(generatedLink);
+            await Clipboard.setStringAsync(generatedLink);
             Alert.alert('Copied!', 'Link copied to clipboard.');
         }
     };
@@ -98,7 +99,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
                     </View>
 
                     <Text style={styles.description}>
-                        Create a secure, public link to share this {targetItem.result_type === 'folder' || targetItem.mime_type === 'inode/directory' ? 'folder' : 'file'}.
+                        Create a secure, public link to share this {targetItem.type === 'folder' || targetItem.result_type === 'folder' || targetItem.mime_type === 'inode/directory' ? 'folder' : 'file'}.
                     </Text>
 
                     {generatedLink ? (

@@ -1,16 +1,20 @@
 import express from 'express';
-import { downloadSharedFile, shareWebPage, validatePassword, downloadAllShared, getUserSharedLinks } from '../controllers/share.controller';
+import { createShareLink, downloadSharedFile, shareWebPage, validatePassword, downloadAllShared, getUserSharedLinks, revokeShareLink } from '../controllers/share.controller';
 import { requireAuth } from '../middlewares/auth.middleware';
+import { sharePasswordLimiter, shareViewLimiter, shareDownloadLimiter } from '../middlewares/rateLimit.middleware';
 
 const router = express.Router();
 
 // Authenticated endpoints
 router.get('/', requireAuth, getUserSharedLinks);
+router.post('/', requireAuth, createShareLink);
+router.delete('/:id', requireAuth, revokeShareLink);
 
 // Public endpoints — no auth needed
-router.get('/:token', shareWebPage);          // Beautiful HTML preview page / folder grid
-router.post('/:token/password', validatePassword); // Validate share link password
-router.get('/:token/download', downloadSharedFile); // Raw file download
-router.get('/:token/download-all', downloadAllShared); // Folder zip download
+router.get('/:token', shareViewLimiter, shareWebPage);          // Beautiful HTML preview page / folder grid
+router.post('/:token/password', sharePasswordLimiter, validatePassword); // Validate share link password
+router.get('/:token/download', shareDownloadLimiter, downloadSharedFile); // Raw file download
+router.get('/:token/content', shareDownloadLimiter, downloadSharedFile); // Raw file content for inline previews
+router.get('/:token/download-all', shareDownloadLimiter, downloadAllShared); // Folder zip download
 
 export default router;

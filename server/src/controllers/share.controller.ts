@@ -13,6 +13,7 @@ const SHARE_TMP_DIR = path.join(os.tmpdir(), 'axya_share_tmp');
 const MAX_SHARE_FOLDER_DEPTH = 32;
 const DEFAULT_VIEW_LIMIT = 200;
 const MAX_VIEW_LIMIT = 500;
+const DEFAULT_SHARE_EXPIRY_HOURS = 5 * 24; // Auto-expire after 5 days unless user sets another value.
 
 try {
     fs.mkdirSync(SHARE_TMP_DIR, { recursive: true });
@@ -59,7 +60,11 @@ export const createShareLink = async (req: AuthRequest, res: Response) => {
 
     const db = await pool.connect();
     try {
-        const expiresAt = expires_in_hours ? new Date(Date.now() + parseInt(expires_in_hours, 10) * 3600000) : null;
+        const parsedExpiryHours = parseIntSafe(expires_in_hours, DEFAULT_SHARE_EXPIRY_HOURS);
+        if (parsedExpiryHours <= 0) {
+            return res.status(400).json({ success: false, error: 'Expiry hours must be greater than 0.' });
+        }
+        const expiresAt = new Date(Date.now() + parsedExpiryHours * 3600000);
         const passwordHash = password ? await bcrypt.hash(password, 10) : null;
 
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -173,7 +178,7 @@ export const getUserSharedLinks = async (req: AuthRequest, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 export const validatePassword = async (req: Request, res: Response) => {
     const token = String(req.params.token);
-    const { password } = req.body;
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
 
     try {
         const linkResult = await pool.query('SELECT id, password_hash FROM shared_links WHERE token = $1', [token]);
@@ -181,6 +186,7 @@ export const validatePassword = async (req: Request, res: Response) => {
 
         const link = linkResult.rows[0];
         if (!link.password_hash) return res.json({ success: true }); // No password requested
+        if (!password) return res.status(400).json({ success: false, error: 'Password is required.' });
 
         const isValid = await bcrypt.compare(password, link.password_hash);
         if (!isValid) return res.status(401).json({ success: false, error: 'Incorrect password.' });

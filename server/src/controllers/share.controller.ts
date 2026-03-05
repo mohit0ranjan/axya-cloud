@@ -14,6 +14,40 @@ const MAX_SHARE_FOLDER_DEPTH = 32;
 const DEFAULT_VIEW_LIMIT = 200;
 const MAX_VIEW_LIMIT = 500;
 const DEFAULT_SHARE_EXPIRY_HOURS = 5 * 24; // Auto-expire after 5 days unless user sets another value.
+const SHARE_PASSWORD_SCHEME = 'sha256';
+
+const getSharePasswordPepper = (): string => {
+    return process.env.SHARE_PASSWORD_PEPPER || process.env.COOKIE_SECRET || 'axya_share_password_pepper';
+};
+
+const hashSharePassword = (password: string): string => {
+    const digest = crypto
+        .createHash('sha256')
+        .update(`${getSharePasswordPepper()}|${password}`, 'utf8')
+        .digest('hex');
+    return `${SHARE_PASSWORD_SCHEME}:${digest}`;
+};
+
+const verifySharePasswordHash = async (password: string, storedHash: string): Promise<boolean> => {
+    if (!storedHash) return false;
+
+    // New scheme: sha256:<hex>
+    if (storedHash.startsWith(`${SHARE_PASSWORD_SCHEME}:`)) {
+        const expected = hashSharePassword(password);
+        const a = Buffer.from(storedHash, 'utf8');
+        const b = Buffer.from(expected, 'utf8');
+        if (a.length !== b.length) return false;
+        return crypto.timingSafeEqual(a, b);
+    }
+
+    // Legacy fallback for old links stored with bcrypt.
+    if (!/^\$2[aby]\$\d{2}\$/.test(storedHash)) return false;
+    try {
+        return await bcrypt.compare(password, storedHash);
+    } catch {
+        return false;
+    }
+};
 
 try {
     fs.mkdirSync(SHARE_TMP_DIR, { recursive: true });
@@ -65,7 +99,7 @@ export const createShareLink = async (req: AuthRequest, res: Response) => {
             return res.status(400).json({ success: false, error: 'Expiry hours must be greater than 0.' });
         }
         const expiresAt = new Date(Date.now() + parsedExpiryHours * 3600000);
-        const passwordHash = password ? await bcrypt.hash(password, 10) : null;
+        const passwordHash = password ? hashSharePassword(String(password)) : null;
 
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
@@ -189,17 +223,7 @@ export const validatePassword = async (req: Request, res: Response) => {
         if (!password) return res.status(400).json({ success: false, error: 'Password is required.' });
 
         const passwordHash = String(link.password_hash || '');
-        // Guard against malformed legacy hashes so this endpoint never returns 500 for user input.
-        if (!/^\$2[aby]\$\d{2}\$/.test(passwordHash)) {
-            return res.status(401).json({ success: false, error: 'Incorrect password.' });
-        }
-
-        let isValid = false;
-        try {
-            isValid = await bcrypt.compare(password, passwordHash);
-        } catch {
-            return res.status(401).json({ success: false, error: 'Incorrect password.' });
-        }
+        const isValid = await verifySharePasswordHash(password, passwordHash);
         if (!isValid) return res.status(401).json({ success: false, error: 'Incorrect password.' });
 
         // Set a cookie to remember auth for this token

@@ -1,17 +1,47 @@
-name: Android APK Build
+name: React Native Android CI/CD
 
 on:
   push:
-    branches:
-      - main
+    branches: [main, master]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - "docs/**"
+  pull_request:
+    branches: [main, master]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      buildType:
+        type: choice
+        description: "Build type to run"
+        options:
+          - debug
+          - release
+          - all
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "1"
+  NODE_OPTIONS: --max-old-space-size=4096
 
 jobs:
-  build:
+  checks:
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
     defaults:
       run:
         working-directory: app
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -20,45 +50,84 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install npm dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Expo doctor
+        run: npx expo-doctor
+
+      - name: Run expo prebuild (Android)
+        run: npx expo prebuild --platform android
+
+      - name: Validate Android bundle export
+        run: npx expo export --platform android --output-dir ../tmp-export
+
+  build-android:
+    runs-on: ubuntu-latest
+    if: |
+      ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]')) &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) ||
+      github.event_name == 'workflow_dispatch'
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
           cache-dependency-path: app/package-lock.json
 
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Restore Gradle project cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/android/.gradle
+          key: ${{ runner.os }}-android-project-gradle-${{ hashFiles('app/android/**/*.gradle*', 'app/android/gradle.properties', 'app/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-android-project-gradle-
 
       - name: Install npm dependencies
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --fund=false
 
-      - name: Expo doctor
-        run: npx expo-doctor
-        env:
-          CI: 1
-
-      - name: Run expo prebuild
+      - name: Run expo prebuild (Android)
         run: npx expo prebuild --platform android
-        env:
-          CI: 1
 
-      - name: Validate Metro Android bundle
-        run: npx expo export --platform android --output-dir ../tmp-export
-        env:
-          CI: 1
-          NODE_OPTIONS: --max-old-space-size=4096
-
-      - name: Build APK (Gradle)
+      - name: Build Debug APK
+        if: github.event.inputs.buildType == 'all' || github.event.inputs.buildType == 'debug' || github.event_name == 'push'
         working-directory: app/android
         run: |
           chmod +x gradlew
-          ./gradlew --stacktrace --info assembleRelease
-        env:
-          CI: 1
-          NODE_OPTIONS: --max-old-space-size=4096
+          ./gradlew --build-cache --parallel --daemon assembleDebug
 
-      - name: Upload APK artifact
+      - name: Build Release APK
+        if: github.event.inputs.buildType == 'all' || github.event.inputs.buildType == 'release' || github.event_name == 'push'
+        working-directory: app/android
+        run: |
+          chmod +x gradlew
+          ./gradlew --build-cache --parallel --daemon assembleRelease
+
+      - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk-build
-          path: app/android/app/build/outputs/apk/release/app-release.apk
+          name: android-builds
+          path: |
+            app/android/app/build/outputs/apk/debug/app-debug.apk
+            app/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 7

@@ -90,22 +90,22 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
-
-      - name: Restore Gradle project cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            app/android/.gradle
-          key: ${{ runner.os }}-android-project-gradle-${{ hashFiles('app/android/**/*.gradle*', 'app/android/gradle.properties', 'app/android/gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-android-project-gradle-
 
       - name: Install npm dependencies
         run: npm ci --prefer-offline --no-audit --fund=false
 
       - name: Run expo prebuild (Android)
         run: npx expo prebuild --platform android
+
+      - name: Restore Gradle caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('app/package-lock.json', 'app/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
 
       - name: Build Debug APK
         if: github.event.inputs.buildType == 'all' || github.event.inputs.buildType == 'debug' || github.event_name == 'push'

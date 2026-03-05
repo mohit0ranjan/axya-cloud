@@ -19,8 +19,8 @@ on:
         type: choice
         description: "Build type to run"
         options:
-          - debug
           - release
+          - debug
           - all
         default: release
 
@@ -59,9 +59,6 @@ jobs:
       - name: Expo doctor
         run: npx expo-doctor
 
-      - name: Run expo prebuild (Android)
-        run: npx expo prebuild --platform android
-
       - name: Validate Android bundle export
         run: npx expo export --platform android --output-dir ../tmp-export
 
@@ -70,7 +67,7 @@ jobs:
     if: |
       ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]')) &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) ||
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.buildType == 'all' || github.event.inputs.buildType == 'release'))
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.buildType == 'release' || github.event.inputs.buildType == 'all'))
     defaults:
       run:
         working-directory: app
@@ -90,6 +87,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
       - name: Install npm dependencies
         run: npm ci --prefer-offline --no-audit --fund=false
@@ -97,36 +95,27 @@ jobs:
       - name: Ensure Android project exists
         run: |
           if [ ! -f android/gradlew ]; then
-            npx expo prebuild --platform android
+            npx expo prebuild --platform android --non-interactive
           fi
-
-      - name: Restore Gradle caches
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('app/package-lock.json', 'app/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
 
       - name: Build Release APK
         run: |
-          chmod +x android/gradlew
-          ./android/gradlew --build-cache --parallel --no-daemon -x lint -x test assembleRelease
+          cd android
+          chmod +x gradlew
+          ./gradlew --build-cache --parallel --no-daemon -x lint -x test assembleRelease
 
-      - name: Upload Release artifact
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: android-release-apk
           path: app/android/app/build/outputs/apk/release/app-release.apk
-          if-no-files-found: warn
+          if-no-files-found: error
           compression-level: 0
           retention-days: 7
 
   build-debug:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.buildType == 'all' || github.event.inputs.buildType == 'debug')
+    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.buildType == 'debug' || github.event.inputs.buildType == 'all')
     defaults:
       run:
         working-directory: app
@@ -146,6 +135,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
       - name: Install npm dependencies
         run: npm ci --prefer-offline --no-audit --fund=false
@@ -153,29 +143,20 @@ jobs:
       - name: Ensure Android project exists
         run: |
           if [ ! -f android/gradlew ]; then
-            npx expo prebuild --platform android
+            npx expo prebuild --platform android --non-interactive
           fi
-
-      - name: Restore Gradle caches
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('app/package-lock.json', 'app/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
 
       - name: Build Debug APK
         run: |
-          chmod +x android/gradlew
-          ./android/gradlew --build-cache --parallel --no-daemon -x lint -x test assembleDebug
+          cd android
+          chmod +x gradlew
+          ./gradlew --build-cache --parallel --no-daemon -x lint -x test assembleDebug
 
-      - name: Upload Debug artifact
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: android-debug-apk
           path: app/android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: warn
+          if-no-files-found: error
           compression-level: 0
           retention-days: 7

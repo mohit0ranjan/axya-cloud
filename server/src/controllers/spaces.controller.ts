@@ -188,7 +188,8 @@ export const createSpace = async (req: AuthRequest, res: Response) => {
 
         return res.status(201).json({ success: true, space: result.rows[0] });
     } catch (err: any) {
-        return res.status(500).json({ success: false, error: err.message });
+        console.error('[spaces.validateSpacePassword] verification error', err?.message || err);
+        return res.status(401).json({ success: false, error: 'Invalid password.' });
     }
 };
 

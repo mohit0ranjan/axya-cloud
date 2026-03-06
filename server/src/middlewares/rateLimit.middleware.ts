@@ -1,19 +1,10 @@
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-
-const getLimiterIpKey = (req: any): string => {
-    const rawIp =
-        (typeof req.ip === 'string' && req.ip) ||
-        (typeof req.socket?.remoteAddress === 'string' && req.socket.remoteAddress) ||
-        '';
-    return ipKeyGenerator(rawIp);
-};
+import rateLimit from 'express-rate-limit';
 
 // Strict limiter for share password protection
 export const sharePasswordLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 5, // Only 5 attempts per 15 mins per IP
     message: { success: false, error: 'Too many password attempts. Please try again later.' },
-    keyGenerator: (req: any) => `${getLimiterIpKey(req)}_${String(req.params?.token || '')}` // Limit per IP + Token, IPv6-safe
 });
 
 // Throttling for public views
@@ -40,7 +31,6 @@ export const spacePasswordLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 8,
     message: { success: false, error: 'Too many password attempts. Try again later.' },
-    keyGenerator: (req: any) => `${getLimiterIpKey(req)}_${String(req.params?.id || req.body?.share_id || '')}`,
 });
 
 export const spaceUploadLimiter = rateLimit({

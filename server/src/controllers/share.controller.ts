@@ -208,7 +208,8 @@ export const revokeShareLink = async (req: AuthRequest, res: Response) => {
         );
         res.json({ success: true, message: 'Share link revoked.' });
     } catch (err: any) {
-        res.status(500).json({ success: false, error: err.message });
+        console.error('[share.validatePassword] verification error', err?.message || err);
+        res.status(401).json({ success: false, error: 'Incorrect password.' });
     }
 };
 
@@ -301,8 +302,9 @@ export const verifyShareAccess = async (req: Request, res: Response) => {
         });
 
         return res.json({ success: true, share_id: token, requires_password: true });
-    } catch {
-        return res.status(500).json({ success: false, error: 'Server error.' });
+    } catch (err: any) {
+        console.error('[share.verifyShareAccess] verification error', err?.message || err);
+        return res.status(401).json({ success: false, error: 'Incorrect password.' });
     }
 };
 

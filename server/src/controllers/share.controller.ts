@@ -104,7 +104,9 @@ const getShareByToken = async (token: string) => {
 export const createShareLink = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
-    let { file_id, folder_id, expires_in_hours, password, allow_download = true, view_only = false } = req.body;
+    let { file_id, folder_id, expires_in_hours, allow_download = true, view_only = false } = req.body;
+    const rawPassword = req.body?.password ?? req.body?.pin ?? '';
+    const normalizedPassword = String(rawPassword);
 
     // Legacy fallback: allow file_id from route param
     if (!file_id && !folder_id && req.params.id) {
@@ -125,7 +127,7 @@ export const createShareLink = async (req: AuthRequest, res: Response) => {
             return res.status(400).json({ success: false, error: 'Expiry hours must be greater than 0.' });
         }
         const expiresAt = new Date(Date.now() + parsedExpiryHours * 3600000);
-        const passwordHash = password ? await hashSharePassword(String(password)) : null;
+        const passwordHash = normalizedPassword.length > 0 ? await hashSharePassword(normalizedPassword) : null;
 
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
@@ -238,7 +240,8 @@ export const getUserSharedLinks = async (req: AuthRequest, res: Response) => {
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const validatePassword = async (req: Request, res: Response) => {
     const token = String(req.params.token);
-    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const rawPassword = req.body?.password ?? req.body?.pin ?? '';
+    const password = String(rawPassword);
 
     try {
         const link = await getShareByToken(token);
@@ -269,7 +272,8 @@ export const validatePassword = async (req: Request, res: Response) => {
 
 export const verifyShareAccess = async (req: Request, res: Response) => {
     const token = String(req.body?.share_id || req.body?.shareId || req.params?.token || '');
-    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const rawPassword = req.body?.password ?? req.body?.pin ?? '';
+    const password = String(rawPassword);
 
     if (!token) return res.status(400).json({ success: false, error: 'share_id is required.' });
 
@@ -437,30 +441,42 @@ export const sharePasswordGateScript = async (_req: Request, res: Response) => {
     }
     submitBtn.disabled = true;
     submitBtn.textContent = 'Unlocking...';
-    const response = await fetch('/share/' + encodeURIComponent(token) + '/password', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ password: pw }),
-    });
+    try {
+      const response = await fetch('/share/' + encodeURIComponent(token) + '/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ password: pw }),
+      });
 
-    if (response.ok) {
-      window.location.reload();
-      return;
+      if (response.ok) {
+        window.location.reload();
+        return;
+      }
+
+      let payload = {};
+      try { payload = await response.json(); } catch {}
+      const apiError = typeof payload?.error === 'string' ? payload.error : '';
+
+      if (response.status === 400) {
+        showMessage(apiError || 'Password is required.');
+      } else if (response.status === 401) {
+        showMessage(apiError || 'Incorrect password. Please try again.');
+      } else if (response.status === 404) {
+        showMessage(apiError || 'Share link not found.');
+      } else if (response.status === 410) {
+        showMessage(apiError || 'This share link has expired.');
+      } else if (response.status === 429) {
+        showMessage(apiError || 'Too many attempts. Try again later.');
+      } else {
+        showMessage(apiError || 'Server error. Please try again.');
+      }
+    } catch {
+      showMessage('Network error. Please try again.');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Unlock Folder';
     }
-    if (response.status === 401) {
-      showMessage('Incorrect password. Please try again.');
-    } else if (response.status === 404) {
-      showMessage('Share link not found.');
-    } else if (response.status === 410) {
-      showMessage('This share link has expired.');
-    } else if (response.status === 429) {
-      showMessage('Too many attempts. Try again later.');
-    } else {
-      showMessage('Server error. Please try again.');
-    }
-    submitBtn.disabled = false;
-    submitBtn.textContent = 'Unlock Folder';
   };
 
   submitBtn.addEventListener('click', submitPw);

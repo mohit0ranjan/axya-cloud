@@ -204,6 +204,10 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     // Share Modal
     const [isShareModalVisible, setShareModalVisible] = useState(false);
     const [shareTarget, setShareTarget] = useState<any>(null);
+    const closeShareModal = () => {
+        setShareModalVisible(false);
+        setTimeout(() => setShareTarget(null), 220);
+    };
 
     // Move modal
     const [isMoveModalVisible, setMoveModalVisible] = useState(false);
@@ -732,7 +736,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             {/* ── Share Folder Modal ─────────────────────────────────────── */}
             <ShareFolderModal
                 visible={isShareModalVisible}
-                onClose={() => { setShareModalVisible(false); setShareTarget(null); }}
+                onClose={closeShareModal}
                 targetItem={shareTarget}
             />
 

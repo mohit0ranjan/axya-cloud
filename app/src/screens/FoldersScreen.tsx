@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView, Dimensions, Alert, TextInput, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { MoreHorizontal, ArrowLeft, Folder as FolderIcon, Plus, SortAsc, SortDesc, Filter } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -20,12 +20,12 @@ const FOLDER_COLORS = [
 const getFolderColor = (index: number) => FOLDER_COLORS[index % FOLDER_COLORS.length];
 const asArray = <T,>(value: any): T[] => (Array.isArray(value) ? value : []);
 
-// ── Sort configuration ──────────────────────────────────────────────────────
+// â”€â”€ Sort configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const SORT_OPTIONS = [
     { key: 'created_at_DESC', label: 'Newest First', icon: SortDesc, col: 'created_at', order: 'DESC' },
     { key: 'created_at_ASC', label: 'Oldest First', icon: SortAsc, col: 'created_at', order: 'ASC' },
-    { key: 'name_ASC', label: 'Name A→Z', icon: SortAsc, col: 'name', order: 'ASC' },
-    { key: 'name_DESC', label: 'Name Z→A', icon: SortDesc, col: 'name', order: 'DESC' },
+    { key: 'name_ASC', label: 'Name Aâ†’Z', icon: SortAsc, col: 'name', order: 'ASC' },
+    { key: 'name_DESC', label: 'Name Zâ†’A', icon: SortDesc, col: 'name', order: 'DESC' },
     { key: 'file_count_DESC', label: 'Most Files', icon: SortDesc, col: 'file_count', order: 'DESC' },
     { key: 'file_count_ASC', label: 'Fewest Files', icon: SortAsc, col: 'file_count', order: 'ASC' },
 ];
@@ -52,6 +52,10 @@ export default function FoldersScreen({ navigation }: any) {
     // Share Folder
     const [shareModalVisible, setShareModalVisible] = useState(false);
     const [shareTarget, setShareTarget] = useState<any>(null);
+    const closeShareModal = () => {
+        setShareModalVisible(false);
+        setTimeout(() => setShareTarget(null), 220);
+    };
 
     // Options Modal
     const [optionsTarget, setOptionsTarget] = useState<any>(null);
@@ -229,7 +233,7 @@ export default function FoldersScreen({ navigation }: any) {
 
             <View style={styles.titleSection}>
                 <Text style={styles.pageTitle}>Your <Text style={{ fontWeight: '700' }}>Folders</Text></Text>
-                <Text style={styles.statsSubtitle}>{folders.length} folder{folders.length !== 1 ? 's' : ''} · {currentSort.label}</Text>
+                <Text style={styles.statsSubtitle}>{folders.length} folder{folders.length !== 1 ? 's' : ''} Â· {currentSort.label}</Text>
             </View>
 
             <ScrollView style={styles.scrollArea} showsVerticalScrollIndicator={false}>
@@ -301,11 +305,11 @@ export default function FoldersScreen({ navigation }: any) {
                 <View style={{ height: 120 }} />
             </ScrollView >
 
-            {/* ── Create Folder Modal ── */}
+            {/* â”€â”€ Create Folder Modal â”€â”€ */}
             < Modal visible={isCreateModalVisible} transparent animationType="fade" >
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
                     <View style={styles.modalCard}>
-                        <Text style={styles.modalTitle}>📁 New Folder</Text>
+                        <Text style={styles.modalTitle}>ðŸ“ New Folder</Text>
                         <TextInput
                             style={styles.modalInput}
                             placeholder="Folder name"
@@ -326,11 +330,11 @@ export default function FoldersScreen({ navigation }: any) {
                 </KeyboardAvoidingView>
             </Modal >
 
-            {/* ── Rename Folder Modal ── */}
+            {/* â”€â”€ Rename Folder Modal â”€â”€ */}
             < Modal visible={isRenameModalVisible} transparent animationType="fade" >
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
                     <View style={styles.modalCard}>
-                        <Text style={styles.modalTitle}>✏️ Rename Folder</Text>
+                        <Text style={styles.modalTitle}>âœï¸ Rename Folder</Text>
                         <TextInput
                             style={styles.modalInput}
                             placeholder="New folder name"
@@ -351,7 +355,7 @@ export default function FoldersScreen({ navigation }: any) {
                 </KeyboardAvoidingView>
             </Modal >
 
-            {/* ── Sort Modal ── */}
+            {/* â”€â”€ Sort Modal â”€â”€ */}
             < Modal visible={showSortModal} transparent animationType="slide" >
                 <TouchableOpacity
                     style={styles.sortModalOverlay}
@@ -382,7 +386,7 @@ export default function FoldersScreen({ navigation }: any) {
                                     </Text>
                                     {sortKey === opt.key && (
                                         <View style={[styles.sortCheck, { backgroundColor: theme.colors.primary }]}>
-                                            <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>✓</Text>
+                                            <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>âœ“</Text>
                                         </View>
                                     )}
                                 </TouchableOpacity>
@@ -393,7 +397,7 @@ export default function FoldersScreen({ navigation }: any) {
                 </TouchableOpacity>
             </Modal >
 
-            {/* ── Options Modal (Web Fallback) ── */}
+            {/* â”€â”€ Options Modal (Web Fallback) â”€â”€ */}
             <Modal visible={!!optionsTarget} transparent animationType="slide">
                 <TouchableOpacity
                     style={styles.sortModalOverlay}
@@ -441,16 +445,12 @@ export default function FoldersScreen({ navigation }: any) {
                 </TouchableOpacity>
             </Modal>
 
-            {/* ── Share Folder Modal ── */}
-            {
-                shareTarget && (
-                    <ShareFolderModal
-                        visible={shareModalVisible}
-                        onClose={() => { setShareModalVisible(false); setShareTarget(null); }}
-                        targetItem={shareTarget}
-                    />
-                )
-            }
+            {/* â”€â”€ Share Folder Modal â”€â”€ */}
+            <ShareFolderModal
+                visible={shareModalVisible}
+                onClose={closeShareModal}
+                targetItem={shareTarget}
+            />
         </SafeAreaView >
     );
 }
@@ -529,3 +529,4 @@ const styles = StyleSheet.create({
         justifyContent: 'center', alignItems: 'center',
     },
 });
+

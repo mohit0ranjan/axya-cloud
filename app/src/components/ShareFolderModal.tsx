@@ -18,6 +18,7 @@ interface ShareFolderModalProps {
 
 export default function ShareFolderModal({ visible, onClose, targetItem }: ShareFolderModalProps) {
     const { theme } = useTheme();
+    const [activeTarget, setActiveTarget] = useState<any>(null);
 
     const [isLoading, setIsLoading] = useState(false);
     const [generatedLink, setGeneratedLink] = useState('');
@@ -29,7 +30,19 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
     const [expiryHours, setExpiryHours] = useState<number | null>(null);
     const wasVisibleRef = useRef(false);
 
-    // Reset only on closed -> open transition to avoid flicker loops from parent re-renders.
+    // Keep a stable target while the modal is open to avoid flicker from parent re-renders.
+    useEffect(() => {
+        if (visible && targetItem) {
+            setActiveTarget(targetItem);
+            return;
+        }
+        if (!visible) {
+            const t = setTimeout(() => setActiveTarget(null), 220);
+            return () => clearTimeout(t);
+        }
+    }, [targetItem, visible]);
+
+    // Reset only on closed -> open transition to avoid state churn on parent re-renders.
     useEffect(() => {
         const justOpened = visible && !wasVisibleRef.current;
         wasVisibleRef.current = visible;
@@ -44,14 +57,14 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
     }, [visible]);
 
     const handleGenerate = async () => {
-        if (!targetItem) return;
+        if (!activeTarget) return;
         setIsLoading(true);
         try {
-            const isFolder = targetItem.type === 'folder' || targetItem.result_type === 'folder' || targetItem.mime_type === 'inode/directory';
+            const isFolder = activeTarget.type === 'folder' || activeTarget.result_type === 'folder' || activeTarget.mime_type === 'inode/directory';
 
             const options = {
-                file_id: !isFolder ? targetItem.id : undefined,
-                folder_id: isFolder ? targetItem.id : undefined,
+                file_id: !isFolder ? activeTarget.id : undefined,
+                folder_id: isFolder ? activeTarget.id : undefined,
                 password: password.trim() || undefined,
                 expires_in_hours: expiryHours || undefined,
                 allow_download: allowDownload,
@@ -80,10 +93,18 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
         }
     };
 
-    if (!targetItem) return null;
+    const modalVisible = visible && !!activeTarget;
+    if (!activeTarget && !modalVisible) return null;
 
     return (
-        <Modal visible={visible} transparent animationType="slide">
+        <Modal
+            visible={modalVisible}
+            transparent
+            animationType="slide"
+            onRequestClose={onClose}
+            statusBarTranslucent
+            hardwareAccelerated
+        >
             <KeyboardAvoidingView
                 behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                 style={styles.overlay}
@@ -95,7 +116,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
 
                     <View style={styles.header}>
                         <Text style={[styles.title, { color: theme.colors.textHeading }]}>
-                            Share {targetItem.name || targetItem.file_name}
+                            Share {activeTarget.name || activeTarget.file_name}
                         </Text>
                         <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
                             <X color={theme.colors.textBody} size={24} />
@@ -103,7 +124,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
                     </View>
 
                     <Text style={styles.description}>
-                        Create a secure, public link to share this {targetItem.type === 'folder' || targetItem.result_type === 'folder' || targetItem.mime_type === 'inode/directory' ? 'folder' : 'file'}.
+                        Create a secure, public link to share this {activeTarget.type === 'folder' || activeTarget.result_type === 'folder' || activeTarget.mime_type === 'inode/directory' ? 'folder' : 'file'}.
                     </Text>
 
                     {generatedLink ? (

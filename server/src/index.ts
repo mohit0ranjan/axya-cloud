@@ -13,6 +13,7 @@ import pool from './config/db';
 import authRoutes from './routes/auth.routes';
 import fileRoutes from './routes/file.routes';
 import shareRoutes from './routes/share.routes';
+import shareApiRoutes from './routes/share-api.routes';
 import streamRoutes from './routes/stream.routes';
 import spacesRoutes from './routes/spaces.routes';
 import spaceFilesRoutes from './routes/space-files.routes';
@@ -106,6 +107,7 @@ const authLimiter = rateLimit({
 app.use('/auth', authLimiter, authRoutes);
 app.use('/files', fileRoutes);
 app.use('/share', shareRoutes);
+app.use('/api/share', shareApiRoutes);
 app.use('/spaces', spacesRoutes);
 app.use('/api/spaces', spacesRoutes);
 app.use('/api/files', spaceFilesRoutes);

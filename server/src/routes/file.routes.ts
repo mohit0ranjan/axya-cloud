@@ -64,7 +64,11 @@ const uploadLimiter = rateLimit({
     max: 2000,
     keyGenerator: (req: any) => {
         // Router is already protected by requireAuth, so user id is the safest key.
-        return req.user?.id || ipKeyGenerator(req) || 'unknown';
+        const rawIp =
+            (typeof req.ip === 'string' && req.ip) ||
+            (typeof req.socket?.remoteAddress === 'string' && req.socket.remoteAddress) ||
+            '';
+        return req.user?.id || ipKeyGenerator(rawIp) || 'unknown';
     },
     message: { success: false, error: 'Upload rate limit reached. Please wait 15 minutes.' },
 });

@@ -84,6 +84,16 @@ const hasSpacePasswordAccess = (req: Request, spaceId: string): boolean => {
     }
 };
 
+const verifySpacePassword = async (password: string, passwordHash: string): Promise<boolean> => {
+    if (!passwordHash) return false;
+    if (!/^\$2[aby]\$\d{2}\$/.test(passwordHash)) return false;
+    try {
+        return await bcrypt.compare(password, passwordHash);
+    } catch {
+        return false;
+    }
+};
+
 const writeAccessLog = async (spaceId: string, req: Request, action: string): Promise<void> => {
     try {
         await pool.query(
@@ -261,7 +271,7 @@ export const validateSpacePassword = async (req: Request, res: Response) => {
             return res.json({ success: true, message: 'Space is not password protected.' });
         }
 
-        const ok = await bcrypt.compare(password, space.password_hash);
+        const ok = await verifySpacePassword(password, String(space.password_hash || ''));
         if (!ok) {
             await writeAccessLog(id, req, 'password_failed');
             return res.status(401).json({ success: false, error: 'Invalid password.' });

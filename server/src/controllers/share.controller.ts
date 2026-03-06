@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+﻿import { Request, Response } from 'express';
 import { AuthRequest } from '../middlewares/auth.middleware';
 import pool from '../config/db';
 import { getDynamicClient } from '../services/telegram.service';
@@ -14,39 +14,46 @@ const MAX_SHARE_FOLDER_DEPTH = 32;
 const DEFAULT_VIEW_LIMIT = 200;
 const MAX_VIEW_LIMIT = 500;
 const DEFAULT_SHARE_EXPIRY_HOURS = 5 * 24; // Auto-expire after 5 days unless user sets another value.
-const SHARE_PASSWORD_SCHEME = 'sha256';
+const LEGACY_SHARE_PASSWORD_SCHEME = 'sha256';
 
 const getSharePasswordPepper = (): string => {
     return process.env.SHARE_PASSWORD_PEPPER || process.env.COOKIE_SECRET || 'axya_share_password_pepper';
 };
 
-const hashSharePassword = (password: string): string => {
+const hashLegacySharePassword = (password: string): string => {
     const digest = crypto
         .createHash('sha256')
         .update(`${getSharePasswordPepper()}|${password}`, 'utf8')
         .digest('hex');
-    return `${SHARE_PASSWORD_SCHEME}:${digest}`;
+    return `${LEGACY_SHARE_PASSWORD_SCHEME}:${digest}`;
+};
+
+const hashSharePassword = async (password: string): Promise<string> => {
+    return bcrypt.hash(password, 12);
 };
 
 const verifySharePasswordHash = async (password: string, storedHash: string): Promise<boolean> => {
     if (!storedHash) return false;
 
-    // New scheme: sha256:<hex>
-    if (storedHash.startsWith(`${SHARE_PASSWORD_SCHEME}:`)) {
-        const expected = hashSharePassword(password);
+    // Current scheme: bcrypt
+    if (/^\$2[aby]\$\d{2}\$/.test(storedHash)) {
+        try {
+            return await bcrypt.compare(password, storedHash);
+        } catch {
+            return false;
+        }
+    }
+
+    // Legacy fallback: sha256:<hex>
+    if (storedHash.startsWith(`${LEGACY_SHARE_PASSWORD_SCHEME}:`)) {
+        const expected = hashLegacySharePassword(password);
         const a = Buffer.from(storedHash, 'utf8');
         const b = Buffer.from(expected, 'utf8');
         if (a.length !== b.length) return false;
         return crypto.timingSafeEqual(a, b);
     }
 
-    // Legacy fallback for old links stored with bcrypt.
-    if (!/^\$2[aby]\$\d{2}\$/.test(storedHash)) return false;
-    try {
-        return await bcrypt.compare(password, storedHash);
-    } catch {
-        return false;
-    }
+    return false;
 };
 
 try {
@@ -72,9 +79,28 @@ const isShareCookieValid = (req: Request, token: string): boolean => {
     return req.cookies?.[`share_auth_${token}`] === 'true';
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+const isShareExpired = (expiresAt: string | Date | null): boolean => {
+    if (!expiresAt) return false;
+    return new Date(expiresAt).getTime() < Date.now();
+};
+
+const getShareByToken = async (token: string) => {
+    const linkResult = await pool.query(
+        `SELECT sl.id, sl.token, sl.file_id, sl.folder_id, sl.created_by, sl.expires_at, sl.password_hash, sl.allow_download, sl.view_only,
+                f.file_name, f.file_size, f.mime_type,
+                fo.name AS folder_name
+         FROM shared_links sl
+         LEFT JOIN files f ON f.id = sl.file_id
+         LEFT JOIN folders fo ON fo.id = sl.folder_id
+         WHERE sl.token = $1`,
+        [token]
+    );
+    return linkResult.rows[0] || null;
+};
+
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // CREATE A PUBLIC SHARE LINK (File or Folder)
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const createShareLink = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
@@ -99,7 +125,7 @@ export const createShareLink = async (req: AuthRequest, res: Response) => {
             return res.status(400).json({ success: false, error: 'Expiry hours must be greater than 0.' });
         }
         const expiresAt = new Date(Date.now() + parsedExpiryHours * 3600000);
-        const passwordHash = password ? hashSharePassword(String(password)) : null;
+        const passwordHash = password ? await hashSharePassword(String(password)) : null;
 
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
@@ -166,9 +192,9 @@ export const createShareLink = async (req: AuthRequest, res: Response) => {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // REVOKE SHARE LINK
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const revokeShareLink = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
     const { id } = req.params;
@@ -184,9 +210,9 @@ export const revokeShareLink = async (req: AuthRequest, res: Response) => {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // LIST USER'S SHARED LINKS
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const getUserSharedLinks = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
@@ -207,18 +233,19 @@ export const getUserSharedLinks = async (req: AuthRequest, res: Response) => {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // VALIDATE PASSWORD
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const validatePassword = async (req: Request, res: Response) => {
     const token = String(req.params.token);
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
 
     try {
-        const linkResult = await pool.query('SELECT id, password_hash FROM shared_links WHERE token = $1', [token]);
-        if (linkResult.rows.length === 0) return res.status(404).json({ success: false, error: 'Share link not found.' });
-
-        const link = linkResult.rows[0];
+        const link = await getShareByToken(token);
+        if (!link) return res.status(404).json({ success: false, error: 'Share link not found.' });
+        if (isShareExpired(link.expires_at)) {
+            return res.status(410).json({ success: false, error: 'This share link has expired.' });
+        }
         if (!link.password_hash) return res.json({ success: true }); // No password requested
         if (!password) return res.status(400).json({ success: false, error: 'Password is required.' });
 
@@ -240,6 +267,150 @@ export const validatePassword = async (req: Request, res: Response) => {
     }
 };
 
+export const verifyShareAccess = async (req: Request, res: Response) => {
+    const token = String(req.body?.share_id || req.body?.shareId || req.params?.token || '');
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+
+    if (!token) return res.status(400).json({ success: false, error: 'share_id is required.' });
+
+    try {
+        const link = await getShareByToken(token);
+        if (!link) return res.status(404).json({ success: false, error: 'Share not found.' });
+        if (isShareExpired(link.expires_at)) {
+            return res.status(410).json({ success: false, error: 'Link expired.' });
+        }
+
+        if (!link.password_hash) {
+            return res.json({ success: true, requires_password: false });
+        }
+        if (!password) return res.status(400).json({ success: false, error: 'Password is required.' });
+
+        const isValid = await verifySharePasswordHash(password, String(link.password_hash || ''));
+        if (!isValid) return res.status(401).json({ success: false, error: 'Incorrect password.' });
+
+        res.cookie(`share_auth_${token}`, 'true', {
+            maxAge: 24 * 60 * 60 * 1000,
+            httpOnly: true,
+            path: `/share/${token}`,
+            sameSite: 'lax',
+            secure: process.env.NODE_ENV === 'production',
+        });
+
+        return res.json({ success: true, share_id: token, requires_password: true });
+    } catch {
+        return res.status(500).json({ success: false, error: 'Server error.' });
+    }
+};
+
+export const getSharePublicMeta = async (req: Request, res: Response) => {
+    const token = String(req.params.shareId || req.params.token || '');
+    try {
+        const link = await getShareByToken(token);
+        if (!link) return res.status(404).json({ success: false, error: 'Share not found.' });
+        if (isShareExpired(link.expires_at)) return res.status(410).json({ success: false, error: 'Link expired.' });
+
+        const requiresPassword = Boolean(link.password_hash);
+        const hasAccess = !requiresPassword || isShareCookieValid(req, token);
+        return res.json({
+            success: true,
+            share: {
+                id: token,
+                folder_id: link.folder_id,
+                file_id: link.file_id,
+                folder_name: link.folder_name || null,
+                file_name: link.file_name || null,
+                allow_download: Boolean(link.allow_download),
+                view_only: Boolean(link.view_only),
+                expires_at: link.expires_at,
+                requires_password: requiresPassword,
+                has_access: hasAccess,
+            },
+        });
+    } catch {
+        return res.status(500).json({ success: false, error: 'Server error.' });
+    }
+};
+
+export const getSharePublicFiles = async (req: Request, res: Response) => {
+    const token = String(req.params.shareId || req.params.token || '');
+    const page = Math.max(1, parseIntSafe(req.query.page, 1));
+    const limit = Math.min(MAX_VIEW_LIMIT, Math.max(1, parseIntSafe(req.query.limit, DEFAULT_VIEW_LIMIT)));
+    const offset = (page - 1) * limit;
+
+    try {
+        const link = await getShareByToken(token);
+        if (!link) return res.status(404).json({ success: false, error: 'Share not found.' });
+        if (isShareExpired(link.expires_at)) return res.status(410).json({ success: false, error: 'Link expired.' });
+        if (link.password_hash && !isShareCookieValid(req, token)) {
+            return res.status(401).json({ success: false, error: 'Password validation required.' });
+        }
+
+        if (link.file_id) {
+            return res.json({
+                success: true,
+                share: { id: token, file_id: link.file_id, folder_id: null, name: link.file_name || null },
+                files: [{
+                    id: link.file_id,
+                    file_name: link.file_name,
+                    file_size: Number(link.file_size || 0),
+                    mime_type: link.mime_type || null,
+                    download_url: `/share/${token}/download`,
+                    content_url: `/share/${token}/content`,
+                }],
+                page,
+                limit,
+                total_count: 1,
+            });
+        }
+
+        const filesRes = await pool.query(
+            `WITH RECURSIVE folder_tree AS (
+                SELECT id, 0 AS depth
+                FROM folders
+                WHERE id = $1 AND user_id = $2 AND is_trashed = false
+                UNION ALL
+                SELECT f.id, ft.depth + 1
+                FROM folders f
+                INNER JOIN folder_tree ft ON f.parent_id = ft.id
+                WHERE f.user_id = $2 AND f.is_trashed = false AND ft.depth < $3
+            ),
+            all_files AS (
+                SELECT fi.id, fi.file_name, fi.file_size, fi.mime_type, fi.created_at
+                FROM files fi
+                INNER JOIN folder_tree ft ON fi.folder_id = ft.id
+                WHERE fi.user_id = $2 AND fi.is_trashed = false
+            )
+            SELECT
+                (SELECT COUNT(*)::int FROM all_files) AS total_count,
+                id, file_name, file_size, mime_type
+            FROM all_files
+            ORDER BY created_at DESC
+            LIMIT $4 OFFSET $5`,
+            [link.folder_id, link.created_by, MAX_SHARE_FOLDER_DEPTH, limit, offset]
+        );
+
+        const rows = filesRes.rows || [];
+        const totalCount = Number(rows[0]?.total_count || 0);
+        return res.json({
+            success: true,
+            share: { id: token, file_id: null, folder_id: link.folder_id, name: link.folder_name || null },
+            files: rows.map((row: any) => ({
+                id: row.id,
+                file_name: row.file_name,
+                file_size: Number(row.file_size || 0),
+                mime_type: row.mime_type || null,
+                download_url: `/share/${token}/download?file_id=${encodeURIComponent(String(row.id))}`,
+                content_url: `/share/${token}/content?file_id=${encodeURIComponent(String(row.id))}`,
+            })),
+            page,
+            limit,
+            total_count: totalCount,
+        });
+    } catch {
+        return res.status(500).json({ success: false, error: 'Server error.' });
+    }
+};
+
 export const sharePasswordGateScript = async (_req: Request, res: Response) => {
     res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
     res.send(`(() => {
@@ -248,22 +419,48 @@ export const sharePasswordGateScript = async (_req: Request, res: Response) => {
   const passwordInput = document.getElementById('pw');
   const submitBtn = document.getElementById('submitBtn');
   const errEl = document.getElementById('err');
+  const helperEl = document.getElementById('helper');
 
   if (!token || !passwordInput || !submitBtn || !errEl) return;
 
+  const showMessage = (message) => {
+    errEl.textContent = message;
+    errEl.style.display = 'block';
+    if (helperEl) helperEl.style.display = 'none';
+  };
+
   const submitPw = async () => {
     const pw = passwordInput.value || '';
+    if (!pw.trim()) {
+      showMessage('Please enter the password.');
+      return;
+    }
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Unlocking...';
     const response = await fetch('/share/' + encodeURIComponent(token) + '/password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
       body: JSON.stringify({ password: pw }),
     });
+
     if (response.ok) {
       window.location.reload();
       return;
     }
-    errEl.style.display = 'block';
+    if (response.status === 401) {
+      showMessage('Incorrect password. Please try again.');
+    } else if (response.status === 404) {
+      showMessage('Share link not found.');
+    } else if (response.status === 410) {
+      showMessage('This share link has expired.');
+    } else if (response.status === 429) {
+      showMessage('Too many attempts. Try again later.');
+    } else {
+      showMessage('Server error. Please try again.');
+    }
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Unlock Folder';
   };
 
   submitBtn.addEventListener('click', submitPw);
@@ -273,9 +470,9 @@ export const sharePasswordGateScript = async (_req: Request, res: Response) => {
 })();`);
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PUBLIC SHARE WEB PAGE  (HTML preview — no auth required, cookie for password)
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// PUBLIC SHARE WEB PAGE  (HTML preview â€” no auth required, cookie for password)
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const shareWebPage = async (req: Request, res: Response) => {
     const token = String(req.params.token);
     const page = Math.max(1, parseIntSafe(req.query.page, 1));
@@ -309,27 +506,36 @@ export const shareWebPage = async (req: Request, res: Response) => {
         // Check password protection via cookie
         if (link.password_hash && !isShareCookieValid(req, token)) {
             return res.send(`
-            <!DOCTYPE html><html lang="en"><head><title>Password Required — Axya</title>
+            <!DOCTYPE html><html lang="en"><head><title>Unlock Shared Folder - AYXA</title>
+            <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+            <link rel="preconnect" href="https://fonts.googleapis.com">
+            <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+            <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
             <style>
+              :root{--bg-a:#02050d;--bg-b:#071325;--bg-c:#0e2445;--card:rgba(255,255,255,0.08);--line:rgba(255,255,255,0.16);--text:#ffffff;--muted:rgba(219,232,255,0.78);}
               *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-              body{font-family:'Inter',sans-serif;background:#0D0F1A;color:#E8EAF0;display:flex;flex-direction:column;align-items:center;padding-top:100px;}
-              .card{background:#1A1E2E;border-radius:24px;padding:40px;width:90%;max-width:400px;text-align:center;}
-              h1{font-size:20px;margin-bottom:12px;}
-              p{color:#6B7A99;font-size:14px;margin-bottom:24px;}
-              input{width:100%;background:#0D0F1A;border:1px solid #252A3E;border-radius:12px;padding:16px;color:#fff;font-size:16px;margin-bottom:16px;outline:none;}
-              input:focus{border-color:#5B7FFF;}
-              button{width:100%;background:linear-gradient(135deg, #5B7FFF, #4B6EF5);color:#fff;border:none;border-radius:12px;padding:16px;font-size:16px;font-weight:600;cursor:pointer;}
-              .err{color:#FF5252;font-size:13px;margin-bottom:16px;display:none;}
+              body{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;color:var(--text);font-family:'Plus Jakarta Sans',sans-serif;background:radial-gradient(1200px 500px at 90% -10%, rgba(109,167,255,0.20), transparent 60%),radial-gradient(900px 500px at -10% 110%, rgba(59,130,246,0.18), transparent 60%),linear-gradient(140deg, var(--bg-a), var(--bg-b) 45%, var(--bg-c));}
+              .card{width:min(480px,100%);border:1px solid var(--line);background:var(--card);backdrop-filter:blur(20px);border-radius:24px;padding:34px 28px 28px;box-shadow:0 30px 70px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.1);}
+              .brand{font-size:30px;font-weight:800;letter-spacing:0.18em;text-align:center;margin-bottom:8px;}
+              .folder{font-size:16px;text-align:center;color:var(--muted);margin-bottom:18px;word-break:break-word;}
+              .headline{text-align:center;font-size:15px;color:var(--muted);margin-bottom:20px;}
+              .field{width:100%;height:50px;border-radius:14px;border:1px solid var(--line);background:rgba(0,0,0,0.28);color:var(--text);padding:0 14px;font-size:15px;outline:none;}
+              .field:focus{border-color:rgba(131,179,255,0.9);box-shadow:0 0 0 3px rgba(109,167,255,0.2);}
+              .btn{margin-top:12px;width:100%;height:48px;border:none;border-radius:14px;font-size:15px;font-weight:700;color:#03122a;background:linear-gradient(135deg,#86b8ff,#5a95ff);box-shadow:0 14px 30px rgba(87,146,255,0.35);cursor:pointer;}
+              .btn:disabled{opacity:0.75;cursor:not-allowed}
+              .helper{margin-top:12px;font-size:13px;color:var(--muted);text-align:center;}
+              .err{margin-top:12px;font-size:13px;color:#ffb0b0;text-align:center;display:none;}
             </style>
             </head><body data-share-token="${escHtml(token)}">
               <div class="card">
-                <h1>Password Protected</h1>
-                <p>Please enter the password to view this shared link.</p>
-                <div class="err" id="err">Incorrect password</div>
-                <input type="password" id="pw" placeholder="Enter password" />
-                <button id="submitBtn">Access Link</button>
+                <div class="brand">AYXA</div>
+                <div class="folder">Shared Folder: ${escHtml(link.folder_name || link.file_name || 'Shared Space')}</div>
+                <p class="headline">Enter password to access this shared space</p>
+                <input class="field" type="password" id="pw" placeholder="Enter password" autocomplete="current-password" />
+                <button class="btn" id="submitBtn">Unlock Folder</button>
+                <p class="helper" id="helper">Your access is protected with end-to-end share controls.</p>
+                <p class="err" id="err"></p>
               </div>
               <script src="/share/client/password-gate.js"></script>
             </body></html>
@@ -346,7 +552,7 @@ export const shareWebPage = async (req: Request, res: Response) => {
         let content = '';
 
         if (link.folder_id) {
-            // RENDERING FOLDER VIEW — paginated, recursive CTE, no internal IDs exposed
+            // RENDERING FOLDER VIEW â€” paginated, recursive CTE, no internal IDs exposed
             const filesRes = await pool.query(
                 `WITH RECURSIVE folder_tree AS (
                     SELECT id, 0 AS depth
@@ -418,25 +624,25 @@ export const shareWebPage = async (req: Request, res: Response) => {
 
             content = `
                 <div class="file-info">
-                  <div class="file-icon" style="background:#5B7FFF20;color:#5B7FFF">📁</div>
+                  <div class="file-icon" style="background:#5B7FFF20;color:#5B7FFF">ðŸ“</div>
                   <div class="file-meta">
                     <h1>${escHtml(link.folder_name)}</h1>
-                    <div class="details">${totalCount} files &nbsp;·&nbsp; ${formatSize(totalSize)}</div>
+                    <div class="details">${totalCount} files &nbsp;Â·&nbsp; ${formatSize(totalSize)}</div>
                   </div>
                 </div>
                 <div class="folder-grid">${filesHtml}</div>
-                ${link.allow_download && !link.view_only ? `<a href="/share/${token}/download-all" class="btn-download" download>⬇ Download All (ZIP)</a>` : ''}
+                ${link.allow_download && !link.view_only ? `<a href="/share/${token}/download-all" class="btn-download" download>â¬‡ Download All (ZIP)</a>` : ''}
                 ${pager}
             `;
         } else {
-            // RENDERING SINGLE FILE VIEW — preview uses /content, download uses /download
+            // RENDERING SINGLE FILE VIEW â€” preview uses /content, download uses /download
             const { file_name, file_size, mime_type } = link;
             const isImage = mime_type?.startsWith('image/');
             const isVideo = mime_type?.startsWith('video/');
             const isPdf = mime_type === 'application/pdf';
 
             const downloadUrl = `/share/${token}/download`;
-            const contentUrl = `/share/${token}/content`; // Inline preview — bypasses view_only
+            const contentUrl = `/share/${token}/content`; // Inline preview â€” bypasses view_only
 
             const preview = isImage
                 ? `<img src="${contentUrl}" alt="${escHtml(file_name)}" class="preview-img" />`
@@ -451,11 +657,11 @@ export const shareWebPage = async (req: Request, res: Response) => {
                   <div class="file-icon">${getTypeEmoji(mime_type)}</div>
                   <div class="file-meta">
                     <h1>${escHtml(file_name)}</h1>
-                    <div class="details">${formatSize(file_size)} &nbsp;·&nbsp; ${mime_type || 'Unknown type'}</div>
+                    <div class="details">${formatSize(file_size)} &nbsp;Â·&nbsp; ${mime_type || 'Unknown type'}</div>
                   </div>
                 </div>
                 ${preview}
-                ${link.allow_download && !link.view_only ? `<a href="${downloadUrl}" class="btn-download" download="${escHtml(file_name)}">⬇ Download File</a>` : ''}
+                ${link.allow_download && !link.view_only ? `<a href="${downloadUrl}" class="btn-download" download="${escHtml(file_name)}">â¬‡ Download File</a>` : ''}
             `;
         }
 
@@ -465,7 +671,7 @@ export const shareWebPage = async (req: Request, res: Response) => {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escHtml(link.folder_name || link.file_name)} — Axya Shared</title>
+  <title>${escHtml(link.folder_name || link.file_name)} â€” Axya Shared</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
   <style>
@@ -504,7 +710,7 @@ export const shareWebPage = async (req: Request, res: Response) => {
   </div>
 
   <div class="footer">
-    Powered by <a href="https://axya.cloud">Axya</a> — Telegram-based secure cloud drive.<br/>
+    Powered by <a href="https://axya.cloud">Axya</a> â€” Telegram-based secure cloud drive.<br/>
     ${link.expires_at ? `Link expires ${new Date(link.expires_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}` : 'Link has no expiry'}
   </div>
 </body>
@@ -514,17 +720,17 @@ export const shareWebPage = async (req: Request, res: Response) => {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // PUBLIC FILE DOWNLOAD / INLINE CONTENT (no auth required via share token)
 // Both /:token/download and /:token/content hit this handler.
 // /content serves inline (bypasses view_only) for previews.
 // /download enforces allow_download + view_only restrictions.
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const downloadSharedFile = async (req: Request, res: Response) => {
     const token = String(req.params.token);
     const { file_id } = req.query;
 
-    // /content route serves inline previews — allowed even in view_only mode
+    // /content route serves inline previews â€” allowed even in view_only mode
     const isContentRoute = req.path.endsWith('/content');
 
     try {
@@ -621,9 +827,9 @@ export const downloadSharedFile = async (req: Request, res: Response) => {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PUBLIC FOLDER DOWNLOAD (ZIP) — recursive with depth limit
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// PUBLIC FOLDER DOWNLOAD (ZIP) â€” recursive with depth limit
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const downloadAllShared = async (req: Request, res: Response) => {
     const token = String(req.params.token);
     try {
@@ -716,19 +922,19 @@ export const downloadAllShared = async (req: Request, res: Response) => {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getTypeEmoji(mime: string) {
-    if (!mime) return '📄';
-    if (mime.startsWith('image/')) return '🖼️';
-    if (mime.startsWith('video/')) return '🎬';
-    if (mime.startsWith('audio/')) return '🎵';
-    if (mime === 'application/pdf') return '📑';
-    if (mime.includes('zip') || mime.includes('compress')) return '📦';
-    if (mime.includes('word') || mime.includes('document')) return '📝';
-    if (mime.includes('sheet') || mime.includes('excel')) return '📊';
-    return '📄';
+    if (!mime) return 'ðŸ“„';
+    if (mime.startsWith('image/')) return 'ðŸ–¼ï¸';
+    if (mime.startsWith('video/')) return 'ðŸŽ¬';
+    if (mime.startsWith('audio/')) return 'ðŸŽµ';
+    if (mime === 'application/pdf') return 'ðŸ“‘';
+    if (mime.includes('zip') || mime.includes('compress')) return 'ðŸ“¦';
+    if (mime.includes('word') || mime.includes('document')) return 'ðŸ“';
+    if (mime.includes('sheet') || mime.includes('excel')) return 'ðŸ“Š';
+    return 'ðŸ“„';
 }
 
 function escHtml(str: string) {
@@ -740,9 +946,10 @@ function escHtml(str: string) {
 }
 
 function errorPage(title: string, message: string) {
-    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title} — Axya</title>
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title} â€” Axya</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@600;800&display=swap" rel="stylesheet">
     <style>body{font-family:Inter,sans-serif;background:#0D0F1A;color:#E8EAF0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:24px;text-align:center;}
     h1{font-size:24px;font-weight:800;color:#FF5252;margin-bottom:12px;}p{color:#6B7A99;font-size:15px;}</style>
     </head><body><h1>${title}</h1><p>${message}</p></body></html>`;
 }
+

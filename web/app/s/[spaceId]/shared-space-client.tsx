@@ -1,6 +1,7 @@
-'use client';
+﻿'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import SharePage from './share-page';
 
 type Space = {
   id: string;
@@ -50,7 +51,12 @@ export default function SharedSpaceClient({ spaceId }: { spaceId: string }) {
       const spacePayload = await spaceRes.json();
       const filesPayload = await filesRes.json();
 
-      if (!spaceRes.ok) throw new Error(spacePayload.error || 'Failed to load space');
+      if (!spaceRes.ok) {
+        if (spaceRes.status === 404) throw new Error('Share not found.');
+        if (spaceRes.status === 410) throw new Error('Link expired.');
+        throw new Error(spacePayload.error || 'Failed to load shared space');
+      }
+
       if (!filesRes.ok) {
         if (filesRes.status === 401) {
           setSpace(spacePayload.space);
@@ -58,6 +64,8 @@ export default function SharedSpaceClient({ spaceId }: { spaceId: string }) {
           setFolders([]);
           return;
         }
+        if (filesRes.status === 404) throw new Error('Share not found.');
+        if (filesRes.status === 410) throw new Error('Link expired.');
         throw new Error(filesPayload.error || 'Failed to load files');
       }
 
@@ -77,7 +85,10 @@ export default function SharedSpaceClient({ spaceId }: { spaceId: string }) {
 
   const unlock = useCallback(async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!password.trim()) return;
+    if (!password.trim()) {
+      setError('Please enter the password.');
+      return;
+    }
 
     setError('');
     setLoading(true);
@@ -90,18 +101,24 @@ export default function SharedSpaceClient({ spaceId }: { spaceId: string }) {
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(payload.error || 'Invalid password');
+        if (res.status === 401) setError('Incorrect password.');
+        else if (res.status === 404) setError('Share not found.');
+        else if (res.status === 410) setError('Link expired.');
+        else if (res.status === 429) setError('Too many attempts. Try again later.');
+        else setError(payload.error || 'Server error while verifying password.');
         return;
       }
-      setAccessToken(String(payload.access_token || ''));
+      const token = String(payload.access_token || '');
+      setAccessToken(token);
+      setSpace((prev) => (prev ? { ...prev, has_access: true } : prev));
       setPassword('');
-      // Force trigger a reload since headers/token just updated
+      await load(folderPath);
     } catch (err: any) {
       setError(err?.message || 'Network error verifying password');
     } finally {
       setLoading(false);
     }
-  }, [password, spaceId]);
+  }, [folderPath, load, password, spaceId]);
 
   const upload = useCallback(async (ev: React.ChangeEvent<HTMLInputElement>) => {
     const selected = ev.target.files?.[0];
@@ -124,92 +141,21 @@ export default function SharedSpaceClient({ spaceId }: { spaceId: string }) {
     await load(folderPath);
   }, [folderPath, headers, load, spaceId]);
 
-  const isLocked = Boolean(space?.requires_password && !space?.has_access && !accessToken);
-
   return (
-    <main style={{ maxWidth: 900, margin: '0 auto', padding: 24 }}>
-      <section style={{ background: 'var(--card)', border: '1px solid var(--line)', borderRadius: 16, padding: 20 }}>
-        <h1 style={{ margin: 0, fontSize: 28 }}>{space?.name || 'Shared Space'}</h1>
-        <p style={{ marginTop: 6, color: 'var(--muted)', fontSize: 13 }}>Path: {folderPath}</p>
-
-        {isLocked && (
-          <form onSubmit={unlock} style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter password"
-              style={{ flex: 1, height: 40, borderRadius: 10, border: '1px solid var(--line)', padding: '0 10px' }}
-            />
-            <button type="submit" disabled={loading} style={{ ...buttonStyle, opacity: loading ? 0.7 : 1 }}>
-              {loading ? 'Unlocking...' : 'Unlock'}
-            </button>
-          </form>
-        )}
-
-        {!isLocked && space?.allow_upload && (
-          <div style={{ marginTop: 12 }}>
-            <label style={buttonStyle}>
-              Upload
-              <input type="file" style={{ display: 'none' }} onChange={(e) => void upload(e)} />
-            </label>
-          </div>
-        )}
-
-        {!!error && <p style={{ color: '#d93025', marginTop: 12 }}>{error}</p>}
-        {loading && <p style={{ marginTop: 12, color: 'var(--muted)' }}>Loading...</p>}
-
-        {!isLocked && (
-          <div style={{ marginTop: 16, display: 'grid', gap: 10 }}>
-            {folderPath !== '/' && (
-              <button style={rowStyle} onClick={() => setFolderPath(folderPath.split('/').slice(0, -1).join('/') || '/')}>
-                .. (Go up)
-              </button>
-            )}
-
-            {folders.map((folder) => (
-              <button key={folder.path} style={rowStyle} onClick={() => setFolderPath(folder.path)}>
-                📁 {folder.name}
-              </button>
-            ))}
-            {files.map((file) => (
-              <div key={file.id} style={rowStyle}>
-                <span style={{ flex: 1 }}>📄 {file.file_name}</span>
-                {space?.allow_download && file.download_url && (
-                  <a href={`${API_BASE}${file.download_url}`} style={{ color: 'var(--primary)', fontWeight: 700 }}>Download</a>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-    </main>
+    <SharePage
+      space={space}
+      files={files}
+      folders={folders}
+      folderPath={folderPath}
+      password={password}
+      loading={loading}
+      error={error}
+      apiBase={API_BASE}
+      onPasswordChange={setPassword}
+      onUnlock={unlock}
+      onUp={() => setFolderPath(folderPath.split('/').slice(0, -1).join('/') || '/')}
+      onOpenFolder={setFolderPath}
+      onUpload={(e) => void upload(e)}
+    />
   );
 }
-
-const buttonStyle: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 8,
-  border: 0,
-  height: 40,
-  borderRadius: 10,
-  padding: '0 14px',
-  cursor: 'pointer',
-  background: 'var(--primary)',
-  color: '#fff',
-  fontWeight: 700,
-};
-
-const rowStyle: React.CSSProperties = {
-  minHeight: 44,
-  borderRadius: 10,
-  border: '1px solid var(--line)',
-  background: '#fff',
-  padding: '0 12px',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  textAlign: 'left',
-};

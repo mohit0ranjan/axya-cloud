@@ -245,7 +245,7 @@ export const createShareLink = async (req: AuthRequest, res: Response) => {
 
         const share = result.rows[0] as ShareRow;
         const linkToken = signShareLinkToken(share, share.expires_at);
-        const shareUrl = getShareUrl(share.id, linkToken);
+        const shareUrl = getShareUrl(share.id, linkToken, req);
 
         return res.status(201).json({
             success: true,
@@ -290,8 +290,8 @@ export const listUserShares = async (req: AuthRequest, res: Response) => {
             const token = signShareLinkToken(row as ShareRow, row.expires_at);
             return {
                 ...row,
-                share_url: getShareUrl(row.id, token),
-                shareUrl: getShareUrl(row.id, token),
+                share_url: getShareUrl(row.id, token, req),
+                shareUrl: getShareUrl(row.id, token, req),
                 token,
             };
         });

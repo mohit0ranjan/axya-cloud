@@ -1065,7 +1065,7 @@ export const getFileDetails = async (req: AuthRequest, res: Response) => {
         const shareLink = latestShare
             ? (() => {
                 const token = signShareLinkToken(latestShare, latestShare.expires_at);
-                const shareUrl = getShareUrl(latestShare.id, token);
+                const shareUrl = getShareUrl(latestShare.id, token, req);
                 return {
                     id: latestShare.id,
                     expires_at: latestShare.expires_at,

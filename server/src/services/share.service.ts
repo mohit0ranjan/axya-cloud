@@ -31,7 +31,8 @@ type ShareAccessPayload = {
 
 const SHARE_LINK_SECRET = process.env.SHARE_LINK_SECRET || process.env.JWT_SECRET || 'axya_share_link_secret';
 const SHARE_ACCESS_SECRET = process.env.SHARE_ACCESS_SECRET || process.env.JWT_SECRET || 'axya_share_access_secret';
-const SHARE_PUBLIC_BASE_URL = (process.env.SHARE_PUBLIC_BASE_URL || process.env.WEB_PUBLIC_BASE_URL || 'http://localhost:3001').replace(/\/+$/, '');
+const SHARE_PUBLIC_BASE_URL = (process.env.SHARE_PUBLIC_BASE_URL || process.env.WEB_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+const LOCAL_SHARE_WEB_BASE_URL = 'http://localhost:3001';
 const parseAccessTokenTtlSeconds = (): number => {
     const raw = String(process.env.SHARE_ACCESS_TOKEN_TTL || '').trim();
     if (!raw) return 12 * 60 * 60;
@@ -107,8 +108,21 @@ export const verifyShareAccessToken = (token: string): ShareAccessPayload | null
     }
 };
 
-export const getShareUrl = (shareId: string, token: string): string => {
-    return `${SHARE_PUBLIC_BASE_URL}/share/${encodeURIComponent(shareId)}?token=${encodeURIComponent(token)}`;
+const deriveShareBaseUrlFromRequest = (req?: Request): string => {
+    if (!req) return '';
+
+    const forwardedProto = String(req.get('x-forwarded-proto') || '').split(',')[0].trim();
+    const forwardedHost = String(req.get('x-forwarded-host') || '').split(',')[0].trim();
+    const host = forwardedHost || String(req.get('host') || '').trim();
+    if (!host) return '';
+
+    const proto = forwardedProto || req.protocol || 'https';
+    return `${proto}://${host}`.replace(/\/+$/, '');
+};
+
+export const getShareUrl = (shareId: string, token: string, req?: Request): string => {
+    const baseUrl = SHARE_PUBLIC_BASE_URL || deriveShareBaseUrlFromRequest(req) || LOCAL_SHARE_WEB_BASE_URL;
+    return `${baseUrl}/share/${encodeURIComponent(shareId)}?token=${encodeURIComponent(token)}`;
 };
 
 export const readBearerToken = (req: Request): string | null => {

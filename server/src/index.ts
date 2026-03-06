@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 import { initSchema } from './services/db.service';
 import pool from './config/db';
+import { getShareUrl, verifyShareLinkToken } from './services/share.service';
 import authRoutes from './routes/auth.routes';
 import fileRoutes from './routes/file.routes';
 import shareRoutes from './routes/share.routes';
@@ -107,6 +108,20 @@ const authLimiter = rateLimit({
 app.use('/auth', authLimiter, authRoutes);
 app.use('/files', fileRoutes);
 app.use('/share', shareRoutes);
+
+// Backward compatibility: old links used /share/<signedToken>.
+app.get('/share/:legacyToken', (req: Request, res: Response, next: NextFunction) => {
+    const legacyToken = String(req.params.legacyToken || '').trim();
+    const queryToken = String(req.query.token || '').trim();
+    if (queryToken) return next();
+    if (!legacyToken || legacyToken.split('.').length !== 3) return next();
+
+    const payload = verifyShareLinkToken(legacyToken);
+    if (!payload?.shareId) return next();
+
+    return res.redirect(302, getShareUrl(payload.shareId, legacyToken, req));
+});
+
 app.use('/api/share', shareApiRoutes);
 app.use('/spaces', spacesRoutes);
 app.use('/api/spaces', spacesRoutes);

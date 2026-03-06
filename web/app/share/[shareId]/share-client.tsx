@@ -88,7 +88,23 @@ const mimeLabel = (file: FileItem) => {
 
 export default function ShareClient({ shareId }: { shareId: string }) {
   const searchParams = useSearchParams();
-  const signedToken = searchParams.get('token') || '';
+  const queryToken = searchParams.get('token') || '';
+  const legacyTokenPayload = useMemo(() => {
+    if (queryToken || !shareId || shareId.split('.').length !== 3) return null;
+    try {
+      const payloadSegment = shareId.split('.')[1] || '';
+      const base64 = payloadSegment.replace(/-/g, '+').replace(/_/g, '/');
+      const normalized = base64 + '='.repeat((4 - (base64.length % 4 || 4)) % 4);
+      const decoded = atob(normalized);
+      const payload = JSON.parse(decoded) as { typ?: string; shareId?: string };
+      if (payload?.typ !== 'share_link' || !payload?.shareId) return null;
+      return { shareId: String(payload.shareId), token: shareId };
+    } catch {
+      return null;
+    }
+  }, [queryToken, shareId]);
+  const resolvedShareId = legacyTokenPayload?.shareId || shareId;
+  const signedToken = queryToken || legacyTokenPayload?.token || '';
 
   const [share, setShare] = useState<ShareMeta | null>(null);
   const [accessToken, setAccessToken] = useState('');
@@ -116,7 +132,7 @@ export default function ShareClient({ shareId }: { shareId: string }) {
       setPasswordError('');
 
       try {
-        const res = await fetch(`${API_BASE}/api/share/${shareId}?token=${encodeURIComponent(signedToken)}`);
+        const res = await fetch(`${API_BASE}/api/share/${resolvedShareId}?token=${encodeURIComponent(signedToken)}`);
         const payload = await res.json().catch(() => ({}));
 
         if (!res.ok) {
@@ -144,7 +160,7 @@ export default function ShareClient({ shareId }: { shareId: string }) {
     return () => {
       active = false;
     };
-  }, [shareId, signedToken]);
+  }, [resolvedShareId, signedToken]);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -254,7 +270,7 @@ export default function ShareClient({ shareId }: { shareId: string }) {
       const res = await fetch(`${API_BASE}/api/share/verify-password`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ shareId, password }),
+        body: JSON.stringify({ shareId: resolvedShareId, password }),
       });
       const payload = await res.json().catch(() => ({}));
 

@@ -15,6 +15,6 @@ export const createShareLink = async (options: ShareOptions) => {
 };
 
 export const revokeShareLink = async (id: string) => {
-    const { data } = await apiClient.delete(`/share/${id}`);
+    const { data } = await apiClient.delete(`/api/share/${id}`);
     return data;
 };

@@ -138,7 +138,11 @@ export default function ShareClient({ shareId }: { shareId: string }) {
         if (!res.ok) {
           if (!active) return;
           setShare(null);
-          setPasswordError(payload.error || 'Unable to open this share.');
+          if (res.status === 404 || res.status === 410) {
+            setPasswordError(payload.error || 'Cannot get data');
+          } else {
+            setPasswordError(payload.error || 'Unable to open this share.');
+          }
           return;
         }
 
@@ -149,8 +153,14 @@ export default function ShareClient({ shareId }: { shareId: string }) {
         if (payload.accessToken) {
           setSections({});
         }
-      } catch {
-        if (active) setPasswordError('Unable to reach the share service.');
+        if (active) {
+          // Check if backend intercepted standard frontend routing, causing 404 Cannot GET HTML
+          if (payload && typeof payload === 'string' && payload.includes('Cannot GET')) {
+            setPasswordError('Cannot get data');
+          } else {
+            setPasswordError('Unable to reach the share service.');
+          }
+        }
       } finally {
         if (active) setLoadingSession(false);
       }
@@ -251,7 +261,7 @@ export default function ShareClient({ shareId }: { shareId: string }) {
             expanded: true,
           }),
           loading: false,
-          error: 'Network error while loading files.',
+          error: payload && typeof payload === 'string' && payload.includes('Cannot GET') ? 'Cannot get data' : 'Network error while loading files.',
         },
       }));
     }
@@ -497,15 +507,15 @@ function FolderSection({
       [folder.path]: current[folder.path]
         ? { ...current[folder.path], expanded: !isExpanded }
         : {
-            path: folder.path,
-            breadcrumbs: [{ label: 'Root', path: '/' }],
-            folders: [],
-            files: [],
-            page: { offset: 0, limit: PAGE_SIZE, total: 0, hasMore: false },
-            expanded: true,
-            loading: false,
-            error: '',
-          },
+          path: folder.path,
+          breadcrumbs: [{ label: 'Root', path: '/' }],
+          folders: [],
+          files: [],
+          page: { offset: 0, limit: PAGE_SIZE, total: 0, hasMore: false },
+          expanded: true,
+          loading: false,
+          error: '',
+        },
     }));
 
     if (!isExpanded && !sections[folder.path]) {

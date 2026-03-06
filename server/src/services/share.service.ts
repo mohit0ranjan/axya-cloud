@@ -13,6 +13,7 @@ export type ShareRow = {
     created_at: string | Date;
     folder_name?: string | null;
     file_name?: string | null;
+    token?: string;
 };
 
 type ShareLinkPayload = {
@@ -121,7 +122,9 @@ const deriveShareBaseUrlFromRequest = (req?: Request): string => {
 };
 
 export const getShareUrl = (shareId: string, token: string, req?: Request): string => {
-    const baseUrl = SHARE_PUBLIC_BASE_URL || deriveShareBaseUrlFromRequest(req) || LOCAL_SHARE_WEB_BASE_URL;
+    // Force the use of WEB_PUBLIC_BASE_URL / SHARE_PUBLIC_BASE_URL
+    // If running locally without env, fallback to http://localhost:3001 (Next.js default)
+    const baseUrl = (process.env.SHARE_PUBLIC_BASE_URL || process.env.WEB_PUBLIC_BASE_URL || 'http://localhost:3001').trim().replace(/\/+$/, '');
     return `${baseUrl}/share/${encodeURIComponent(shareId)}?token=${encodeURIComponent(token)}`;
 };
 

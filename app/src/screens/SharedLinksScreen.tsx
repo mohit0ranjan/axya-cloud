@@ -40,7 +40,7 @@ export default function SharedLinksScreen({ navigation }: any) {
     const fetchLinks = async () => {
         setIsLoading(true);
         try {
-            const res = await apiClient.get('/share');
+            const res = await apiClient.get('/api/share');
             if (res.data.success) {
                 setLinks(res.data.links || []);
             }

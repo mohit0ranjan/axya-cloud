@@ -21,6 +21,7 @@ import {
     verifyShareAccessToken,
     verifyShareLinkToken,
 } from '../services/share.service';
+import { iterFileDownload } from '../services/telegram.service';
 
 const SHARE_TMP_DIR = path.join(os.tmpdir(), 'axya_share_tmp');
 const MAX_SHARE_DEPTH = 32;
@@ -61,9 +62,10 @@ const getShareById = async (shareId: string): Promise<ShareRow | null> => {
             s.allow_download,
             s.view_only,
             s.created_at,
+            s.token,
             fo.name AS folder_name,
             fi.file_name
-         FROM shares s
+         FROM shared_links s
          LEFT JOIN folders fo ON fo.id = s.folder_id
          LEFT JOIN files fi ON fi.id = s.file_id
          WHERE s.id = $1`,
@@ -73,6 +75,7 @@ const getShareById = async (shareId: string): Promise<ShareRow | null> => {
 };
 
 const verifyLinkAgainstShare = (share: ShareRow, token: string): boolean => {
+    if (share.token && token === share.token) return true;
     const payload = verifyShareLinkToken(token);
     if (!payload) return false;
     return payload.shareId === share.id && payload.folderId === share.folder_id && payload.fileId === share.file_id;
@@ -237,14 +240,14 @@ export const createShareLink = async (req: AuthRequest, res: Response) => {
 
         const passwordHash = password ? await bcrypt.hash(password, 12) : null;
         const result = await pool.query(
-            `INSERT INTO shares (folder_id, file_id, password_hash, expires_at, created_by, allow_download, view_only)
+            `INSERT INTO shared_links (folder_id, file_id, password_hash, expires_at, created_by, allow_download, view_only)
              VALUES ($1, $2, $3, $4, $5, $6, $7)
-             RETURNING id, folder_id, file_id, expires_at, created_at, allow_download, view_only`,
+             RETURNING id, folder_id, file_id, expires_at, created_at, allow_download, view_only, token`,
             [folderId, fileId, passwordHash, expiresAt, req.user.id, allowDownload, viewOnly]
         );
 
         const share = result.rows[0] as ShareRow;
-        const linkToken = signShareLinkToken(share, share.expires_at);
+        const linkToken = share.token || signShareLinkToken(share, share.expires_at);
         const shareUrl = getShareUrl(share.id, linkToken, req);
 
         return res.status(201).json({
@@ -276,9 +279,10 @@ export const listUserShares = async (req: AuthRequest, res: Response) => {
                 s.password_hash IS NOT NULL AS requires_password,
                 s.views,
                 s.download_count,
+                s.token,
                 fo.name AS folder_name,
                 fi.file_name
-             FROM shares s
+             FROM shared_links s
              LEFT JOIN folders fo ON fo.id = s.folder_id
              LEFT JOIN files fi ON fi.id = s.file_id
              WHERE s.created_by = $1
@@ -287,7 +291,7 @@ export const listUserShares = async (req: AuthRequest, res: Response) => {
         );
 
         const shares = result.rows.map((row: any) => {
-            const token = signShareLinkToken(row as ShareRow, row.expires_at);
+            const token = row.token || signShareLinkToken(row as ShareRow, row.expires_at);
             return {
                 ...row,
                 share_url: getShareUrl(row.id, token, req),
@@ -308,7 +312,7 @@ export const revokeShareLink = async (req: AuthRequest, res: Response) => {
 
     try {
         const result = await pool.query(
-            'DELETE FROM shares WHERE id = $1 AND created_by = $2 RETURNING id',
+            'DELETE FROM shared_links WHERE id = $1 AND created_by = $2 RETURNING id',
             [shareId, req.user.id]
         );
         if (result.rows.length === 0) {
@@ -336,7 +340,7 @@ export const getShareSession = async (req: Request, res: Response) => {
             return res.status(401).json({ success: false, error: 'Invalid signed link.' });
         }
 
-        await pool.query('UPDATE shares SET views = views + 1 WHERE id = $1', [shareId]).catch(() => undefined);
+        await pool.query('UPDATE shared_links SET views = views + 1 WHERE id = $1', [shareId]).catch(() => undefined);
 
         const shareMeta = await buildShareMetaPayload(share);
         if (share.password_hash) {
@@ -543,14 +547,14 @@ export const downloadSharedFile = async (req: Request, res: Response) => {
     try {
         const fileRes = share.file_id
             ? await pool.query(
-                `SELECT id, file_name, mime_type, telegram_message_id, telegram_chat_id
+                `SELECT id, file_name, file_size, mime_type, telegram_message_id, telegram_chat_id
                  FROM files
                  WHERE id = $1 AND user_id = $2 AND is_trashed = false`,
                 [share.file_id, share.created_by]
             )
             : await pool.query(
                 `${shareTreeCte}
-                 SELECT fi.id, fi.file_name, fi.mime_type, fi.telegram_message_id, fi.telegram_chat_id
+                 SELECT fi.id, fi.file_name, fi.file_size, fi.mime_type, fi.telegram_message_id, fi.telegram_chat_id
                  FROM files fi
                  JOIN share_tree st ON st.id = fi.folder_id
                  WHERE fi.id = $4
@@ -581,26 +585,48 @@ export const downloadSharedFile = async (req: Request, res: Response) => {
             return res.status(404).json({ success: false, error: 'File no longer available.' });
         }
 
-        const tmpPath = path.join(SHARE_TMP_DIR, `${share.id}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.bin`);
-        const downloadResult = await client.downloadMedia(messages[0] as any, { outputFile: tmpPath } as any);
-        const diskPath = typeof downloadResult === 'string' ? downloadResult : tmpPath;
-        if (!fs.existsSync(diskPath)) {
-            return res.status(500).json({ success: false, error: 'Failed to stream file.' });
+        if (disposition === 'attachment') {
+            await pool.query('UPDATE shared_links SET download_count = download_count + 1 WHERE id = $1', [share.id]).catch(() => undefined);
         }
 
-        if (disposition === 'attachment') {
-            await pool.query('UPDATE shares SET download_count = download_count + 1 WHERE id = $1', [share.id]).catch(() => undefined);
+        // Handle standard Range requests
+        const reqRange = req.headers.range;
+        const totalSize = Number(file.file_size) || 0; // Ensure file size is mapped or dynamically fetched
+
+        let offset = 0;
+        let limit = Infinity;
+
+        if (reqRange) {
+            const parts = reqRange.replace(/bytes=/, '').split('-');
+            offset = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+            limit = end - offset + 1;
+
+            res.status(206);
+            res.setHeader('Content-Range', `bytes ${offset}-${end}/${totalSize}`);
+            res.setHeader('Accept-Ranges', 'bytes');
+            res.setHeader('Content-Length', limit.toString());
         }
 
         res.setHeader('Content-Type', file.mime_type || 'application/octet-stream');
         res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(file.file_name)}"`);
 
-        const stream = fs.createReadStream(diskPath);
-        stream.on('close', () => safeUnlink(diskPath));
-        stream.on('error', () => safeUnlink(diskPath));
-        res.on('close', () => safeUnlink(diskPath));
-        return stream.pipe(res);
-    } catch {
-        return res.status(500).json({ success: false, error: 'Server error.' });
+        const streamer = iterFileDownload(client, messages[0] as any, offset, limit);
+
+        req.on('close', () => {
+            // Request aborted by client
+            res.end();
+        });
+
+        for await (const chunk of streamer) {
+            if (!res.write(chunk)) {
+                // Backpressure handling — wait for client to catch up
+                await new Promise(resolve => res.once('drain', resolve));
+            }
+        }
+        res.end();
+
+    } catch (e: any) {
+        return res.status(500).json({ success: false, error: e.message || 'Server error.' });
     }
 };

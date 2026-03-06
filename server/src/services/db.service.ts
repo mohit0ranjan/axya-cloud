@@ -64,6 +64,22 @@ export const initSchema = async () => {
               CHECK ((file_id IS NOT NULL AND folder_id IS NULL) OR (file_id IS NULL AND folder_id IS NOT NULL))
         );
 
+        CREATE TABLE IF NOT EXISTS shares (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            file_id UUID REFERENCES files(id) ON DELETE CASCADE,
+            folder_id UUID REFERENCES folders(id) ON DELETE CASCADE,
+            password_hash TEXT,
+            expires_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW(),
+            created_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            allow_download BOOLEAN DEFAULT true,
+            view_only BOOLEAN DEFAULT false,
+            views INT DEFAULT 0,
+            download_count INT DEFAULT 0,
+            CONSTRAINT shares_target_check
+              CHECK ((file_id IS NOT NULL AND folder_id IS NULL) OR (file_id IS NULL AND folder_id IS NOT NULL))
+        );
+
         CREATE TABLE IF NOT EXISTS shared_spaces (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             name TEXT NOT NULL,
@@ -199,6 +215,10 @@ export const initSchema = async () => {
     `ALTER TABLE shared_files ADD COLUMN IF NOT EXISTS folder_path TEXT NOT NULL DEFAULT '/'`,
     `CREATE INDEX IF NOT EXISTS idx_shared_spaces_owner ON shared_spaces (owner_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_shared_spaces_expires ON shared_spaces (expires_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_shares_created_by ON shares (created_by, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_shares_folder_id ON shares (folder_id) WHERE folder_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_shares_file_id ON shares (file_id) WHERE file_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_shares_expires_at ON shares (expires_at)`,
     `CREATE INDEX IF NOT EXISTS idx_shared_files_space ON shared_files (space_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_shared_files_space_folder ON shared_files (space_id, folder_path)`,
     `CREATE INDEX IF NOT EXISTS idx_access_logs_space ON access_logs (space_id, created_at DESC)`,

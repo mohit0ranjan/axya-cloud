@@ -55,9 +55,8 @@ export default function SharedLinksScreen({ navigation }: any) {
         fetchLinks();
     }, []);
 
-    const handleCopy = async (token: string) => {
-        const baseUrl = apiClient.defaults.baseURL?.replace('/api', '') || 'https://axya.cloud';
-        await Clipboard.setStringAsync(`${baseUrl}/share/${token}`);
+    const handleCopy = async (shareUrl: string) => {
+        await Clipboard.setStringAsync(shareUrl);
         Alert.alert('Copied!', 'Link copied to clipboard.');
     };
 
@@ -123,12 +122,12 @@ export default function SharedLinksScreen({ navigation }: any) {
                 </View>
 
                 <View style={[styles.actions, { borderTopColor: theme.colors.border }]}>
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => void handleCopy(item.token)}>
+                    <TouchableOpacity style={styles.actionBtn} onPress={() => void handleCopy(String(item.share_url || item.shareUrl || ''))}>
                         <LinkIcon color={theme.colors.primary} size={16} />
                         <Text style={[styles.actionText, { color: theme.colors.primary }]}>Copy Link</Text>
                     </TouchableOpacity>
                     <View style={[styles.divider, { backgroundColor: theme.colors.border }]} />
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => handleRevoke(item.token)}>
+                    <TouchableOpacity style={styles.actionBtn} onPress={() => handleRevoke(item.id)}>
                         <Trash2 color={theme.colors.danger} size={16} />
                         <Text style={[styles.actionText, { color: theme.colors.danger }]}>Revoke</Text>
                     </TouchableOpacity>

@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-    View, Text, StyleSheet, Modal, TouchableOpacity, TextInput,
+    View, Text, StyleSheet, Modal, TouchableOpacity,
     KeyboardAvoidingView, Platform, Switch, ActivityIndicator, Alert
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import { X, Copy, Link as LinkIcon, ShieldAlert } from 'lucide-react-native';
+import { X, Copy, Link as LinkIcon } from 'lucide-react-native';
 import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
 import { createShareLink } from '../services/api';
-import apiClient from '../services/apiClient';
 
 interface ShareFolderModalProps {
     visible: boolean;
@@ -25,8 +24,6 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
 
     // Settings
     const [allowDownload, setAllowDownload] = useState(true);
-    const [viewOnly, setViewOnly] = useState(false);
-    const [password, setPassword] = useState('');
     const [expiryHours, setExpiryHours] = useState<number | null>(null);
     const wasVisibleRef = useRef(false);
 
@@ -50,9 +47,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
 
         setIsLoading(false);
         setGeneratedLink('');
-        setPassword('');
         setAllowDownload(true);
-        setViewOnly(false);
         setExpiryHours(null);
     }, [visible]);
 
@@ -65,17 +60,13 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
             const options = {
                 file_id: !isFolder ? activeTarget.id : undefined,
                 folder_id: isFolder ? activeTarget.id : undefined,
-                password: password.trim() || undefined,
                 expires_in_hours: expiryHours || undefined,
                 allow_download: allowDownload,
-                view_only: viewOnly
             };
 
             const res = await createShareLink(options);
-            if (res.success && res.token) {
-                // Construct the full public URL
-                const baseUrl = apiClient.defaults.baseURL?.replace('/api', '') || 'https://axya.cloud';
-                setGeneratedLink(`${baseUrl}/share/${res.token}`);
+            if (res.success && (res.share_url || res.shareUrl)) {
+                setGeneratedLink(String(res.share_url || res.shareUrl));
             } else {
                 Alert.alert('Error', 'Failed to generate link.');
             }
@@ -124,7 +115,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
                     </View>
 
                     <Text style={styles.description}>
-                        Create a secure, public link to share this {activeTarget.type === 'folder' || activeTarget.result_type === 'folder' || activeTarget.mime_type === 'inode/directory' ? 'folder' : 'file'}.
+                        Create a secure public link to share this {activeTarget.type === 'folder' || activeTarget.result_type === 'folder' || activeTarget.mime_type === 'inode/directory' ? 'folder' : 'file'}.
                     </Text>
 
                     {generatedLink ? (
@@ -156,21 +147,6 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
                                     thumbColor="#fff"
                                 />
                             </View>
-
-                            <View style={styles.settingRow}>
-                                <View style={styles.settingText}>
-                                    <Text style={[styles.settingTitle, { color: theme.colors.textHeading }]}>Password Protect</Text>
-                                    <Text style={styles.settingSub}>Require a password to view</Text>
-                                </View>
-                            </View>
-                            <TextInput
-                                style={[styles.input, { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.textHeading }]}
-                                placeholder="Enter password (optional)"
-                                placeholderTextColor={theme.colors.textBody}
-                                value={password}
-                                onChangeText={setPassword}
-                                secureTextEntry
-                            />
 
                             <View style={[styles.settingRow, { marginTop: 16 }]}>
                                 <View style={styles.settingText}>
@@ -285,14 +261,6 @@ const styles = StyleSheet.create({
     settingSub: {
         fontSize: 13,
         color: '#6B7A99',
-    },
-    input: {
-        height: 48,
-        borderWidth: 1,
-        borderRadius: 12,
-        paddingHorizontal: 16,
-        fontSize: 15,
-        marginTop: 8,
     },
     pillContainer: {
         flexDirection: 'row',

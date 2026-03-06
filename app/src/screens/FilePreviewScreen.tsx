@@ -429,9 +429,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         if (!file?.id) return;
         setIsCreatingShare(true);
         try {
-            const res = await apiClient.post('/share', { file_id: file.id, expires_in_hours: 72 });
+            const res = await apiClient.post('/api/share/create', { file_id: file.id, expires_in_hours: 72 });
             if (res.data.success) {
-                const link = `${API_BASE}/share/${res.data.token}`;
+                const link = String(res.data.share_url || res.data.shareUrl || '');
                 setShareToken(link);
             }
         } catch { showToast('Could not create share link', 'error'); }

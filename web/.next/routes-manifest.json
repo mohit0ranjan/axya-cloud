@@ -26,6 +26,14 @@
         "nxtPspaceId": "nxtPspaceId"
       },
       "namedRegex": "^/s/(?<nxtPspaceId>[^/]+?)(?:/)?$"
+    },
+    {
+      "page": "/share/[shareId]",
+      "regex": "^/share/([^/]+?)(?:/)?$",
+      "routeKeys": {
+        "nxtPshareId": "nxtPshareId"
+      },
+      "namedRegex": "^/share/(?<nxtPshareId>[^/]+?)(?:/)?$"
     }
   ],
   "staticRoutes": [

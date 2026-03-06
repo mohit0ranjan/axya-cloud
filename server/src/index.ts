@@ -111,10 +111,6 @@ app.use('/api/share', shareApiRoutes);
 app.use('/spaces', spacesRoutes);
 app.use('/api/spaces', spacesRoutes);
 app.use('/api/files', spaceFilesRoutes);
-// Alias for shorter public share URLs
-app.use('/s', (req: Request, res: Response) => {
-    res.redirect(301, `/share${req.url}`);
-});
 app.use('/stream', streamRoutes);
 
 // ── Health Check (Render keep-alive friendly) ────────────────────────────────

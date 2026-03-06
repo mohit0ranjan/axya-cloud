@@ -118,11 +118,7 @@ export const readBearerToken = (req: Request): string | null => {
 };
 
 export const readShareAccessToken = (req: Request): string | null => {
-    const bearer = readBearerToken(req);
-    if (bearer) return bearer;
-    const fromQuery = req.query.accessToken;
-    if (typeof fromQuery === 'string' && fromQuery) return fromQuery;
-    return null;
+    return readBearerToken(req);
 };
 
 export const normalizeSharePath = (value: unknown): string => {

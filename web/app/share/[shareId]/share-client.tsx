@@ -59,6 +59,8 @@ type SectionState = SectionData & {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:3000';
 const PAGE_SIZE = 40;
+const buildShareDownloadUrl = (fileId: string, disposition: 'attachment' | 'inline') =>
+  `${API_BASE}/api/share/download/${encodeURIComponent(fileId)}?disposition=${disposition}`;
 
 const formatDate = (value: string | null | undefined) =>
   value
@@ -99,6 +101,7 @@ export default function ShareClient({ shareId }: { shareId: string }) {
   const [sortBy, setSortBy] = useState<'name' | 'date'>('name');
   const [order, setOrder] = useState<'asc' | 'desc'>('asc');
   const [sections, setSections] = useState<Record<string, SectionState>>({});
+  const [downloadingFileId, setDownloadingFileId] = useState('');
 
   useEffect(() => {
     const handle = window.setTimeout(() => setSearchQuery(searchInput.trim()), 250);
@@ -274,8 +277,27 @@ export default function ShareClient({ shareId }: { shareId: string }) {
     }
   };
 
-  const downloadUrl = (fileId: string, disposition: 'attachment' | 'inline') =>
-    `${API_BASE}/api/share/download/${encodeURIComponent(fileId)}?accessToken=${encodeURIComponent(accessToken)}&disposition=${disposition}`;
+  const downloadFile = async (file: FileItem) => {
+    if (!accessToken) return;
+    setDownloadingFileId(file.id);
+    try {
+      const res = await fetch(buildShareDownloadUrl(file.id, 'attachment'), {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = file.file_name || 'download';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+    } finally {
+      setDownloadingFileId('');
+    }
+  };
 
   const rootSection = sections['/'];
   const ready = Boolean(accessToken && rootSection);
@@ -380,12 +402,20 @@ export default function ShareClient({ shareId }: { shareId: string }) {
               files={rootSection.files}
               page={rootSection.page}
               onLoadMore={() => void loadSection('/', false)}
-              downloadUrl={downloadUrl}
+              accessToken={accessToken}
+              onDownloadFile={downloadFile}
+              downloadingFileId={downloadingFileId}
             />
           ) : (
             <>
               {share.type === 'file' ? (
-                <SingleFilePanel file={rootSection.files[0]} share={share} downloadUrl={downloadUrl} />
+                <SingleFilePanel
+                  file={rootSection.files[0]}
+                  share={share}
+                  accessToken={accessToken}
+                  onDownloadFile={downloadFile}
+                  downloadingFileId={downloadingFileId}
+                />
               ) : null}
 
               {share.type === 'folder' && rootSection.folders.length === 0 && rootSection.files.length === 0 ? (
@@ -400,7 +430,9 @@ export default function ShareClient({ shareId }: { shareId: string }) {
                     sections={sections}
                     setSections={setSections}
                     loadSection={loadSection}
-                    downloadUrl={downloadUrl}
+                    accessToken={accessToken}
+                    onDownloadFile={downloadFile}
+                    downloadingFileId={downloadingFileId}
                   />
                 ))}
 
@@ -410,7 +442,9 @@ export default function ShareClient({ shareId }: { shareId: string }) {
                   files={rootSection.files}
                   page={rootSection.page}
                   onLoadMore={() => void loadSection('/', false)}
-                  downloadUrl={downloadUrl}
+                  accessToken={accessToken}
+                  onDownloadFile={downloadFile}
+                  downloadingFileId={downloadingFileId}
                 />
               ) : null}
             </>
@@ -426,13 +460,17 @@ function FolderSection({
   sections,
   setSections,
   loadSection,
-  downloadUrl,
+  accessToken,
+  onDownloadFile,
+  downloadingFileId,
 }: {
   folder: FolderItem;
   sections: Record<string, SectionState>;
   setSections: Dispatch<SetStateAction<Record<string, SectionState>>>;
   loadSection: (path: string, reset: boolean) => Promise<void>;
-  downloadUrl: (fileId: string, disposition: 'attachment' | 'inline') => string;
+  accessToken: string;
+  onDownloadFile: (file: FileItem) => Promise<void>;
+  downloadingFileId: string;
 }) {
   const section = sections[folder.path];
   const expanded = section?.expanded ?? false;
@@ -482,7 +520,9 @@ function FolderSection({
               sections={sections}
               setSections={setSections}
               loadSection={loadSection}
-              downloadUrl={downloadUrl}
+              accessToken={accessToken}
+              onDownloadFile={onDownloadFile}
+              downloadingFileId={downloadingFileId}
             />
           ))}
           {section ? (
@@ -491,7 +531,9 @@ function FolderSection({
               files={section.files}
               page={section.page}
               onLoadMore={() => void loadSection(folder.path, false)}
-              downloadUrl={downloadUrl}
+              accessToken={accessToken}
+              onDownloadFile={onDownloadFile}
+              downloadingFileId={downloadingFileId}
             />
           ) : null}
         </div>
@@ -505,13 +547,17 @@ function SectionFiles({
   files,
   page,
   onLoadMore,
-  downloadUrl,
+  accessToken,
+  onDownloadFile,
+  downloadingFileId,
 }: {
   title: string;
   files: FileItem[];
   page: { total: number; hasMore: boolean };
   onLoadMore: () => void;
-  downloadUrl: (fileId: string, disposition: 'attachment' | 'inline') => string;
+  accessToken: string;
+  onDownloadFile: (file: FileItem) => Promise<void>;
+  downloadingFileId: string;
 }) {
   const imageFiles = files.filter(isImage);
   const listFiles = files.filter((file) => !isImage(file));
@@ -527,14 +573,14 @@ function SectionFiles({
         <div className={styles.galleryGrid}>
           {imageFiles.map((file) => (
             <article key={file.id} className={styles.imageCard}>
-              <img className={styles.imagePreview} src={downloadUrl(file.id, 'inline')} alt={file.file_name} loading="lazy" />
+              <ProtectedImage className={styles.imagePreview} fileId={file.id} fileName={file.file_name} accessToken={accessToken} />
               <div className={styles.fileFooter}>
                 <strong>{file.file_name}</strong>
                 <span>{formatSize(file.file_size)}</span>
               </div>
-              <a className={styles.downloadLink} href={downloadUrl(file.id, 'attachment')}>
-                Download
-              </a>
+              <button className={styles.downloadLink} type="button" onClick={() => void onDownloadFile(file)} disabled={downloadingFileId === file.id}>
+                {downloadingFileId === file.id ? 'Downloading...' : 'Download'}
+              </button>
             </article>
           ))}
         </div>
@@ -550,9 +596,9 @@ function SectionFiles({
                   {formatSize(file.file_size)} • {formatDate(file.created_at)}
                 </p>
               </div>
-              <a className={styles.downloadLink} href={downloadUrl(file.id, 'attachment')}>
-                Download
-              </a>
+              <button className={styles.downloadLink} type="button" onClick={() => void onDownloadFile(file)} disabled={downloadingFileId === file.id}>
+                {downloadingFileId === file.id ? 'Downloading...' : 'Download'}
+              </button>
             </article>
           ))}
         </div>
@@ -572,18 +618,19 @@ function SectionFiles({
 function SingleFilePanel({
   file,
   share,
-  downloadUrl,
+  accessToken,
+  onDownloadFile,
+  downloadingFileId,
 }: {
   file: FileItem | undefined;
   share: ShareMeta;
-  downloadUrl: (fileId: string, disposition: 'attachment' | 'inline') => string;
+  accessToken: string;
+  onDownloadFile: (file: FileItem) => Promise<void>;
+  downloadingFileId: string;
 }) {
   if (!file) {
     return <div className={styles.loadingPanel}>Loading shared file...</div>;
   }
-
-  const inlineUrl = downloadUrl(file.id, 'inline');
-  const downloadHref = downloadUrl(file.id, 'attachment');
 
   return (
     <section className={styles.singleFileShell}>
@@ -595,18 +642,14 @@ function SingleFilePanel({
             {formatSize(file.file_size)} • Shared by {share.owner} • {formatDate(file.created_at)}
           </p>
         </div>
-        <a className={styles.singleFileDownload} href={downloadHref}>
-          Download File
-        </a>
+        <button className={styles.singleFileDownload} type="button" onClick={() => void onDownloadFile(file)} disabled={downloadingFileId === file.id}>
+          {downloadingFileId === file.id ? 'Downloading...' : 'Download File'}
+        </button>
       </div>
 
       <div className={styles.singlePreview}>
-        {isImage(file) ? <img src={inlineUrl} alt={file.file_name} className={styles.singleImage} /> : null}
-        {isVideo(file) ? (
-          <video controls className={styles.singleVideo}>
-            <source src={inlineUrl} type={file.mime_type || 'video/mp4'} />
-          </video>
-        ) : null}
+        {isImage(file) ? <ProtectedImage fileId={file.id} fileName={file.file_name} accessToken={accessToken} className={styles.singleImage} /> : null}
+        {isVideo(file) ? <ProtectedVideo fileId={file.id} accessToken={accessToken} className={styles.singleVideo} mimeType={file.mime_type || 'video/mp4'} /> : null}
         {!isImage(file) && !isVideo(file) ? (
           <div className={styles.singleFallback}>
             <strong>{mimeLabel(file)}</strong>
@@ -615,5 +658,86 @@ function SingleFilePanel({
         ) : null}
       </div>
     </section>
+  );
+}
+
+function useProtectedObjectUrl(fileId: string, accessToken: string, disposition: 'attachment' | 'inline' = 'inline') {
+  const [objectUrl, setObjectUrl] = useState('');
+
+  useEffect(() => {
+    if (!fileId || !accessToken) {
+      setObjectUrl('');
+      return;
+    }
+
+    let active = true;
+    let createdUrl = '';
+    const abort = new AbortController();
+
+    const load = async () => {
+      try {
+        const res = await fetch(buildShareDownloadUrl(fileId, disposition), {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          signal: abort.signal,
+        });
+        if (!res.ok) return;
+        const blob = await res.blob();
+        createdUrl = URL.createObjectURL(blob);
+        if (active) {
+          setObjectUrl(createdUrl);
+        } else {
+          URL.revokeObjectURL(createdUrl);
+        }
+      } catch {
+        if (active) setObjectUrl('');
+      }
+    };
+
+    void load();
+    return () => {
+      active = false;
+      abort.abort();
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [accessToken, disposition, fileId]);
+
+  return objectUrl;
+}
+
+function ProtectedImage({
+  fileId,
+  fileName,
+  accessToken,
+  className,
+}: {
+  fileId: string;
+  fileName: string;
+  accessToken: string;
+  className: string;
+}) {
+  const src = useProtectedObjectUrl(fileId, accessToken, 'inline');
+  if (!src) {
+    return <div className={className} aria-label={`Loading ${fileName}`} />;
+  }
+  return <img className={className} src={src} alt={fileName} loading="lazy" />;
+}
+
+function ProtectedVideo({
+  fileId,
+  accessToken,
+  className,
+  mimeType,
+}: {
+  fileId: string;
+  accessToken: string;
+  className: string;
+  mimeType: string;
+}) {
+  const src = useProtectedObjectUrl(fileId, accessToken, 'inline');
+  if (!src) return <div className={className} />;
+  return (
+    <video controls className={className}>
+      <source src={src} type={mimeType} />
+    </video>
   );
 }

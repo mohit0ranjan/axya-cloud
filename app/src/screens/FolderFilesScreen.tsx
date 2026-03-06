@@ -413,13 +413,12 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             const tagsRes = await apiClient.get(`/files/${item.id}/tags`).catch(() => ({ data: { tags: [] } }));
             setInfoTags(tagsRes.data.tags || []);
 
-            // ✅ Share link: use POST /share → returns { token, expires_at }
-            // Server returns `token` not `link` — build full URL from token
+            // Share link comes from the modern share API response payload.
             if (item.result_type !== 'folder') {
-                const shareRes = await apiClient.post('/share', { file_id: item.id, expires_in_hours: 72 })
-                    .catch(() => ({ data: { token: null } }));
-                const tok = shareRes.data?.token;
-                setInfoShareLink(tok ? `${apiClient.defaults.baseURL?.replace('/api', '')}/share/${tok}` : null);
+                const shareRes = await apiClient.post('/api/share/create', { file_id: item.id, expires_in_hours: 72 })
+                    .catch(() => ({ data: { share_url: null, shareUrl: null } }));
+                const link = String(shareRes.data?.share_url || shareRes.data?.shareUrl || '');
+                setInfoShareLink(link || null);
             } else {
                 setInfoShareLink(null); // Folders don't have share links
             }

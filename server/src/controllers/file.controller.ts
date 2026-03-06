@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import os from 'os';
 import sharp from 'sharp';
 import { logger } from '../utils/logger';
+import { getShareUrl, signShareLinkToken, ShareRow } from '../services/share.service';
 
 // ── Allowed MIME types ─────────────────────────────────────────────────────
 const ALLOWED_TYPES = [
@@ -1048,16 +1049,41 @@ export const getFileDetails = async (req: AuthRequest, res: Response) => {
         const [fileRes, tagsRes, shareRes] = await Promise.all([
             pool.query(`SELECT f.*, fo.name as folder_name FROM files f LEFT JOIN folders fo ON fo.id = f.folder_id WHERE f.id = $1 AND f.user_id = $2`, [id, req.user.id]),
             pool.query(`SELECT tag FROM file_tags WHERE file_id = $1 AND user_id = $2 ORDER BY tag`, [id, req.user.id]),
-            pool.query(`SELECT token, expires_at, download_count, is_public FROM shared_links WHERE file_id = $1`, [id]),
+            pool.query(
+                `SELECT id, folder_id, file_id, expires_at, created_at, download_count, allow_download, view_only
+                 FROM shares
+                 WHERE file_id = $1 AND created_by = $2
+                 ORDER BY created_at DESC
+                 LIMIT 1`,
+                [id, req.user.id]
+            ),
         ]);
         if (fileRes.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
 
         const file = fileRes.rows[0];
+        const latestShare = shareRes.rows[0] as ShareRow | undefined;
+        const shareLink = latestShare
+            ? (() => {
+                const token = signShareLinkToken(latestShare, latestShare.expires_at);
+                const shareUrl = getShareUrl(latestShare.id, token);
+                return {
+                    id: latestShare.id,
+                    expires_at: latestShare.expires_at,
+                    download_count: Number((latestShare as any).download_count || 0),
+                    allow_download: Boolean((latestShare as any).allow_download),
+                    view_only: Boolean((latestShare as any).view_only),
+                    token,
+                    share_url: shareUrl,
+                    shareUrl,
+                };
+            })()
+            : null;
+
         res.json({
             success: true,
             file: { ...formatFileRow(file), folder_name: file.folder_name, sha256_hash: file.sha256_hash },
             tags: tagsRes.rows.map(r => r.tag),
-            shareLink: shareRes.rows[0] || null,
+            shareLink,
         });
     } catch (err: any) { res.status(500).json({ success: false, error: err.message }); }
 };

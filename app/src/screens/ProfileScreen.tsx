@@ -26,6 +26,8 @@ import { useToast } from '../context/ToastContext';
 import { useTheme } from '../context/ThemeContext';
 import apiClient from '../services/apiClient';
 import { SkeletonBlock } from '../ui/Skeleton';
+import Constants from 'expo-constants';
+import * as Updates from 'expo-updates';
 
 // ─── Action Icons for Activity ───────────────────────────────────────────────
 
@@ -96,6 +98,8 @@ export default function ProfileScreen({ navigation }: any) {
     const [isSigningOut, setIsSigningOut] = useState(false);
     const [stats, setStats] = useState<any>({});
     const [activity, setActivity] = useState<any[]>([]);
+    const appVersion = Constants.expoConfig?.version || 'dev';
+    const updateLabel = Updates.channel || Updates.runtimeVersion || 'default';
 
     // Fade-in animation
     const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -381,7 +385,7 @@ export default function ProfileScreen({ navigation }: any) {
                 </TouchableOpacity>
 
                 <Text style={[st.footerText, { color: C.muted }]}>
-                    Axya Cloud v1.0.0 (OTA Test 1)
+                    Axya Cloud v{appVersion} ({updateLabel})
                 </Text>
 
                 <View style={{ height: 40 }} />

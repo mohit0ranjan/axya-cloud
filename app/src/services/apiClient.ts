@@ -120,7 +120,7 @@ apiClient.interceptors.response.use(
         if (!config) return Promise.reject(error);
 
         config._retryCount = config._retryCount ?? 0;
-        config._maxRetries = config._maxRetries ?? 3;
+        config._maxRetries = config._maxRetries ?? 2;
         const serverRetryable = typeof (error.response?.data as any)?.retryable === 'boolean'
             ? Boolean((error.response?.data as any)?.retryable)
             : undefined;

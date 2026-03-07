@@ -8,8 +8,9 @@ const sanitizeUrl = (url: string | undefined, fallback: string): string => {
 
 // Default fallbacks (only used if environment variables are completely missing)
 const AZURE_DOMAIN = 'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net';
-const DEFAULT_FRONTEND_URL = process.env.NODE_ENV === 'production' ? AZURE_DOMAIN : 'http://localhost:3000';
-const DEFAULT_SERVER_URL = process.env.NODE_ENV === 'production' ? AZURE_DOMAIN : 'http://localhost:3000';
+// Default to the domain we actually host on to prevent failed redirects
+const DEFAULT_FRONTEND_URL = AZURE_DOMAIN;
+const DEFAULT_SERVER_URL = AZURE_DOMAIN;
 
 export const FRONTEND_BASE_URL = sanitizeUrl(
     process.env.FRONTEND_BASE_URL || process.env.SHARE_PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL,

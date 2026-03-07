@@ -85,14 +85,11 @@ const defaultAllowedOrigins = [
     'http://127.0.0.1:8080',
     'http://127.0.0.1:3000',
 ];
-const allowedOrigins = Array.from(
-    new Set(
-        (process.env.ALLOWED_ORIGINS || defaultAllowedOrigins.join(','))
-            .split(',')
-            .map((origin) => origin.trim())
-            .filter(Boolean)
-    )
-);
+const configuredAllowedOrigins = String(process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+const allowedOrigins = Array.from(new Set([...defaultAllowedOrigins, ...configuredAllowedOrigins]));
 const isAllowedOrigin = (origin?: string) => {
     if (!origin) return true;
     if (allowedOrigins.includes(origin)) return true;

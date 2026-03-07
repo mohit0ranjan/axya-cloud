@@ -76,20 +76,43 @@ app.use(helmet({
     },
 }));
 
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-app.use(cors({
+const defaultAllowedOrigins = [
+    'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net',
+    'http://localhost:8081',
+    'http://localhost:8080',
+    'http://localhost:3000',
+    'http://127.0.0.1:8081',
+    'http://127.0.0.1:8080',
+    'http://127.0.0.1:3000',
+];
+const allowedOrigins = Array.from(
+    new Set(
+        (process.env.ALLOWED_ORIGINS || defaultAllowedOrigins.join(','))
+            .split(',')
+            .map((origin) => origin.trim())
+            .filter(Boolean)
+    )
+);
+const isAllowedOrigin = (origin?: string) => {
+    if (!origin) return true;
+    if (allowedOrigins.includes(origin)) return true;
+    return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+};
+const corsOptions: cors.CorsOptions = {
     origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin)) {
+        if (isAllowedOrigin(origin)) {
             return callback(null, true);
         }
         logger.warn('backend.http', 'cors.blocked_origin', { origin });
         return callback(new Error('Origin not allowed by CORS'));
     },
     credentials: true,
-}));
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'X-Requested-With'],
+    optionsSuccessStatus: 204,
+};
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 
 // ── Body Parsing ────────────────────────────────────────────────────────────
 // ⚠️ Reduced from 50mb to 10mb — chunks are sent individually, not whole file

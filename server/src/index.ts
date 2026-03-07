@@ -117,11 +117,8 @@ const isAllowedOrigin = (origin?: string) => {
 };
 const corsOptions: cors.CorsOptions = {
     origin: (origin, callback) => {
-        if (isAllowedOrigin(origin)) {
-            return callback(null, true);
-        }
-        logger.warn('backend.http', 'cors.blocked_origin', { origin });
-        return callback(new Error('Origin not allowed by CORS'));
+        // Dynamically allow all origins to support mobile app and various frontends
+        callback(null, true);
     },
     credentials: true,
     methods: allowedMethods,
@@ -129,8 +126,8 @@ const corsOptions: cors.CorsOptions = {
     optionsSuccessStatus: 204,
 };
 app.use((req, res, next) => {
-    const requestOrigin = req.headers.origin;
-    if (requestOrigin && isAllowedOrigin(requestOrigin)) {
+    const requestOrigin = req.headers.origin || '*';
+    if (requestOrigin) {
         res.header('Access-Control-Allow-Origin', requestOrigin);
         res.header('Vary', 'Origin');
         res.header('Access-Control-Allow-Credentials', 'true');

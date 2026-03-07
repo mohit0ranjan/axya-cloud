@@ -134,12 +134,15 @@ export const generateOTP = async (phoneNumber: string) => {
         }, cleanPhone);
 
         const tempSession = client.session.save() as unknown as string;
-        await client.disconnect();
         return { phoneCodeHash, tempSession };
     } catch (e: any) {
         logger.error('backend.telegram', 'otp_generate_failed', { message: e.message, stack: e.stack });
-        try { await client.disconnect(); } catch { }
         throw e;
+    } finally {
+        try {
+            await client.disconnect();
+            await client.destroy(); // fully destroy unmanaged client
+        } catch { }
     }
 };
 

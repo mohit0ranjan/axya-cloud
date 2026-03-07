@@ -27,9 +27,16 @@ export const sendCode = async (req: Request, res: Response) => {
         } else if (errorMessage.includes('PHONE_NUMBER_INVALID')) {
             errorMessage = 'The phone number format is invalid. Use international format (e.g., +1234567890).';
             statusCode = 400;
+        } else if (errorMessage.includes('NETWORK') || errorMessage.includes('TIMEOUT')) {
+            errorMessage = `Network or Timeout Error communicating with Telegram: ${errorMessage}`;
+            statusCode = 504;
         }
 
-        res.status(statusCode).json({ success: false, error: errorMessage });
+        res.status(statusCode).json({
+            success: false,
+            error: errorMessage,
+            details: err.message, // Provide raw details to help debug Network Error
+        });
     }
 };
 

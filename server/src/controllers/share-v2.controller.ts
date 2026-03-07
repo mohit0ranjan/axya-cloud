@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import sharp from 'sharp';
 import crypto from 'crypto';
 import archiver from 'archiver';
 import fs from 'fs';
@@ -27,6 +28,7 @@ import { logShareV2Event } from '../services/share-v2/events.service';
 import { resolveTelegramMessageForShareItem } from '../services/share-v2/telegram-read.service';
 import { iterFileDownload } from '../services/telegram.service';
 import { sendApiError } from '../utils/apiError';
+import { FRONTEND_BASE_URL } from '../config/urls';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -40,22 +42,19 @@ const isUniqueViolation = (err: unknown): boolean => {
     return (err as { code?: string }).code === '23505';
 };
 
-const sanitizePublicBase = (value: string): string => String(value || '').trim().replace(/\/+$/, '');
-const DEFAULT_PUBLIC_BASE_URL = 'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net';
 const sanitizeDownloadName = (value: unknown, fallback: string): string => {
     const raw = String(value || '').trim();
     const normalized = raw.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim();
     return normalized || fallback;
 };
-const buildContentDisposition = (disposition: 'inline' | 'attachment', fileName: string): string => {
+const buildContentDisposition = (disposition: 'inline' | 'attachment' | 'thumbnail', fileName: string): string => {
     const safeAscii = fileName.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, '\\"');
-    return `${disposition}; filename="${safeAscii}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+    const headerDisp = disposition === 'thumbnail' ? 'inline' : disposition;
+    return `${headerDisp}; filename="${safeAscii}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 };
 
 const deriveShareBaseUrlFromRequest = (_req: Request): string => {
-    const explicit = sanitizePublicBase(process.env.SHARE_PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL || DEFAULT_PUBLIC_BASE_URL);
-    if (explicit) return explicit;
-    return DEFAULT_PUBLIC_BASE_URL;
+    return FRONTEND_BASE_URL;
 };
 
 const isShareExpired = (expiresAt: string | Date | null): boolean => {
@@ -672,9 +671,12 @@ export const createShareItemTicketV2 = async (req: Request, res: Response) => {
         return sendApiError(res, 400, 'invalid_request', 'Invalid item id.', { retryable: false });
     }
 
-    const disposition = String(req.body?.disposition || req.query.disposition || 'inline').toLowerCase() === 'attachment'
+    const reqDisposition = String(req.body?.disposition || req.query.disposition || 'inline').toLowerCase();
+    const disposition = reqDisposition === 'attachment'
         ? 'attachment'
-        : 'inline';
+        : reqDisposition === 'thumbnail'
+            ? 'thumbnail'
+            : 'inline';
 
     if (disposition === 'inline' && !share.allow_preview) {
         return sendApiError(res, 403, 'forbidden', 'Preview is disabled for this share.', { retryable: false });
@@ -684,9 +686,14 @@ export const createShareItemTicketV2 = async (req: Request, res: Response) => {
     }
 
     try {
-        const itemRes = await pool.query('SELECT id FROM share_items_v2 WHERE id = $1 AND share_id = $2', [itemId, share.id]);
+        const itemRes = await pool.query('SELECT id, size_bytes FROM share_items_v2 WHERE id = $1 AND share_id = $2', [itemId, share.id]);
         if (itemRes.rowCount === 0) {
             return sendApiError(res, 404, 'not_found', 'Shared item not found.', { retryable: false });
+        }
+
+        const sizeBytes = Number(itemRes.rows[0].size_bytes || 0);
+        if (disposition === 'thumbnail' && sizeBytes > 20 * 1024 * 1024) {
+            return sendApiError(res, 400, 'thumbnail_unavailable', 'File is too large for thumbnail generation.', { retryable: false });
         }
 
         const ticket = signShareV2Ticket({
@@ -800,6 +807,11 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
 
         res.setHeader('Content-Type', mimeType);
         res.setHeader('Content-Disposition', buildContentDisposition(payload.disposition, resolvedFileName));
+
+        if (payload.disposition === 'thumbnail') {
+            res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache thumbnails for 24h
+        }
+
         req.socket.setTimeout(5 * 60 * 1000);
         req.socket.on('timeout', () => req.destroy(new Error('stream_timeout')));
 
@@ -815,6 +827,32 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
             clientClosed = true;
             res.end();
         });
+
+        if (payload.disposition === 'thumbnail' && mimeType.startsWith('image/')) {
+            const MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024; // 20 MB
+            if (totalSize > MAX_THUMBNAIL_BYTES) {
+                return sendApiError(res, 400, 'thumbnail_unavailable', 'File too large for thumbnail.', { retryable: false });
+            }
+            try {
+                // Pipe stream through Sharp
+                const transformer = sharp({ failOnError: false })
+                    .resize(480, 480, { fit: 'inside', withoutEnlargement: true })
+                    .toFormat('webp', { quality: 50, effort: 3 });
+
+                // We need to set a different content type for Thumbnails (WebP) and drop Content-Length since Sharp compresses it dynamically
+                res.setHeader('Content-Type', 'image/webp');
+                res.removeHeader('Content-Length');
+                res.removeHeader('Content-Range');
+                if (res.statusCode === 206) res.status(200);
+
+                const nodeStream = require('stream').Readable.from(stream);
+                nodeStream.pipe(transformer).pipe(res);
+                return;
+            } catch (sharpErr: any) {
+                console.warn(`[Thumbnail Share] Sharp compression failed: ${sharpErr.message}`);
+                // Fallback to normal stream below
+            }
+        }
 
         for await (const chunk of stream) {
             if (clientClosed) break;

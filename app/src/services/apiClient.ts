@@ -4,22 +4,7 @@ import { serverStatusManager } from '../context/ServerStatusContext';
 import { logger } from '../utils/logger';
 import { getSecureValue, SECURE_KEYS } from '../utils/secureStorage';
 
-const PRODUCTION_URL = 'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net';
-
-const sanitizeApiBase = (value: string | undefined): string => {
-    const trimmed = String(value || '').trim().replace(/\/+$/, '');
-    if (!trimmed) return '';
-    // Keep a single canonical base and let call sites decide route prefixes.
-    return trimmed.replace(/\/api$/i, '');
-};
-
-const ENV_API_BASE = sanitizeApiBase(process.env.EXPO_PUBLIC_API_URL);
-const DEV_API_BASE = sanitizeApiBase(process.env.EXPO_PUBLIC_DEV_API_URL);
-export const API_BASE: string = (() => {
-    if (__DEV__ && DEV_API_BASE) return DEV_API_BASE;
-    if (ENV_API_BASE) return ENV_API_BASE;
-    return PRODUCTION_URL;
-})();
+import { API_URL as API_BASE } from '../config/urls';
 
 interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
     reqId?: string;

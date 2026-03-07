@@ -17,6 +17,7 @@ import streamRoutes from './routes/stream.routes';
 import { logger } from './utils/logger';
 import { getDynamicClient } from './services/telegram.service';
 import { sendApiError } from './utils/apiError';
+import { FRONTEND_BASE_URL, SERVER_BASE_URL } from './config/urls';
 
 dotenv.config();
 
@@ -76,24 +77,43 @@ app.use(helmet({
     },
 }));
 
-const defaultAllowedOrigins = [
-    'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net',
-    'http://localhost:8081',
-    'http://localhost:8080',
+const defaultAllowedOrigins = isProduction ? [
+    'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net'
+] : [
     'http://localhost:3000',
-    'http://127.0.0.1:8081',
-    'http://127.0.0.1:8080',
-    'http://127.0.0.1:3000',
+    'http://localhost:3001',
+    'http://localhost:8081',
 ];
 const configuredAllowedOrigins = String(process.env.ALLOWED_ORIGINS || '')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
-const allowedOrigins = Array.from(new Set([...defaultAllowedOrigins, ...configuredAllowedOrigins]));
+
+let frontendOrigin = '';
+try {
+    if (FRONTEND_BASE_URL) frontendOrigin = new URL(FRONTEND_BASE_URL).origin;
+} catch {
+    logger.warn('backend.http', 'cors.invalid_frontend_base_url', { value: FRONTEND_BASE_URL });
+}
+
+let serverOrigin = '';
+try {
+    if (SERVER_BASE_URL) serverOrigin = new URL(SERVER_BASE_URL).origin;
+} catch {
+    logger.warn('backend.http', 'cors.invalid_server_base_url', { value: SERVER_BASE_URL });
+}
+
+const allowedOrigins = Array.from(
+    new Set([...defaultAllowedOrigins, ...configuredAllowedOrigins, frontendOrigin, serverOrigin].filter(Boolean))
+);
+const allowedMethods = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+const defaultAllowedHeaders = ['Authorization', 'Content-Type', 'X-Requested-With'];
 const isAllowedOrigin = (origin?: string) => {
     if (!origin) return true;
-    if (allowedOrigins.includes(origin)) return true;
-    return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+    if (!isProduction && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) {
+        return true;
+    }
+    return allowedOrigins.includes(origin);
 };
 const corsOptions: cors.CorsOptions = {
     origin: (origin, callback) => {
@@ -104,10 +124,33 @@ const corsOptions: cors.CorsOptions = {
         return callback(new Error('Origin not allowed by CORS'));
     },
     credentials: true,
-    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Authorization', 'Content-Type', 'X-Requested-With'],
+    methods: allowedMethods,
+    allowedHeaders: defaultAllowedHeaders,
     optionsSuccessStatus: 204,
 };
+app.use((req, res, next) => {
+    const requestOrigin = req.headers.origin;
+    if (requestOrigin && isAllowedOrigin(requestOrigin)) {
+        res.header('Access-Control-Allow-Origin', requestOrigin);
+        res.header('Vary', 'Origin');
+        res.header('Access-Control-Allow-Credentials', 'true');
+        res.header('Access-Control-Allow-Methods', allowedMethods.join(', '));
+
+        const requestedHeaders = req.headers['access-control-request-headers'];
+        res.header(
+            'Access-Control-Allow-Headers',
+            typeof requestedHeaders === 'string' && requestedHeaders.trim()
+                ? requestedHeaders
+                : defaultAllowedHeaders.join(', ')
+        );
+    }
+
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(204);
+    }
+
+    return next();
+});
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 
@@ -144,7 +187,7 @@ app.use((req, res, next) => {
 // ✅ Raised from 200 to 1000 — 100 photos × (init + chunks + complete) = 400+ requests
 const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 1000,                 // ✅ was 200 — too strict for batch uploads
+    max: 2500,                 // ✅ was 200, then 1000 — raised for 500+ item share grids
     standardHeaders: true,
     legacyHeaders: false,
     skip: (req) => {

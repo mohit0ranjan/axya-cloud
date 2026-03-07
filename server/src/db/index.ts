@@ -3,7 +3,11 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 // Since we're mocking local storage first, check if a connection string is provided
-// If not, we can assume a basic default or just rely on the env var being set later.
+// In production we MUST NOT fallback to a local Axya database.
+if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL is required in production.');
+}
+
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/Axya',
 });

@@ -39,12 +39,9 @@ const sanitizeShareBase = (value: string): string => {
     if (!trimmed) return '';
     return trimmed.replace(/\/api$/i, '');
 };
-const DEFAULT_PUBLIC_BASE = 'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net';
-
 const EXTERNAL_SHARE_BASE = sanitizeShareBase(
     process.env.EXPO_PUBLIC_SHARE_BASE_URL
-    || process.env.EXPO_PUBLIC_API_URL
-    || DEFAULT_PUBLIC_BASE
+    || API_BASE
 );
 
 const normalizeExternalShareUrl = (rawUrl: string): string => {

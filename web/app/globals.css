@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
   /* Legacy Aliases */
   --bg: #f8f9fc;
@@ -112,15 +116,23 @@ button {
   background: none;
 }
 
-input, select {
+input,
+select {
   font-family: inherit;
   font-size: inherit;
 }
 
 /* Skeleton Loading Animation */
 @keyframes skeleton-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
 }
 
 .skeleton {
@@ -132,8 +144,13 @@ input, select {
 
 /* Fade In Animation */
 @keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .fade-in {
@@ -146,6 +163,7 @@ input, select {
     opacity: 0;
     transform: translateY(8px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);

@@ -11,7 +11,7 @@ export type ShareV2TicketPayload = {
     typ: 'share_v2_ticket';
     shareId: string;
     itemId: string;
-    disposition: 'inline' | 'attachment';
+    disposition: 'inline' | 'attachment' | 'thumbnail';
 };
 
 const SESSION_SECRET = process.env.SHARE_V2_SESSION_SECRET || process.env.JWT_SECRET || 'share_v2_session_secret';
@@ -71,7 +71,7 @@ export const verifyShareV2Ticket = (token: string): ShareV2TicketPayload | null 
     try {
         const payload = jwt.verify(token, TICKET_SECRET) as ShareV2TicketPayload;
         if (!payload || payload.typ !== 'share_v2_ticket' || !payload.shareId || !payload.itemId) return null;
-        if (payload.disposition !== 'inline' && payload.disposition !== 'attachment') return null;
+        if (payload.disposition !== 'inline' && payload.disposition !== 'attachment' && payload.disposition !== 'thumbnail') return null;
         return payload;
     } catch {
         return null;

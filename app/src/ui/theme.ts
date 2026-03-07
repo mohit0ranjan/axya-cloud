@@ -93,14 +93,31 @@ export const theme = {
         card: { shadowColor: '#1A1F36', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 }
     },
 
-    // ── 2.5 Typography Hierarchy ──
+    // ── 2.5 Typography Hierarchy (Modern, Lighter) ──
     typography: {
-        hero: { fontSize: 32, fontWeight: '700' as const, letterSpacing: -0.5 },
-        title: { fontSize: 20, fontWeight: '600' as const },
-        subtitle: { fontSize: 16, fontWeight: '600' as const },
+        hero: { fontSize: 28, fontWeight: '600' as const, letterSpacing: -0.5 },
+        title: { fontSize: 18, fontWeight: '600' as const },
+        subtitle: { fontSize: 16, fontWeight: '500' as const },
         body: { fontSize: 15, fontWeight: '400' as const },
         caption: { fontSize: 13, fontWeight: '400' as const },
         metadata: { fontSize: 12, fontWeight: '500' as const, color: '#8892A4' },
+    },
+
+    // ── 2.6 Card Presets (Standardized) ──
+    cardPresets: {
+        file: {
+            paddingVertical: 12,
+            paddingHorizontal: 0,
+        },
+        folder: {
+            padding: 16,
+            borderRadius: 16,
+            minHeight: 120,
+        },
+        modal: {
+            borderRadius: 24,
+            padding: 24,
+        },
     },
 
     // ── 1.1 Motion System ──

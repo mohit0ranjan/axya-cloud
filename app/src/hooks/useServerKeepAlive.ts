@@ -16,13 +16,18 @@ const PING_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 export function useServerKeepAlive() {
     const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const appStateRef = useRef<AppStateStatus>('active');
+    const pingInFlightRef = useRef(false);
 
     const ping = async () => {
+        if (pingInFlightRef.current) return;
+        pingInFlightRef.current = true;
         try {
-            await apiClient.get('/health');
+            await apiClient.get('/health', { _maxRetries: 0 } as any);
             console.log('🏓 [KeepAlive] Server pinged successfully');
         } catch {
             // Silent — server might be waking. apiClient already shows the overlay.
+        } finally {
+            pingInFlightRef.current = false;
         }
     };
 

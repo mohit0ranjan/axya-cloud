@@ -1,23 +1,23 @@
 import axios, { AxiosInstance, InternalAxiosRequestConfig, AxiosError } from 'axios';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
 import { shouldRetry, sleep } from '../utils/retry';
 import { serverStatusManager } from '../context/ServerStatusContext';
 import { logger } from '../utils/logger';
+import { getSecureValue, SECURE_KEYS } from '../utils/secureStorage';
 
 const PRODUCTION_URL = 'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net';
-const PORT = '3000';
-const LOCAL_NATIVE_DEV_URL = Platform.OS === 'android'
-    ? `http://10.0.2.2:${PORT}`
-    : `http://localhost:${PORT}`;
 
-const ENV_API_BASE = process.env.EXPO_PUBLIC_API_URL?.trim();
-export const API_BASE: string = ENV_API_BASE || (() => {
-    if (Platform.OS === 'web') return `http://localhost:${PORT}`;
-    if (__DEV__) {
-        console.warn('[API] EXPO_PUBLIC_API_URL is missing, using local native dev server URL.');
-        return LOCAL_NATIVE_DEV_URL;
-    }
+const sanitizeApiBase = (value: string | undefined): string => {
+    const trimmed = String(value || '').trim().replace(/\/+$/, '');
+    if (!trimmed) return '';
+    // Keep a single canonical base and let call sites decide route prefixes.
+    return trimmed.replace(/\/api$/i, '');
+};
+
+const ENV_API_BASE = sanitizeApiBase(process.env.EXPO_PUBLIC_API_URL);
+const DEV_API_BASE = sanitizeApiBase(process.env.EXPO_PUBLIC_DEV_API_URL);
+export const API_BASE: string = (() => {
+    if (__DEV__ && DEV_API_BASE) return DEV_API_BASE;
+    if (ENV_API_BASE) return ENV_API_BASE;
     return PRODUCTION_URL;
 })();
 
@@ -26,6 +26,7 @@ interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
     _retryCount?: number;
     _maxRetries?: number;
     _startedAt?: number;
+    _allowRetry?: boolean;
 }
 
 const apiClient = axios.create({
@@ -45,7 +46,7 @@ const requestTimers = new Map<string, NodeJS.Timeout>();
 
 const injectTokenAndLog = async (config: CustomAxiosRequestConfig) => {
     try {
-        let token = await AsyncStorage.getItem('jwtToken');
+        const token = await getSecureValue(SECURE_KEYS.JWT_TOKEN);
         if (token) {
             if (!config.headers) config.headers = {} as any;
             (config.headers as any).Authorization = `Bearer ${token}`;
@@ -81,6 +82,12 @@ const clearWakingTimer = (reqId?: string) => {
     serverStatusManager.setWaking(false);
 };
 
+const shouldRetryRequestMethod = (config: CustomAxiosRequestConfig): boolean => {
+    const method = String(config.method || 'get').toUpperCase();
+    if (config._allowRetry === true) return true;
+    return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+};
+
 apiClient.interceptors.request.use(injectTokenAndLog as any, Promise.reject);
 uploadClient.interceptors.request.use(injectTokenAndLog as any, Promise.reject);
 
@@ -114,10 +121,22 @@ apiClient.interceptors.response.use(
 
         config._retryCount = config._retryCount ?? 0;
         config._maxRetries = config._maxRetries ?? 3;
+        const serverRetryable = typeof (error.response?.data as any)?.retryable === 'boolean'
+            ? Boolean((error.response?.data as any)?.retryable)
+            : undefined;
+        const retryAfterSec = Number((error.response?.data as any)?.retry_after_seconds || 0);
 
-        if (shouldRetry(error) && config._retryCount < config._maxRetries) {
+        if (
+            shouldRetryRequestMethod(config)
+            && (serverRetryable !== false)
+            && shouldRetry(error)
+            && config._retryCount < config._maxRetries
+        ) {
             config._retryCount += 1;
-            const delay = Math.pow(2, config._retryCount) * 1000;
+            const baseDelay = Math.pow(2, config._retryCount) * 1000;
+            const jitterMs = Math.floor(Math.random() * 350);
+            const retryAfterMs = retryAfterSec > 0 ? retryAfterSec * 1000 : 0;
+            const delay = Math.max(baseDelay + jitterMs, retryAfterMs);
             console.warn(`⏳ [API Retry] ${config.url} failed. Retrying in ${delay / 1000}s...`);
 
             serverStatusManager.setWaking(true, `Retrying connection... (${config._retryCount}/${config._maxRetries})`);

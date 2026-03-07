@@ -12,6 +12,9 @@ export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, 
  * - Retries on 408 Request Timeout
  */
 export const shouldRetry = (error: AxiosError): boolean => {
+    const retryableFlag = (error.response?.data as any)?.retryable;
+    if (retryableFlag === false) return false;
+
     // 1. Network errors (no response from server)
     if (!error.response && error.code !== 'ECONNABORTED') {
         return true;

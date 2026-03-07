@@ -7,8 +7,7 @@ dotenv.config();
 const connectionString = process.env.DATABASE_URL;
 
 if (!connectionString) {
-    console.error('❌ CRITICAL: DATABASE_URL is not defined in environment variables.');
-    console.error('💡 If deploying to Render, add it in the "Environment" tab.');
+    throw new Error('DATABASE_URL is not defined. Server cannot start without a database connection.');
 }
 
 // Silence PG warnings about SSL modes
@@ -30,7 +29,7 @@ const pool = new Pool({
         ? { rejectUnauthorized: false }
         : false,
     max: 5,                        // ✅ was unlimited — 5 is plenty for a single Render dyno
-    min: 1,                        // Keep 1 warm connection to avoid cold-start lag
+    min: 0,                        // Avoid holding idle connections on low-traffic instances
     idleTimeoutMillis: 20_000,     // ✅ Release idle connections after 20s
     connectionTimeoutMillis: 10_000, // 10s to get a connection from pool
     allowExitOnIdle: false,        // Don't exit during keep-alive between requests
@@ -58,3 +57,4 @@ pool.on('connect', () => {
 });
 
 export default pool;
+

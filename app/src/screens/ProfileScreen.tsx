@@ -1,17 +1,4 @@
-/**
- * ProfileScreen.tsx — Premium minimal profile & settings screen
- *
- * ✅ Large centered circular avatar
- * ✅ Clean vertical spacing (24–32px sections)
- * ✅ Soft card sections (borderRadius 20, light shadow, 20px padding)
- * ✅ Menu items: left icon, title, right chevron, subtle dividers
- * ✅ Separated logout section with red accent
- * ✅ Dark mode compatible via ThemeContext
- * ✅ Press scale micro-interactions (0.97)
- * ✅ Smooth fade-in on mount
- */
-
-import React, { useState, useEffect, useContext, useRef, useCallback } from 'react';
+﻿import React, { useState, useEffect, useContext, useRef, useCallback } from 'react';
 import {
     View, Text, StyleSheet, SafeAreaView,
     TouchableOpacity, Alert, Platform, Animated, Pressable,
@@ -19,7 +6,7 @@ import {
 import {
     ArrowLeft, LogOut, Star,
     Trash2, ChevronRight, Activity, Shield,
-    Settings, FolderOpen, BarChart2,
+    Settings, FolderOpen, BarChart2, HardDrive,
 } from 'lucide-react-native';
 import { AuthContext } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -29,14 +16,15 @@ import { SkeletonBlock } from '../ui/Skeleton';
 import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
 
-// ─── Action Icons for Activity ───────────────────────────────────────────────
-
 const ACTION_ICONS: Record<string, string> = {
-    upload: '⬆️', delete_permanent: '🗑️', trash: '🗂️',
-    restore: '↩️', rename: '✏️', create_folder: '📁', move: '📦',
+    upload: 'UP',
+    delete_permanent: 'DEL',
+    trash: 'TR',
+    restore: 'RE',
+    rename: 'RN',
+    create_folder: 'FD',
+    move: 'MV',
 };
-
-// ─── Pressable Row with scale micro-interaction ──────────────────────────────
 
 function PressableRow({
     children,
@@ -53,8 +41,8 @@ function PressableRow({
 
     const onPressIn = () => {
         Animated.spring(scale, {
-            toValue: 0.97,
-            tension: 300,
+            toValue: 0.98,
+            tension: 280,
             friction: 20,
             useNativeDriver: true,
         }).start();
@@ -63,7 +51,7 @@ function PressableRow({
     const onPressOut = () => {
         Animated.spring(scale, {
             toValue: 1,
-            tension: 300,
+            tension: 280,
             friction: 20,
             useNativeDriver: true,
         }).start();
@@ -87,8 +75,6 @@ function PressableRow({
     );
 }
 
-// ─── Main Screen ─────────────────────────────────────────────────────────────
-
 export default function ProfileScreen({ navigation }: any) {
     const authCtx = useContext(AuthContext);
     const { showToast } = useToast();
@@ -101,15 +87,14 @@ export default function ProfileScreen({ navigation }: any) {
     const appVersion = Constants.expoConfig?.version || 'dev';
     const updateLabel = Updates.channel || Updates.runtimeVersion || 'default';
 
-    // Fade-in animation
     const fadeAnim = useRef(new Animated.Value(0)).current;
     const slideAnim = useRef(new Animated.Value(20)).current;
 
     useEffect(() => {
         fetchAll();
         Animated.parallel([
-            Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }),
-            Animated.timing(slideAnim, { toValue: 0, duration: 500, useNativeDriver: true }),
+            Animated.timing(fadeAnim, { toValue: 1, duration: 420, useNativeDriver: true }),
+            Animated.timing(slideAnim, { toValue: 0, duration: 420, useNativeDriver: true }),
         ]).start();
     }, []);
 
@@ -122,7 +107,11 @@ export default function ProfileScreen({ navigation }: any) {
             ]);
             if (statsRes.data?.success) setStats(statsRes.data);
             if (actRes.data?.success) setActivity(actRes.data.activity.slice(0, 20));
-        } catch { } finally { setLoading(false); }
+        } catch {
+            // keep previous values
+        } finally {
+            setLoading(false);
+        }
     };
 
     const confirmLogout = useCallback(async () => {
@@ -144,14 +133,6 @@ export default function ProfileScreen({ navigation }: any) {
         ]);
     }, [confirmLogout]);
 
-    const formatSize = (bytes: number) => {
-        if (!bytes) return '0 B';
-        const k = 1024, s = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + s[i];
-    };
-
-    /** Split storage into { value, unit } with clean rounding */
     const formatStorageSplit = (bytes: number): { value: string; unit: string } => {
         if (!bytes) return { value: '0', unit: 'B' };
         const mb = bytes / (1024 * 1024);
@@ -173,13 +154,21 @@ export default function ProfileScreen({ navigation }: any) {
     const userPhone = authCtx.user?.phone || '';
     const avatarLetter = (userName[0] || '?').toUpperCase();
 
+    const storage = loading ? { value: '-', unit: '' } : formatStorageSplit(stats.totalBytes || 0);
+    const handleBack = () => {
+        if (navigation?.canGoBack?.()) {
+            navigation.goBack();
+            return;
+        }
+        navigation?.navigate?.('MainTabs', { screen: 'Home' });
+    };
+
     return (
         <SafeAreaView style={[st.root, { backgroundColor: C.background }]}>
-            {/* ── Header ── */}
             <View style={st.header}>
                 <TouchableOpacity
                     style={[st.headerBtn, { backgroundColor: C.card }]}
-                    onPress={() => navigation.goBack()}
+                    onPress={handleBack}
                     activeOpacity={0.7}
                 >
                     <ArrowLeft color={C.textHeading} size={20} />
@@ -193,70 +182,83 @@ export default function ProfileScreen({ navigation }: any) {
                 contentContainerStyle={st.scroll}
                 style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
             >
-                {/* ────────────────────────────────────────────────────────────
-                    AVATAR + NAME SECTION
-                ──────────────────────────────────────────────────────────── */}
-                <View style={st.avatarSection}>
-                    <View style={[st.avatarRing, { borderColor: isDark ? C.primary : '#D6DFFE' }]}>
-                        <View style={[st.avatarCircle, { backgroundColor: C.primary }]}>
-                            <Text style={st.avatarLetter}>{avatarLetter}</Text>
+                <View
+                    style={[
+                        st.profileCard,
+                        {
+                            backgroundColor: C.card,
+                            borderColor: C.border,
+                        },
+                        theme.shadows.card,
+                    ]}
+                >
+                    <View style={st.profileTopRow}>
+                        <View style={[st.avatarRing, { borderColor: isDark ? C.primary : '#D6DFFE' }]}>
+                            <View style={[st.avatarCircle, { backgroundColor: C.primary }]}>
+                                <Text style={st.avatarLetter}>{avatarLetter}</Text>
+                            </View>
                         </View>
-                    </View>
 
-                    {loading ? (
-                        <View style={{ alignItems: 'center', marginTop: 16 }}>
-                            <SkeletonBlock width={140} height={18} borderRadius={8} />
-                            <SkeletonBlock width={100} height={13} borderRadius={6} style={{ marginTop: 8 }} />
-                        </View>
-                    ) : (
-                        <>
-                            <Text style={[st.userName, { color: C.textHeading }]}>{userName}</Text>
-                            <Text style={[st.userSub, { color: C.muted }]}>{userPhone}</Text>
-                        </>
-                    )}
-                </View>
-
-                {/* ────────────────────────────────────────────────────────────
-                    STORAGE STATS
-                ──────────────────────────────────────────────────────────── */}
-                <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
-                    <View style={st.statsRow}>
-                        <StatItem
-                            label="Files"
-                            value={loading ? '—' : String(stats.totalFiles ?? 0)}
-                            color={C.primary}
-                        />
-                        <View style={[st.statDivider, { backgroundColor: C.border }]} />
-                        {(() => {
-                            const storage = loading ? { value: '—', unit: '' } : formatStorageSplit(stats.totalBytes || 0);
-                            return (
-                                <StatItem
-                                    label="Storage Used"
-                                    value={storage.value}
-                                    unit={storage.unit}
-                                    color={C.textHeading}
-                                />
-                            );
-                        })()}
-                        <View style={[st.statDivider, { backgroundColor: C.border }]} />
-                        <StatItem
-                            label="Starred"
-                            value={loading ? '—' : String(stats.starredCount ?? 0)}
-                            color={C.accent}
-                        />
-                        <View style={[st.statDivider, { backgroundColor: C.border }]} />
-                        <StatItem
-                            label="Trash"
-                            value={loading ? '—' : String(stats.trashCount ?? 0)}
-                            color={C.danger}
-                        />
+                        {loading ? (
+                            <View style={{ marginLeft: 14, flex: 1 }}>
+                                <SkeletonBlock width={160} height={18} borderRadius={8} />
+                                <SkeletonBlock width={120} height={13} borderRadius={6} style={{ marginTop: 8 }} />
+                            </View>
+                        ) : (
+                            <View style={st.profileInfoCol}>
+                                <Text style={[st.userName, { color: C.textHeading }]} numberOfLines={1}>{userName}</Text>
+                                <Text style={[st.userSub, { color: C.muted }]} numberOfLines={1}>
+                                    {userPhone || 'No phone linked'}
+                                </Text>
+                                <View style={[st.accountBadge, { backgroundColor: isDark ? C.primaryLight : '#EEF1FD' }]}>
+                                    <Text style={[st.accountBadgeText, { color: C.primary }]}>Personal Workspace</Text>
+                                </View>
+                            </View>
+                        )}
                     </View>
                 </View>
 
-                {/* ────────────────────────────────────────────────────────────
-                    QUICK ACCESS
-                ──────────────────────────────────────────────────────────── */}
-                <Text style={[st.sectionLabel, { color: C.muted }]}>QUICK ACCESS</Text>
+                <View style={st.statsGrid}>
+                    <StatTile
+                        label="Files"
+                        value={loading ? '-' : String(stats.totalFiles ?? 0)}
+                        color={C.primary}
+                        bg={isDark ? 'rgba(88,117,255,0.12)' : '#EEF2FF'}
+                        labelColor={isDark ? '#9CB4FF' : '#4A63E6'}
+                        icon={<FolderOpen color={isDark ? '#9CB4FF' : '#4A63E6'} size={16} />}
+                        onPress={() => navigation.navigate('Files')}
+                    />
+                    <StatTile
+                        label="Storage Used"
+                        value={storage.value}
+                        unit={storage.unit}
+                        color={C.textHeading}
+                        bg={isDark ? 'rgba(148,163,184,0.12)' : '#F1F5F9'}
+                        labelColor={isDark ? '#A8B9CF' : '#5C728F'}
+                        icon={<HardDrive color={isDark ? '#A8B9CF' : '#5C728F'} size={16} />}
+                        onPress={() => navigation.navigate('Analytics')}
+                    />
+                    <StatTile
+                        label="Starred"
+                        value={loading ? '-' : String(stats.starredCount ?? 0)}
+                        color={C.accent}
+                        bg={isDark ? 'rgba(245,158,11,0.12)' : '#FFFBEB'}
+                        labelColor={isDark ? '#F5C56A' : '#C18A00'}
+                        icon={<Star color={isDark ? '#F5C56A' : '#C18A00'} size={16} />}
+                        onPress={() => navigation.navigate('Starred')}
+                    />
+                    <StatTile
+                        label="Trash"
+                        value={loading ? '-' : String(stats.trashCount ?? 0)}
+                        color={C.danger}
+                        bg={isDark ? 'rgba(239,68,68,0.12)' : '#FEF2F2'}
+                        labelColor={isDark ? '#FF9C9C' : '#CF3A3A'}
+                        icon={<Trash2 color={isDark ? '#FF9C9C' : '#CF3A3A'} size={16} />}
+                        onPress={() => navigation.navigate('Trash')}
+                    />
+                </View>
+
+                <Text style={[st.sectionLabel, { color: C.muted }]}>Quick Access</Text>
                 <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
                     <MenuItem
                         icon={<Star color="#F59E0B" size={20} />}
@@ -295,10 +297,7 @@ export default function ProfileScreen({ navigation }: any) {
                     />
                 </View>
 
-                {/* ────────────────────────────────────────────────────────────
-                    SETTINGS
-                ──────────────────────────────────────────────────────────── */}
-                <Text style={[st.sectionLabel, { color: C.muted }]}>SETTINGS</Text>
+                <Text style={[st.sectionLabel, { color: C.muted }]}>Settings</Text>
                 <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
                     <MenuItem
                         icon={<Settings color={C.textBody} size={20} />}
@@ -316,18 +315,16 @@ export default function ProfileScreen({ navigation }: any) {
                         subtitle="End-to-end encrypted via Telegram"
                         color={C.textHeading}
                         chevronColor={C.muted}
+                        onPress={() => navigation.navigate('Settings')}
                     />
                 </View>
 
-                {/* ────────────────────────────────────────────────────────────
-                    RECENT ACTIVITY
-                ──────────────────────────────────────────────────────────── */}
-                <Text style={[st.sectionLabel, { color: C.muted }]}>RECENT ACTIVITY</Text>
+                <Text style={[st.sectionLabel, { color: C.muted }]}>Recent Activity</Text>
                 <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
                     {loading ? (
                         [1, 2, 3].map(i => (
                             <View key={i} style={st.actRow}>
-                                <SkeletonBlock width={36} height={36} borderRadius={10} />
+                                <SkeletonBlock width={34} height={34} borderRadius={10} />
                                 <View style={{ marginLeft: 14, flex: 1 }}>
                                     <SkeletonBlock width="65%" height={13} borderRadius={5} style={{ marginBottom: 6 }} />
                                     <SkeletonBlock width="40%" height={11} borderRadius={5} />
@@ -345,7 +342,7 @@ export default function ProfileScreen({ navigation }: any) {
                                 <View style={st.actRow}>
                                     <View style={[st.actIconBox, { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F8FAFC' }]}>
                                         <Text style={{ fontSize: 16 }}>
-                                            {ACTION_ICONS[act.action] || '📄'}
+                                            {ACTION_ICONS[act.action] || 'FI'}
                                         </Text>
                                     </View>
                                     <View style={{ flex: 1 }}>
@@ -363,9 +360,6 @@ export default function ProfileScreen({ navigation }: any) {
                     )}
                 </View>
 
-                {/* ────────────────────────────────────────────────────────────
-                    SIGN OUT
-                ──────────────────────────────────────────────────────────── */}
                 <TouchableOpacity
                     onPress={handleLogout}
                     activeOpacity={0.85}
@@ -384,27 +378,44 @@ export default function ProfileScreen({ navigation }: any) {
                     </Text>
                 </TouchableOpacity>
 
-                <Text style={[st.footerText, { color: C.muted }]}>
-                    Axya Cloud v{appVersion} ({updateLabel})
-                </Text>
-
-                <View style={{ height: 40 }} />
+                <Text style={[st.footerText, { color: C.muted }]}>Axya Cloud v{appVersion} ({updateLabel})</Text>
             </Animated.ScrollView>
         </SafeAreaView>
     );
 }
 
-// ─── Sub-components ──────────────────────────────────────────────────────────
-
-function StatItem({ label, value, unit, color }: { label: string; value: string; unit?: string; color: string }) {
+function StatTile({
+    label,
+    value,
+    unit,
+    color,
+    bg,
+    labelColor,
+    icon,
+    onPress,
+}: {
+    label: string;
+    value: string;
+    unit?: string;
+    color: string;
+    bg: string;
+    labelColor?: string;
+    icon?: React.ReactNode;
+    onPress?: () => void;
+}) {
     return (
-        <View style={st.statItem}>
-            <View style={st.statValueRow}>
-                <Text style={[st.statValue, { color }]}>{value}</Text>
-                {unit ? <Text style={st.statUnit}>{unit}</Text> : null}
+        <PressableRow onPress={onPress} style={[st.statTile, { backgroundColor: bg }]}>
+            <View style={st.statRow}>
+                {icon ? <View style={[st.statIconWrap, { backgroundColor: color + '18' }]}>{icon}</View> : null}
+                <View style={st.statTextCol}>
+                    <View style={st.statValueRow}>
+                        <Text style={[st.statValue, { color }]} numberOfLines={1}>{value}</Text>
+                        {unit ? <Text style={[st.statUnit, { color }]}>{unit}</Text> : null}
+                    </View>
+                    <Text style={[st.statLabel, labelColor ? { color: labelColor } : null]} numberOfLines={1}>{label}</Text>
+                </View>
             </View>
-            <Text style={st.statLabel}>{label}</Text>
-        </View>
+        </PressableRow>
     );
 }
 
@@ -433,8 +444,6 @@ function MenuItem({
     );
 }
 
-// ─── Styles ──────────────────────────────────────────────────────────────────
-
 const st = StyleSheet.create({
     root: {
         flex: 1,
@@ -445,11 +454,11 @@ const st = StyleSheet.create({
         justifyContent: 'space-between',
         paddingHorizontal: 20,
         paddingTop: Platform.OS === 'web' ? 44 : 16,
-        paddingBottom: 8,
+        paddingBottom: 12,
     },
     headerBtn: {
-        width: 40,
-        height: 40,
+        width: 44,
+        height: 44,
         borderRadius: 14,
         justifyContent: 'center',
         alignItems: 'center',
@@ -459,98 +468,114 @@ const st = StyleSheet.create({
         }),
     },
     headerTitle: {
-        fontSize: 17,
-        fontWeight: '700',
+        fontSize: 18,
+        fontWeight: '600',
         letterSpacing: -0.3,
     },
     scroll: {
         paddingHorizontal: 20,
-        paddingTop: 8,
+        paddingTop: 12,
+        paddingBottom: 24,
     },
 
-    // ── Avatar Section ───────────────────────────────────────────────────────
-    avatarSection: {
+    profileCard: {
+        borderRadius: 20,
+        borderWidth: 1,
+        paddingHorizontal: 20,
+        paddingVertical: 20,
+        marginBottom: 20,
+    },
+    profileTopRow: {
+        flexDirection: 'row',
         alignItems: 'center',
-        paddingVertical: 28,
+    },
+    profileInfoCol: {
+        marginLeft: 16,
+        flex: 1,
     },
     avatarRing: {
-        width: 100,
-        height: 100,
-        borderRadius: 50,
+        width: 76,
+        height: 76,
+        borderRadius: 38,
         borderWidth: 3,
         justifyContent: 'center',
         alignItems: 'center',
     },
     avatarCircle: {
-        width: 86,
-        height: 86,
-        borderRadius: 43,
+        width: 64,
+        height: 64,
+        borderRadius: 32,
         justifyContent: 'center',
         alignItems: 'center',
     },
     avatarLetter: {
         color: '#fff',
-        fontSize: 34,
+        fontSize: 26,
         fontWeight: '700',
-        letterSpacing: -0.5,
     },
     userName: {
-        fontSize: 22,
-        fontWeight: '800',
-        letterSpacing: -0.4,
-        marginTop: 16,
+        fontSize: 20,
+        fontWeight: '600',
+        letterSpacing: -0.3,
+        fontFamily: Platform.select({
+            ios: 'Avenir Next',
+            android: 'sans-serif-medium',
+            default: undefined,
+        }),
     },
     userSub: {
         fontSize: 14,
         fontWeight: '500',
         marginTop: 4,
+        letterSpacing: 0.1,
+    },
+    accountBadge: {
+        alignSelf: 'flex-start',
+        borderRadius: 999,
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        marginTop: 10,
+    },
+    accountBadgeText: {
+        fontSize: 11,
+        fontWeight: '600',
         letterSpacing: 0.2,
     },
 
-    // ── Card base ────────────────────────────────────────────────────────────
-    card: {
-        borderRadius: 20,
+    statsGrid: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 12,
         marginBottom: 24,
-        overflow: 'hidden',
     },
-
-    // ── Section labels ───────────────────────────────────────────────────────
-    sectionLabel: {
-        fontSize: 11,
-        fontWeight: '700',
-        letterSpacing: 1.2,
-        marginBottom: 10,
-        marginTop: 4,
-        paddingLeft: 4,
-        textTransform: 'uppercase',
+    statTile: {
+        flex: 1,
+        minWidth: '45%',
+        borderRadius: 16,
+        paddingVertical: 16,
+        paddingHorizontal: 16,
     },
-
-    // ── Stats row ────────────────────────────────────────────────────────────
-    statsRow: {
+    statRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        paddingVertical: 22,
-        paddingHorizontal: 8,
+        gap: 12,
     },
-    statItem: {
+    statTextCol: {
         flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
     },
     statValueRow: {
         flexDirection: 'row',
         alignItems: 'baseline',
-        gap: 3,
+        gap: 4,
     },
     statValue: {
-        fontSize: 28,
+        fontSize: 24,
         fontWeight: '700',
         letterSpacing: -0.5,
     },
     statUnit: {
         fontSize: 14,
-        fontWeight: '500',
-        color: '#94A3B8',
+        fontWeight: '600',
     },
     statLabel: {
         fontSize: 12,
@@ -558,24 +583,39 @@ const st = StyleSheet.create({
         color: '#94A3B8',
         marginTop: 4,
     },
-    statDivider: {
-        width: 1,
-        height: 32,
-        opacity: 0.6,
+    statIconWrap: {
+        width: 40,
+        height: 40,
+        borderRadius: 12,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
 
-    // ── Menu rows ────────────────────────────────────────────────────────────
+    card: {
+        borderRadius: 20,
+        marginBottom: 20,
+        overflow: 'hidden',
+    },
+    sectionLabel: {
+        fontSize: 13,
+        fontWeight: '600',
+        letterSpacing: 0.3,
+        marginBottom: 10,
+        paddingLeft: 2,
+        textTransform: 'uppercase',
+    },
+
     menuRow: {
         flexDirection: 'row',
         alignItems: 'center',
         paddingHorizontal: 16,
-        paddingVertical: 14,
+        paddingVertical: 16,
         gap: 14,
     },
     menuIconBox: {
-        width: 38,
-        height: 38,
-        borderRadius: 11,
+        width: 42,
+        height: 42,
+        borderRadius: 12,
         justifyContent: 'center',
         alignItems: 'center',
     },
@@ -586,70 +626,67 @@ const st = StyleSheet.create({
     },
     menuSub: {
         fontSize: 12,
-        marginTop: 2,
+        marginTop: 3,
+        fontWeight: '500',
     },
     rowDivider: {
         height: StyleSheet.hairlineWidth,
-        marginLeft: 68,
+        marginLeft: 72,
     },
 
-    // ── Activity ─────────────────────────────────────────────────────────────
     actRow: {
         flexDirection: 'row',
         alignItems: 'center',
         paddingHorizontal: 16,
-        paddingVertical: 13,
+        paddingVertical: 14,
         gap: 14,
     },
     actIconBox: {
-        width: 36,
-        height: 36,
-        borderRadius: 10,
+        width: 40,
+        height: 40,
+        borderRadius: 12,
         justifyContent: 'center',
         alignItems: 'center',
     },
     actTitle: {
-        fontSize: 13,
+        fontSize: 14,
         fontWeight: '600',
         textTransform: 'capitalize',
         marginBottom: 2,
     },
     actDate: {
-        fontSize: 11,
+        fontSize: 12,
         fontWeight: '500',
     },
-
     emptyState: {
         paddingVertical: 32,
         alignItems: 'center',
-        gap: 8,
+        gap: 10,
     },
     emptyText: {
-        fontSize: 13,
+        fontSize: 14,
         fontWeight: '600',
     },
 
-    // ── Logout ───────────────────────────────────────────────────────────────
     logoutCard: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
         gap: 10,
-        height: 52,
+        height: 54,
         borderRadius: 16,
         marginBottom: 16,
-        marginTop: 4,
+        marginTop: 8,
     },
     logoutText: {
         fontSize: 15,
-        fontWeight: '700',
+        fontWeight: '600',
     },
 
-    // ── Footer ───────────────────────────────────────────────────────────────
     footerText: {
         textAlign: 'center',
-        fontSize: 11,
+        fontSize: 12,
         fontWeight: '500',
-        marginBottom: 8,
+        marginBottom: 12,
     },
 });

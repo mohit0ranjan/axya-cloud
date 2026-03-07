@@ -8,7 +8,8 @@ import {
 } from 'lucide-react-native';
 import { useUpload } from '../context/UploadContext';
 import UploadProgress from './UploadProgress';
-import { theme } from '../ui/theme';
+import { theme as staticTheme } from '../ui/theme';
+import { useTheme } from '../context/ThemeContext';
 
 const { height } = Dimensions.get('window');
 
@@ -26,6 +27,7 @@ function formatSpeed(bytesPerSecond: number, isIdle: boolean): string {
 }
 
 function UploadProgressOverlay() {
+    const { theme } = useTheme();
     const {
         tasks,
         cancelUpload, pauseUpload, resumeUpload, clearCompleted, cancelAll,
@@ -61,18 +63,16 @@ function UploadProgressOverlay() {
         }
     }, [isPerfectSuccess]);
 
-    if (tasks.length === 0 || isDismissed) return null;
-
     const hasFailed = failedCount > 0;
     const isIdle = activeCount === 0;
-    const progressColor = hasFailed ? theme.colors.error : (allDone ? theme.colors.success : theme.colors.primary);
+    const progressColor = hasFailed ? theme.colors.danger : (allDone ? theme.colors.success : theme.colors.primary);
 
     let bannerTitle = '';
     let bannerIcon = null;
 
     if (hasFailed) {
         bannerTitle = `${failedCount} upload${failedCount > 1 ? 's' : ''} failed`;
-        bannerIcon = <AlertTriangle color={theme.colors.error} size={18} />;
+        bannerIcon = <AlertTriangle color={theme.colors.danger} size={18} />;
     } else if (allDone) {
         bannerTitle = 'Uploads complete';
         bannerIcon = <CheckCircle2 color={theme.colors.success} size={18} />;
@@ -100,7 +100,7 @@ function UploadProgressOverlay() {
         if (!isExpanded) setIsExpanded(true);
         Animated.timing(animExpand, {
             toValue: nextValue,
-            duration: theme.motion.duration,
+            duration: staticTheme.motion.duration,
             useNativeDriver: false,
         }).start(() => {
             if (nextValue === 0) setIsExpanded(false);
@@ -130,6 +130,149 @@ function UploadProgressOverlay() {
         );
     };
 
+    const s = React.useMemo(() => StyleSheet.create({
+        container: {
+            position: 'absolute',
+            bottom: 90,
+            left: staticTheme.spacing.lg,
+            right: staticTheme.spacing.lg,
+            backgroundColor: theme.colors.card,
+            borderRadius: staticTheme.radius.modal,
+            overflow: 'hidden',
+            ...staticTheme.shadows.elevation2,
+        },
+        bannerRow: {
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingHorizontal: staticTheme.spacing.lg,
+            paddingTop: staticTheme.spacing.md,
+            paddingBottom: staticTheme.spacing.md,
+            minHeight: 54,
+        },
+        bannerLeft: {
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: staticTheme.spacing.sm,
+            flex: 1,
+            minWidth: 0,
+        },
+        bannerTitle: {
+            fontSize: staticTheme.typography.subtitle.fontSize,
+            fontWeight: staticTheme.typography.subtitle.fontWeight,
+            color: theme.colors.textHeading,
+        },
+        bannerRight: {
+            flexDirection: 'row',
+            gap: staticTheme.spacing.sm,
+        },
+        chevronBox: {
+            padding: staticTheme.spacing.xs,
+            backgroundColor: theme.colors.inputBg,
+            borderRadius: staticTheme.radius.sm,
+        },
+        closeBox: {
+            padding: staticTheme.spacing.xs,
+            backgroundColor: theme.colors.inputBg,
+            borderRadius: staticTheme.radius.sm,
+        },
+        mainProgressTrack: {
+            height: 3,
+            backgroundColor: theme.colors.border,
+            width: '100%',
+        },
+        mainProgressFill: {
+            height: 3,
+        },
+        contentWrap: {
+            overflow: 'hidden',
+        },
+        contentInner: {
+            flex: 1,
+        },
+        statsRow: {
+            flexDirection: 'row',
+            paddingVertical: staticTheme.spacing.md,
+            paddingHorizontal: staticTheme.spacing.lg,
+            gap: staticTheme.spacing.lg,
+            flexWrap: 'wrap',
+        },
+        statPill: {
+            alignItems: 'flex-start',
+            gap: 2,
+        },
+        statLabel: {
+            fontSize: 11,
+            color: theme.colors.textBody,
+            fontWeight: '500',
+            textTransform: 'uppercase',
+        },
+        pillVal: {
+            fontSize: 15,
+            fontWeight: '600',
+            color: theme.colors.textHeading,
+        },
+        actionsRow: {
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingHorizontal: staticTheme.spacing.lg,
+            paddingBottom: staticTheme.spacing.md,
+        },
+        speedTxt: {
+            fontSize: 13,
+            color: theme.colors.muted,
+            fontWeight: '500',
+        },
+        clearBtn: {
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 4,
+            padding: 4,
+        },
+        clearBtnTxt: {
+            fontSize: 12,
+            fontWeight: '500',
+            color: theme.colors.primary,
+        },
+        listContainer: {
+            flex: 1,
+            paddingHorizontal: staticTheme.spacing.lg,
+            paddingTop: staticTheme.spacing.sm,
+            borderTopWidth: 1,
+            borderTopColor: theme.colors.border,
+        },
+        list: {
+            paddingBottom: 20,
+        },
+        emptyUpdates: {
+            borderTopWidth: 1,
+            borderTopColor: theme.colors.border,
+            paddingHorizontal: staticTheme.spacing.lg,
+            paddingTop: staticTheme.spacing.md,
+        },
+        emptyUpdatesTxt: {
+            fontSize: 13,
+            color: theme.colors.textBody,
+            fontWeight: '500',
+        },
+    }), [theme]);
+
+    const StatPill = React.memo(function StatPill({
+        label, value, color
+    }: {
+        label: string; value: number | string; color?: string;
+    }) {
+        return (
+            <View style={s.statPill}>
+                <Text style={s.statLabel}>{label}</Text>
+                <Text style={[s.pillVal, color ? { color } : null]}>{value}</Text>
+            </View>
+        );
+    });
+
+    if (tasks.length === 0 || isDismissed) return null;
+
     return (
         <View style={s.container}>
             <View style={s.bannerRow}>
@@ -139,11 +282,11 @@ function UploadProgressOverlay() {
                 </View>
                 <View style={s.bannerRight}>
                     <TouchableOpacity style={s.chevronBox} onPress={toggleExpand}>
-                        {isExpanded ? <ChevronDown size={20} color={theme.colors.neutral[500]} /> : <ChevronUp size={20} color={theme.colors.neutral[500]} />}
+                        {isExpanded ? <ChevronDown size={20} color={theme.colors.muted} /> : <ChevronUp size={20} color={theme.colors.muted} />}
                     </TouchableOpacity>
                     {!isExpanded && (
                         <TouchableOpacity style={s.closeBox} onPress={handleDismiss}>
-                            <X size={20} color={theme.colors.neutral[500]} />
+                            <X size={20} color={theme.colors.muted} />
                         </TouchableOpacity>
                     )}
                 </View>
@@ -168,7 +311,7 @@ function UploadProgressOverlay() {
                     <View style={s.statsRow}>
                         <StatPill label="Uploaded" value={uploadedCount} />
                         <StatPill label="Queued" value={queuedCount} />
-                        <StatPill label="Failed" value={failedCount} color={theme.colors.error} />
+                        <StatPill label="Failed" value={failedCount} color={theme.colors.danger} />
                         <StatPill label="Avg speed" value={formatSpeed(avgUploadSpeedBps, isIdle)} />
                     </View>
 
@@ -212,146 +355,5 @@ function UploadProgressOverlay() {
         </View>
     );
 }
-
-const StatPill = React.memo(function StatPill({
-    label, value, color
-}: {
-    label: string; value: number | string; color?: string;
-}) {
-    return (
-        <View style={s.statPill}>
-            <Text style={s.statLabel}>{label}</Text>
-            <Text style={[s.pillVal, color ? { color } : null]}>{value}</Text>
-        </View>
-    );
-});
-
-const s = StyleSheet.create({
-    container: {
-        position: 'absolute',
-        bottom: 90,
-        left: theme.spacing.lg,
-        right: theme.spacing.lg,
-        backgroundColor: theme.colors.card,
-        borderRadius: theme.radius.modal,
-        overflow: 'hidden',
-        ...theme.shadows.elevation2,
-    },
-    bannerRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: theme.spacing.lg,
-        paddingTop: theme.spacing.md,
-        paddingBottom: theme.spacing.md,
-        minHeight: 54,
-    },
-    bannerLeft: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: theme.spacing.sm,
-        flex: 1,
-        minWidth: 0,
-    },
-    bannerTitle: {
-        fontSize: theme.typography.subtitle.fontSize,
-        fontWeight: theme.typography.subtitle.fontWeight,
-        color: theme.colors.neutral[900],
-    },
-    bannerRight: {
-        flexDirection: 'row',
-        gap: theme.spacing.sm,
-    },
-    chevronBox: {
-        padding: theme.spacing.xs,
-        backgroundColor: theme.colors.neutral[50],
-        borderRadius: theme.radius.sm,
-    },
-    closeBox: {
-        padding: theme.spacing.xs,
-        backgroundColor: theme.colors.neutral[50],
-        borderRadius: theme.radius.sm,
-    },
-    mainProgressTrack: {
-        height: 3,
-        backgroundColor: theme.colors.neutral[100],
-        width: '100%',
-    },
-    mainProgressFill: {
-        height: 3,
-    },
-    contentWrap: {
-        overflow: 'hidden',
-    },
-    contentInner: {
-        flex: 1,
-    },
-    statsRow: {
-        flexDirection: 'row',
-        paddingVertical: theme.spacing.md,
-        paddingHorizontal: theme.spacing.lg,
-        gap: theme.spacing.lg,
-        flexWrap: 'wrap',
-    },
-    statPill: {
-        alignItems: 'flex-start',
-        gap: 2,
-    },
-    statLabel: {
-        fontSize: 11,
-        color: theme.colors.neutral[500],
-        fontWeight: '500',
-        textTransform: 'uppercase',
-    },
-    pillVal: {
-        fontSize: 15,
-        fontWeight: '700',
-        color: theme.colors.neutral[900],
-    },
-    actionsRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: theme.spacing.lg,
-        paddingBottom: theme.spacing.md,
-    },
-    speedTxt: {
-        fontSize: 13,
-        color: theme.colors.neutral[600],
-        fontWeight: '500',
-    },
-    clearBtn: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-        padding: 4,
-    },
-    clearBtnTxt: {
-        fontSize: 12,
-        fontWeight: '500',
-        color: theme.colors.primary,
-    },
-    listContainer: {
-        flex: 1,
-        paddingHorizontal: theme.spacing.lg,
-        paddingTop: theme.spacing.sm,
-        borderTopWidth: 1,
-        borderTopColor: theme.colors.neutral[100],
-    },
-    list: {
-        paddingBottom: 20,
-    },
-    emptyUpdates: {
-        borderTopWidth: 1,
-        borderTopColor: theme.colors.neutral[100],
-        paddingHorizontal: theme.spacing.lg,
-        paddingTop: theme.spacing.md,
-    },
-    emptyUpdatesTxt: {
-        fontSize: 13,
-        color: theme.colors.neutral[500],
-        fontWeight: '500',
-    },
-});
 
 export default React.memo(UploadProgressOverlay);

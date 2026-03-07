@@ -15,13 +15,15 @@ import {
 } from 'react-native';
 import { ChevronUp, ChevronDown, XCircle, Download, X, Check } from 'lucide-react-native';
 import { useDownload } from '../context/DownloadContext';
-import { theme } from '../ui/theme';
+import { theme as staticTheme } from '../ui/theme';
+import { useTheme } from '../context/ThemeContext';
 
 const { height } = Dimensions.get('window');
 
 // ── Single download row ──────────────────────────────────────────────────────
 
 function DownloadRow({ task, onCancel }: { task: any; onCancel: (id: string) => void }) {
+    const { theme } = useTheme();
     const isActive = task.status === 'downloading' || task.status === 'queued';
     const isFailed = task.status === 'failed';
     const isDone = task.status === 'completed';
@@ -32,7 +34,7 @@ function DownloadRow({ task, onCancel }: { task: any; onCancel: (id: string) => 
         : isFailed
             ? theme.colors.danger
             : isCancelled
-                ? '#8892A4'
+                ? theme.colors.muted
                 : theme.colors.primary;
 
     const statusLabel = isDone
@@ -51,9 +53,9 @@ function DownloadRow({ task, onCancel }: { task: any; onCancel: (id: string) => 
                 <Download color={statusColor} size={16} />
             </View>
             <View style={s.rowInfo}>
-                <Text style={s.rowName} numberOfLines={1}>{task.fileName}</Text>
+                <Text style={[s.rowName, { color: theme.colors.textHeading }]} numberOfLines={1}>{task.fileName}</Text>
                 <View style={s.rowBottom}>
-                    <View style={s.progressTrack}>
+                    <View style={[s.progressTrack, { backgroundColor: theme.colors.border }]}>
                         <View style={[
                             s.progressFill,
                             {
@@ -67,11 +69,11 @@ function DownloadRow({ task, onCancel }: { task: any; onCancel: (id: string) => 
             </View>
             {isActive && (
                 <TouchableOpacity
-                    style={s.rowCancelBtn}
+                    style={[s.rowCancelBtn, { backgroundColor: theme.colors.inputBg }]}
                     onPress={() => onCancel(task.id)}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
-                    <X color="#8892A4" size={16} />
+                    <X color={theme.colors.muted} size={16} />
                 </TouchableOpacity>
             )}
         </View>
@@ -81,6 +83,7 @@ function DownloadRow({ task, onCancel }: { task: any; onCancel: (id: string) => 
 // ── Main Overlay ─────────────────────────────────────────────────────────────
 
 export default function DownloadProgressOverlay() {
+    const { theme, isDark } = useTheme();
     const {
         tasks, cancelDownload, cancelAll, clearCompleted,
         activeCount, overallProgress, hasActive,
@@ -114,7 +117,7 @@ export default function DownloadProgressOverlay() {
                 setExpanded(false);
             });
         }
-    }, [shouldShow]);
+    }, [shouldShow, visible]);
 
     // Auto-collapse when all downloads finish
     useEffect(() => {
@@ -168,6 +171,8 @@ export default function DownloadProgressOverlay() {
         <>
             <Animated.View style={[
                 s.container,
+                { backgroundColor: theme.colors.card },
+                isDark && { shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 16 },
                 { transform: [{ translateY: slideAnim }] },
             ]}>
                 {/* Header bar */}
@@ -184,23 +189,23 @@ export default function DownloadProgressOverlay() {
                                     ? theme.colors.danger
                                     : theme.colors.success,
                         }]} />
-                        <Text style={s.headerTitle}>{headerTitle}</Text>
+                        <Text style={[s.headerTitle, { color: theme.colors.textHeading }]}>{headerTitle}</Text>
                     </View>
                     <View style={s.headerRight}>
                         {hasActive && (
-                            <Text style={s.headerPct}>{overallProgress}%</Text>
+                            <Text style={[s.headerPct, { color: theme.colors.primary }]}>{overallProgress}%</Text>
                         )}
                         {expanded
-                            ? <ChevronDown color="#8892A4" size={20} />
-                            : <ChevronUp color="#8892A4" size={20} />
+                            ? <ChevronDown color={theme.colors.muted} size={20} />
+                            : <ChevronUp color={theme.colors.muted} size={20} />
                         }
                     </View>
                 </TouchableOpacity>
 
                 {/* Main progress bar (always visible) */}
                 {hasActive && (
-                    <View style={s.mainProgressTrack}>
-                        <View style={[s.mainProgressFill, { width: `${overallProgress}%` }]} />
+                    <View style={[s.mainProgressTrack, { backgroundColor: theme.colors.border }]}>
+                        <View style={[s.mainProgressFill, { width: `${overallProgress}%`, backgroundColor: theme.colors.primary }]} />
                     </View>
                 )}
 
@@ -219,7 +224,7 @@ export default function DownloadProgressOverlay() {
                     <View style={s.actions}>
                         {hasActive && (
                             <TouchableOpacity
-                                style={s.cancelAllBtn}
+                                style={[s.cancelAllBtn, { backgroundColor: theme.colors.danger }]}
                                 onPress={handleCancelAll}
                                 activeOpacity={0.85}
                             >
@@ -229,11 +234,11 @@ export default function DownloadProgressOverlay() {
                         )}
                         {allDone && (
                             <TouchableOpacity
-                                style={s.dismissBtn}
+                                style={[s.dismissBtn, { backgroundColor: theme.colors.inputBg }]}
                                 onPress={handleClearAndDismiss}
                                 activeOpacity={0.85}
                             >
-                                <Text style={s.dismissText}>Dismiss</Text>
+                                <Text style={[s.dismissText, { color: theme.colors.textHeading }]}>Dismiss</Text>
                             </TouchableOpacity>
                         )}
                     </View>
@@ -247,25 +252,25 @@ export default function DownloadProgressOverlay() {
                 animationType="fade"
                 onRequestClose={() => setCancelModalVisible(false)}
             >
-                <View style={s.modalOverlay}>
-                    <View style={s.modalCard}>
-                        <View style={s.modalIconCircle}>
+                <View style={[s.modalOverlay, isDark && { backgroundColor: 'rgba(0,0,0,0.7)' }]}>
+                    <View style={[s.modalCard, { backgroundColor: theme.colors.card }]}>
+                        <View style={[s.modalIconCircle, { backgroundColor: `${theme.colors.danger}1A` }]}>
                             <XCircle color={theme.colors.danger} size={32} />
                         </View>
-                        <Text style={s.modalTitle}>Cancel All Downloads?</Text>
-                        <Text style={s.modalBody}>
+                        <Text style={[s.modalTitle, { color: theme.colors.textHeading }]}>Cancel All Downloads?</Text>
+                        <Text style={[s.modalBody, { color: theme.colors.textBody }]}>
                             {activeCount} active download{activeCount > 1 ? 's' : ''} will be cancelled.
                             This cannot be undone.
                         </Text>
                         <View style={s.modalActions}>
                             <TouchableOpacity
-                                style={s.modalSecondaryBtn}
+                                style={[s.modalSecondaryBtn, { backgroundColor: theme.colors.inputBg }]}
                                 onPress={() => setCancelModalVisible(false)}
                             >
-                                <Text style={s.modalSecondaryText}>Keep Downloading</Text>
+                                <Text style={[s.modalSecondaryText, { color: theme.colors.textHeading }]}>Keep Downloading</Text>
                             </TouchableOpacity>
                             <TouchableOpacity
-                                style={s.modalDangerBtn}
+                                style={[s.modalDangerBtn, { backgroundColor: theme.colors.danger }]}
                                 onPress={confirmCancelAll}
                             >
                                 <XCircle color="#fff" size={16} />
@@ -287,7 +292,6 @@ const s = StyleSheet.create({
         bottom: 0,
         left: 0,
         right: 0,
-        backgroundColor: '#fff',
         borderTopLeftRadius: 24,
         borderTopRightRadius: 24,
         shadowColor: '#000',
@@ -308,19 +312,17 @@ const s = StyleSheet.create({
     },
     headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
     headerDot: { width: 10, height: 10, borderRadius: 5 },
-    headerTitle: { fontSize: 15, fontWeight: '700', color: theme.colors.textHeading },
+    headerTitle: { fontSize: 15, fontWeight: '700' },
     headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    headerPct: { fontSize: 14, fontWeight: '700', color: theme.colors.primary },
+    headerPct: { fontSize: 14, fontWeight: '700' },
 
     // Main progress
     mainProgressTrack: {
         height: 3,
-        backgroundColor: '#EDF1F7',
         marginHorizontal: 20,
     },
     mainProgressFill: {
         height: 3,
-        backgroundColor: theme.colors.primary,
         borderRadius: 2,
     },
 
@@ -344,12 +346,11 @@ const s = StyleSheet.create({
         alignItems: 'center',
     },
     rowInfo: { flex: 1, gap: 5 },
-    rowName: { fontSize: 13, fontWeight: '600', color: theme.colors.textHeading },
+    rowName: { fontSize: 13, fontWeight: '600' },
     rowBottom: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     progressTrack: {
         flex: 1,
         height: 4,
-        backgroundColor: '#EDF1F7',
         borderRadius: 2,
         overflow: 'hidden',
     },
@@ -359,7 +360,6 @@ const s = StyleSheet.create({
         width: 28,
         height: 28,
         borderRadius: 14,
-        backgroundColor: '#F1F5F9',
         justifyContent: 'center',
         alignItems: 'center',
     },
@@ -376,7 +376,6 @@ const s = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 6,
-        backgroundColor: theme.colors.danger,
         paddingHorizontal: 18,
         paddingVertical: 10,
         borderRadius: 12,
@@ -385,10 +384,9 @@ const s = StyleSheet.create({
     dismissBtn: {
         paddingHorizontal: 18,
         paddingVertical: 10,
-        backgroundColor: '#F1F5F9',
         borderRadius: 12,
     },
-    dismissText: { color: theme.colors.textHeading, fontSize: 13, fontWeight: '600' },
+    dismissText: { fontSize: 13, fontWeight: '600' },
 
     // ── Cancel Confirmation Modal ─────────────────────────────────────────
     modalOverlay: {
@@ -400,7 +398,6 @@ const s = StyleSheet.create({
     },
     modalCard: {
         width: '100%',
-        backgroundColor: '#fff',
         borderRadius: 24,
         padding: 28,
         alignItems: 'center',
@@ -414,7 +411,6 @@ const s = StyleSheet.create({
         width: 64,
         height: 64,
         borderRadius: 32,
-        backgroundColor: '#FEF2F2',
         justifyContent: 'center',
         alignItems: 'center',
         marginBottom: 16,
@@ -422,13 +418,11 @@ const s = StyleSheet.create({
     modalTitle: {
         fontSize: 20,
         fontWeight: '800',
-        color: theme.colors.textHeading,
         marginBottom: 8,
         textAlign: 'center',
     },
     modalBody: {
         fontSize: 14,
-        color: theme.colors.textBody,
         textAlign: 'center',
         lineHeight: 21,
         marginBottom: 24,
@@ -441,26 +435,22 @@ const s = StyleSheet.create({
     modalSecondaryBtn: {
         flex: 1,
         height: 48,
-        backgroundColor: '#F1F5F9',
         borderRadius: 14,
         justifyContent: 'center',
         alignItems: 'center',
     },
     modalSecondaryText: {
-        color: theme.colors.textHeading,
         fontSize: 14,
         fontWeight: '600',
     },
     modalDangerBtn: {
         flex: 1,
         height: 48,
-        backgroundColor: theme.colors.danger,
         borderRadius: 14,
         flexDirection: 'row',
         justifyContent: 'center',
         alignItems: 'center',
         gap: 6,
-        shadowColor: theme.colors.danger,
         shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.3,
         shadowRadius: 10,

@@ -5,7 +5,7 @@ import {
     Dimensions, FlatList, Animated, ActivityIndicator,
 } from 'react-native';
 import {
-    ArrowLeft, Trash2, FileText, Image as ImageIcon, Plus, Folder,
+    ArrowLeft, Trash2, FileText, Image as ImageIcon, Video, Music, Plus, Folder,
     MoreHorizontal, Star, Grid, List, Info, Move, Tag, CheckSquare, Square,
     SortAsc, SortDesc, Filter, X, Check, Share2, ShieldCheck, Search
 } from 'lucide-react-native';
@@ -14,29 +14,32 @@ import * as DocumentPicker from 'expo-document-picker';
 import apiClient from '../services/apiClient';
 import { AuthContext } from '../context/AuthContext';
 import { useUpload } from '../context/UploadContext';
+import { useToast } from '../context/ToastContext';
 import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
 import { EmptyState } from '../ui/EmptyState';
+import { ErrorState } from '../ui/ErrorState';
 import { FileCardSkeleton } from '../ui/Skeleton';
 import ShareFolderModal from '../components/ShareFolderModal';
+import { FileIcon } from '../components/FileIcon';
 
 
 const { width } = Dimensions.get('window');
 
 const FILTER_TABS = [
-    { key: 'all', label: 'All' },
-    { key: 'image', label: '📸 Images' },
-    { key: 'video', label: '🎬 Videos' },
-    { key: 'audio', label: '🎵 Audio' },
-    { key: 'pdf', label: '📄 Docs' },
-    { key: 'folder', label: '📁 Folders' },
+    { key: 'all', label: 'All', Icon: null },
+    { key: 'image', label: 'Images', Icon: ImageIcon },
+    { key: 'video', label: 'Videos', Icon: Video },
+    { key: 'audio', label: 'Audio', Icon: Music },
+    { key: 'pdf', label: 'Docs', Icon: FileText },
+    { key: 'folder', label: 'Folders', Icon: Folder },
 ];
 
 const SORT_OPTIONS = [
     { key: 'created_at_DESC', label: 'Newest First' },
     { key: 'created_at_ASC', label: 'Oldest First' },
-    { key: 'file_name_ASC', label: 'Name A→Z' },
-    { key: 'file_name_DESC', label: 'Name Z→A' },
+    { key: 'file_name_ASC', label: 'Name A-Z' },
+    { key: 'file_name_DESC', label: 'Name Z-A' },
     { key: 'file_size_DESC', label: 'Largest First' },
     { key: 'file_size_ASC', label: 'Smallest First' },
 ];
@@ -51,26 +54,14 @@ function formatSize(bytes: number) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + s[i];
 }
 
-function getIconConfig(mime: string) {
-    if (!mime || mime === 'inode/directory') return { color: staticTheme.colors.primary, bg: '#EEF1FD', Icon: Folder };
-    if (mime.includes('image')) return { color: '#F59E0B', bg: '#FEF3C7', Icon: ImageIcon };
-    if (mime.includes('video')) return { color: '#9333EA', bg: '#F3E8FF', Icon: FileText };
-    if (mime.includes('audio')) return { color: '#1FD45A', bg: '#DCFCE7', Icon: FileText };
-    if (mime.includes('pdf')) return { color: '#EF4444', bg: '#FEE2E2', Icon: FileText };
-    if (mime.includes('zip')) return { color: '#F97316', bg: '#FFEDD5', Icon: FileText };
-    return { color: staticTheme.colors.primary, bg: '#EEF1FD', Icon: FileText };
-}
-
-// ✅ Fix: React.memo wrapper prevents unchanged files from re-rendering when selectedIds updates
+// ? Fix: React.memo wrapper prevents unchanged files from re-rendering when selectedIds updates
 const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode, theme, token, onAction }: any) => {
     const isFolder = item.result_type === 'folder' || item.mime_type === 'inode/directory';
-    const { color, bg, Icon } = getIconConfig(item.mime_type);
-    const isMedia = item.mime_type?.includes('image') || item.mime_type?.includes('video');
 
     return (
         <TouchableOpacity
             style={[isGridView ? styles.gridCard : styles.fileCard,
-            { backgroundColor: theme.colors.card },
+            { backgroundColor: isGridView ? theme.colors.card : theme.colors.background },
             isSelected && styles.fileCardSelected]}
             onPress={() => onAction(selectMode ? 'toggle' : isFolder ? 'openFolder' : 'preview', item)}
             onLongPress={() => onAction('longPress', item)}
@@ -78,13 +69,7 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
             {isGridView ? (
                 <>
                     <View style={styles.gridIcon}>
-                        {isMedia ? (
-                            <Image
-                                source={{ uri: `${apiClient.defaults.baseURL}/files/${item.id}/thumbnail`, headers: { Authorization: `Bearer ${token}` } }}
-                                style={styles.gridImage}
-                                contentFit="cover" cachePolicy="disk"
-                            />
-                        ) : <Icon color={color} size={32} />}
+                        <FileIcon item={item} size={GRID_SIZE * 0.75} token={token} apiBase={apiClient.defaults.baseURL} themeColors={theme.colors} style={{ borderRadius: 0, width: '100%', height: '100%' }} />
                     </View>
                     <View style={styles.gridLabel}>
                         <Text style={styles.gridName} numberOfLines={1}>{item.name || item.file_name}</Text>
@@ -97,15 +82,7 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
                 </>
             ) : (
                 <>
-                    <View style={[styles.fileIconBox, { backgroundColor: bg }]}>
-                        {isMedia ? (
-                            <Image
-                                source={{ uri: `${apiClient.defaults.baseURL}/files/${item.id}/thumbnail`, headers: { Authorization: `Bearer ${token}` } }}
-                                style={{ width: '100%', height: '100%', borderRadius: 12 }}
-                                contentFit="cover" cachePolicy="disk"
-                            />
-                        ) : <Icon color={color} size={22} />}
-                    </View>
+                    <FileIcon item={item} size={46} token={token} apiBase={apiClient.defaults.baseURL} themeColors={theme.colors} style={{ marginRight: 14 }} />
                     <View style={styles.fileDetails}>
                         <Text style={styles.fileName} numberOfLines={1}>{item.name || item.file_name}</Text>
                         <Text style={styles.fileMeta}>
@@ -117,27 +94,15 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
                     </View>
                     {!selectMode && (
                         <TouchableOpacity
-                            style={{ zIndex: 10, padding: 8, margin: -8 }}
-                            hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                            style={styles.moreBtn}
+                            hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}
                             onPress={(e: any) => {
                                 if (e && e.stopPropagation) e.stopPropagation();
                                 if (e && e.preventDefault) e.preventDefault();
-                                if (Platform.OS === 'web') {
-                                    onAction('options', item);
-                                } else {
-                                    Alert.alert(item.name || item.file_name, 'Choose action', [
-                                        { text: 'Cancel', style: 'cancel' },
-                                        { text: '🔗 Share Link', onPress: () => onAction('shareLink', item) },
-                                        { text: '✏️ Rename', onPress: () => onAction('rename', item) },
-                                        { text: 'ℹ️ Info & Tags', onPress: () => onAction('info', item) },
-                                        { text: item.is_starred ? '★ Unstar' : '⭐ Star', onPress: () => onAction('star', item) },
-                                        { text: '📦 Move to Folder', onPress: () => onAction('move', item) },
-                                        { text: '🗑 Move to Trash', style: 'destructive', onPress: () => onAction('trash', item) },
-                                    ]);
-                                }
+                                onAction('options', item);
                             }}
                         >
-                            <MoreHorizontal color={theme.colors.textBody} size={18} />
+                            <MoreHorizontal color={theme.colors.textBody} size={20} />
                         </TouchableOpacity >
                     )}
                 </>
@@ -158,13 +123,15 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
 export default function FolderFilesScreen({ route, navigation }: any) {
     const { folderId, folderName, breadcrumb = [] } = route.params;
     const { theme } = useTheme();
+    const { showToast } = useToast();
     const { token } = useContext(AuthContext);
 
-    // ✅ Fix #29: debounce markAccessed — max 1 DB write per file per 5 min
+    // ? Fix #29: debounce markAccessed — max 1 DB write per file per 5 min
     const lastAccessedRef = useRef<Map<string, number>>(new Map());
 
     // Core data
     const [isLoading, setIsLoading] = useState(true);
+    const [loadError, setLoadError] = useState('');
     const [files, setFiles] = useState<any[]>([]);
     const [searchQuery, setSearchQuery] = useState('');
 
@@ -224,8 +191,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
 
     const fetchFolderFiles = async () => {
         setIsLoading(true);
+        setLoadError('');
         try {
-            // ✅ Robust sort key parsing using a lookup table
+            // ? Robust sort key parsing using a lookup table
             // Avoids brittle split('_') logic that breaks on keys like 'created_at_DESC'
             const SORT_MAP: Record<string, { col: string; order: string }> = {
                 'created_at_DESC': { col: 'created_at', order: 'DESC' },
@@ -271,7 +239,8 @@ export default function FolderFilesScreen({ route, navigation }: any) {
 
             setFiles(merged);
         } catch (e) {
-            console.error('Fetch failed', e);
+            setLoadError('Could not load folder contents.');
+            showToast('Could not load folder contents', 'error');
         } finally {
             setIsLoading(false);
         }
@@ -361,7 +330,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
         );
     };
 
-    // ── Delete current folder ────────────────────────────────────────────
+    // -- Delete current folder --------------------------------------------
     const handleDeleteCurrentFolder = () => {
         Alert.alert(
             'Move Folder to Trash',
@@ -415,14 +384,16 @@ export default function FolderFilesScreen({ route, navigation }: any) {
 
             // Share link comes from the modern share API response payload.
             if (item.result_type !== 'folder') {
-                const shareRes = await apiClient.post('/api/share/create', { file_id: item.id, expires_in_hours: 72 })
+                const shareRes = await apiClient.post('/api/v2/shares', { resource_type: 'file', root_file_id: item.id, expires_at: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString() })
                     .catch(() => ({ data: { share_url: null, shareUrl: null } }));
                 const link = String(shareRes.data?.share_url || shareRes.data?.shareUrl || '');
                 setInfoShareLink(link || null);
             } else {
                 setInfoShareLink(null); // Folders don't have share links
             }
-        } catch { }
+        } catch {
+            showToast('Could not load file info', 'error');
+        }
     };
 
     const addTagToFile = async () => {
@@ -432,7 +403,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             setNewTagInput('');
             const res = await apiClient.get(`/files/${infoFile.id}/tags`);
             setInfoTags(res.data.tags || []);
-        } catch { }
+        } catch {
+            showToast('Could not add tag', 'error');
+        }
     };
 
     const removeTagFromFile = async (tag: string) => {
@@ -441,7 +414,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             await apiClient.delete(`/files/${infoFile.id}/tags/${tag}`);
             const res = await apiClient.get(`/files/${infoFile.id}/tags`);
             setInfoTags(res.data.tags || []);
-        } catch { }
+        } catch {
+            showToast('Could not remove tag', 'error');
+        }
     };
 
     const handleUploadInit = async () => {
@@ -531,7 +506,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             {breadcrumb.length > 0 && (
                 <View style={styles.breadcrumbBar}>
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 20 }}>
-                        <TouchableOpacity onPress={() => navigation.navigate('Home')}><Text style={styles.crumbLink}>🏠 Home</Text></TouchableOpacity>
+                        <TouchableOpacity onPress={() => navigation.navigate('MainTabs', { screen: 'Home' })}><Text style={styles.crumbLink}>Home</Text></TouchableOpacity>
                         {breadcrumb.map((b, i) => (
                             <React.Fragment key={b.id}>
                                 <Text style={styles.crumbSep}> › </Text>
@@ -548,7 +523,12 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={{ gap: 8, paddingHorizontal: 20, alignItems: 'center' }}>
                     {FILTER_TABS.map(t => (
                         <TouchableOpacity key={t.key} style={[styles.tab, filterTab === t.key && styles.tabActive]} onPress={() => setFilterTab(t.key)}>
-                            <Text style={[styles.tabText, filterTab === t.key && styles.tabTextActive]}>{t.label}</Text>
+                            <View style={styles.tabInner}>
+                                {t.Icon ? (
+                                    <t.Icon color={filterTab === t.key ? '#fff' : staticTheme.colors.textBody} size={14} />
+                                ) : null}
+                                <Text style={[styles.tabText, filterTab === t.key && styles.tabTextActive]}>{t.label}</Text>
+                            </View>
                         </TouchableOpacity>
                     ))}
                 </ScrollView>
@@ -561,7 +541,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 </View>
             </View>
 
-            {/* ✅ FlatList with client-side pagination — loads PAGE_SIZE at a time */}
+            {/* ? FlatList with client-side pagination — loads PAGE_SIZE at a time */}
             <FlatList
                 style={styles.scrollArea}
                 data={isLoading ? [] : filteredFiles.slice(0, displayLimit)}
@@ -602,6 +582,13 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                         <View style={{ paddingTop: 12 }}>
                             {[1, 2, 3, 4].map(i => <FileCardSkeleton key={i} />)}
                         </View>
+                    ) : loadError ? (
+                        <ErrorState
+                            title="Could not load folder"
+                            message={loadError}
+                            onRetry={() => void fetchFolderFiles()}
+                            style={{ paddingVertical: 60, flex: 0 }}
+                        />
                     ) : (
                         <EmptyState
                             title={searchQuery ? 'No results found' : 'Folder is empty'}
@@ -633,7 +620,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 </KeyboardAvoidingView>
             </Modal>
 
-            {/* ── Move Files Modal ────────────────────────────────────── */}
+            {/* -- Move Files Modal -------------------------------------- */}
             <Modal visible={isMoveModalVisible} transparent animationType="slide">
                 <TouchableOpacity
                     style={[styles.centeredModal, { justifyContent: 'flex-end', padding: 0 }]}
@@ -642,7 +629,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 >
                     <View style={[styles.modalCard, { borderRadius: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40 }]}>
                         <View style={{ width: 40, height: 4, backgroundColor: theme.colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: 20 }} />
-                        <Text style={[styles.modalTitle, { marginBottom: 4 }]}>📦 Move {moveTarget?.ids?.length || 0} file(s) to…</Text>
+                        <Text style={[styles.modalTitle, { marginBottom: 4 }]}>Move {moveTarget?.ids?.length || 0} file(s) to...</Text>
                         <Text style={[styles.modalSub, { marginBottom: 20 }]}>Choose a destination folder</Text>
 
                         {/* Root option */}
@@ -668,11 +655,11 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 </TouchableOpacity>
             </Modal>
 
-            {/* ── Rename Modal ────────────────────────────────────── */}
+            {/* -- Rename Modal -------------------------------------- */}
             <Modal visible={isRenameModalVisible} transparent animationType="fade">
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.centeredModal}>
                     <View style={styles.modalCard}>
-                        <Text style={styles.modalTitle}>✏️ Rename</Text>
+                        <Text style={styles.modalTitle}>Rename</Text>
                         <TextInput
                             style={styles.modalInput}
                             placeholder="New name"
@@ -693,7 +680,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 </KeyboardAvoidingView>
             </Modal>
 
-            {/* ── Sort Modal ─────────────────────────────────────── */}
+            {/* -- Sort Modal --------------------------------------- */}
             <Modal visible={showSortModal} transparent animationType="slide">
                 <TouchableOpacity
                     style={[styles.centeredModal, { justifyContent: 'flex-end', padding: 0 }]}
@@ -723,7 +710,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                                 </Text>
                                 {sortKey === opt.key && (
                                     <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: staticTheme.colors.primary, justifyContent: 'center', alignItems: 'center' }}>
-                                        <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>✓</Text>
+                                        <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>?</Text>
                                     </View>
                                 )}
                             </TouchableOpacity>
@@ -732,7 +719,46 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 </TouchableOpacity>
             </Modal>
 
-            {/* ── Share Folder Modal ─────────────────────────────────────── */}
+            {/* -- Options Modal --------------------------------------- */}
+            <Modal visible={!!optionsTarget} transparent animationType="slide">
+                <TouchableOpacity
+                    style={[styles.centeredModal, { justifyContent: 'flex-end', padding: 0 }]}
+                    activeOpacity={1}
+                    onPress={() => setOptionsTarget(null)}
+                >
+                    <View style={[styles.modalCard, { borderRadius: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40 }]}>
+                        <View style={{ width: 36, height: 4, backgroundColor: staticTheme.colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: 16 }} />
+                        <Text style={[styles.modalTitle, { marginBottom: 12 }]}>{optionsTarget?.name || optionsTarget?.file_name}</Text>
+
+                        <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('shareLink', optionsTarget); }}>
+                            <Share2 color={theme.colors.primary} size={20} />
+                            <Text style={styles.optionText}>Share Link</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('rename', optionsTarget); }}>
+                            <Tag color={theme.colors.accent} size={20} />
+                            <Text style={styles.optionText}>Rename</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('info', optionsTarget); }}>
+                            <Info color={theme.colors.primary} size={20} />
+                            <Text style={styles.optionText}>Info & Tags</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('star', optionsTarget); }}>
+                            <Star color={optionsTarget?.is_starred ? theme.colors.accent : theme.colors.textBody} size={20} />
+                            <Text style={styles.optionText}>{optionsTarget?.is_starred ? 'Unstar' : 'Star'}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('move', optionsTarget); }}>
+                            <Move color={theme.colors.primary} size={20} />
+                            <Text style={styles.optionText}>Move to Folder</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.optionItem, { backgroundColor: '#fee2e2' }]} onPress={() => { setOptionsTarget(null); handleCardAction('trash', optionsTarget); }}>
+                            <Trash2 color={theme.colors.danger} size={20} />
+                            <Text style={[styles.optionText, { color: theme.colors.danger }]}>Move to Trash</Text>
+                        </TouchableOpacity>
+                    </View>
+                </TouchableOpacity>
+            </Modal>
+
+            {/* -- Share Folder Modal --------------------------------------- */}
             <ShareFolderModal
                 visible={isShareModalVisible}
                 onClose={closeShareModal}
@@ -758,20 +784,20 @@ const styles = StyleSheet.create({
     tabBar: { height: 48 },
     tab: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: staticTheme.colors.background },
     tabActive: { backgroundColor: staticTheme.colors.primary },
+    tabInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     tabText: { fontSize: 12, color: staticTheme.colors.textBody, fontWeight: '600' },
     tabTextActive: { color: '#fff' },
     scrollArea: { flex: 1, paddingHorizontal: 20 },
     emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
     emptyText: { color: staticTheme.colors.textBody, fontSize: 15, marginTop: 16 },
-    fileCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', padding: 14, borderRadius: 18, marginBottom: 10, ...staticTheme.shadows.card },
-    fileCardSelected: { borderWidth: 2, borderColor: staticTheme.colors.primary },
-    fileIconBox: { width: 46, height: 46, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
+    fileCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'transparent', paddingVertical: 12, paddingHorizontal: 0, marginBottom: 4 },
+    fileCardSelected: { backgroundColor: 'rgba(75, 110, 245, 0.1)', borderRadius: 16, paddingHorizontal: 16 },
     fileDetails: { flex: 1 },
-    fileName: { fontSize: 15, color: staticTheme.colors.textHeading, fontWeight: '600', marginBottom: 3 },
-    fileMeta: { fontSize: 12, color: staticTheme.colors.textBody },
+    fileName: { fontSize: 16, color: staticTheme.colors.textHeading, fontWeight: '600', marginBottom: 3 },
+    fileMeta: { fontSize: 13, color: staticTheme.colors.textBody },
+    moreBtn: { padding: 8, justifyContent: 'center', alignItems: 'center' },
     gridContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 12 },
     gridCard: { width: GRID_SIZE, borderRadius: 16, backgroundColor: '#fff', overflow: 'hidden', ...staticTheme.shadows.card },
-    gridImage: { width: '100%', height: GRID_SIZE * 0.75 },
     gridIcon: { width: '100%', height: GRID_SIZE * 0.75, justifyContent: 'center', alignItems: 'center' },
     gridLabel: { padding: 8 },
     gridName: { fontSize: 12, fontWeight: '600', color: staticTheme.colors.textHeading },
@@ -787,5 +813,11 @@ const styles = StyleSheet.create({
     modalBtnText: { color: staticTheme.colors.textHeading, fontWeight: '600', fontSize: 14 },
     searchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f8fafc', borderRadius: 12, paddingHorizontal: 12, height: 44, borderWidth: 1, borderColor: '#e2e8f0' },
     searchInput: { flex: 1, marginLeft: 10, fontSize: 15, color: staticTheme.colors.textHeading },
+    optionItem: {
+        flexDirection: 'row', alignItems: 'center', gap: 16,
+        paddingVertical: 14, paddingHorizontal: 16,
+        borderRadius: 16, backgroundColor: '#f8fafc', marginBottom: 8
+    },
+    optionText: { fontSize: 16, fontWeight: '600', color: staticTheme.colors.textHeading },
 });
 

@@ -2,6 +2,7 @@ import React, { createContext, useState, useEffect, ReactNode, useContext } from
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '../services/apiClient';
+import { setSecureValue, getSecureValue, deleteSecureValue, SECURE_KEYS } from '../utils/secureStorage';
 
 interface AuthContextType {
     isAuthenticated: boolean;
@@ -24,7 +25,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     useEffect(() => {
         const bootstrapAsync = async () => {
             try {
-                const userToken = await AsyncStorage.getItem('jwtToken');
+                // Use secure storage for JWT token
+                const userToken = await getSecureValue(SECURE_KEYS.JWT_TOKEN);
                 if (userToken) {
                     setToken(userToken);
                     // Use apiClient which has built-in retry logic
@@ -59,13 +61,15 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
     const login = async (newToken: string, userData?: any) => {
         setToken(newToken);
-        await AsyncStorage.setItem('jwtToken', newToken);
+        // Store JWT in secure storage (keychain/keystore on native)
+        await setSecureValue(SECURE_KEYS.JWT_TOKEN, newToken);
         if (userData) setUser(userData);
         setIsAuthenticated(true);
     };
 
     const logout = async () => {
-        await AsyncStorage.removeItem('jwtToken');
+        // Remove JWT from secure storage
+        await deleteSecureValue(SECURE_KEYS.JWT_TOKEN);
         setToken(null);
         setUser(null);
         setIsAuthenticated(false);

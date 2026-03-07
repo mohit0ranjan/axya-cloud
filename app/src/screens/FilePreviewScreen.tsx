@@ -14,11 +14,12 @@ import { ArrowLeft, Download, Trash2, FileText, FolderInput, Star, Link, CheckCi
 import { Image } from 'expo-image';
 import VideoPlayer from '../components/VideoPlayer';
 import * as Clipboard from 'expo-clipboard';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient, { API_BASE } from '../services/apiClient';
 import { useToast } from '../context/ToastContext';
 import { useDownload } from '../context/DownloadContext';
-import { theme } from '../ui/theme';
+import { useAuth } from '../context/AuthContext';
+import { theme as staticTheme } from '../ui/theme';
+import { useTheme } from '../context/ThemeContext';
 
 // react-native-reanimated v3/v4 — import as `Animated` (standard naming)
 import Animated2, {
@@ -33,6 +34,30 @@ import Animated2, {
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 
 const { width, height } = Dimensions.get('window');
+const sanitizeShareBase = (value: string): string => {
+    const trimmed = String(value || '').trim().replace(/\/+$/, '');
+    if (!trimmed) return '';
+    return trimmed.replace(/\/api$/i, '');
+};
+const DEFAULT_PUBLIC_BASE = 'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net';
+
+const EXTERNAL_SHARE_BASE = sanitizeShareBase(
+    process.env.EXPO_PUBLIC_SHARE_BASE_URL
+    || process.env.EXPO_PUBLIC_API_URL
+    || DEFAULT_PUBLIC_BASE
+);
+
+const normalizeExternalShareUrl = (rawUrl: string): string => {
+    const input = String(rawUrl || '').trim();
+    if (!input) return '';
+    try {
+        const parsed = new URL(input);
+        return `${EXTERNAL_SHARE_BASE}${parsed.pathname}${parsed.search}`.replace(/([^:]\/)\/+/g, '$1');
+    } catch {
+        // ignore parsing issue and return original
+    }
+    return input;
+};
 
 // ─────────────────────────────────────────────────────────────
 // Module-level constants (safe to capture inside worklets)
@@ -56,6 +81,7 @@ function ImagePreviewItem({
     isZoomed,
     onZoomChange,
 }: { item: any; jwt: string; isZoomed: boolean; onZoomChange?: (zoomed: boolean) => void }) {
+    const { theme } = useTheme();
     const [loading, setLoading] = useState(true);
     const [useFallback, setUseFallback] = useState(false);
     const [errored, setErrored] = useState(false);
@@ -73,11 +99,27 @@ function ImagePreviewItem({
     const savedTransX = useSharedValue(0);
     const savedTransY = useSharedValue(0);
 
+    useEffect(() => {
+        setLoading(true);
+        setUseFallback(false);
+        setErrored(false);
+        scale.value = 1;
+        savedScale.value = 1;
+        translateX.value = 0;
+        translateY.value = 0;
+        savedTransX.value = 0;
+        savedTransY.value = 0;
+        onZoomChange?.(false);
+    }, [item?.id, onZoomChange]);
+
     // ── Pinch ────────────────────────────────────────────────────────
     const pinch = Gesture.Pinch()
         .onUpdate(e => {
             'worklet';
             scale.value = Math.max(MIN_SCALE, Math.min(MAX_SCALE, savedScale.value * e.scale));
+            if (onZoomChange) {
+                runOnJS(onZoomChange)(scale.value > 1.02);
+            }
         })
         .onEnd(() => {
             'worklet';
@@ -111,12 +153,13 @@ function ImagePreviewItem({
     // with FlatList's scroll gesture. activeOffsetX/Y set a high distance
     // threshold so even if enabled, it doesn't fire on casual swipes.
     const pan = Gesture.Pan()
-        .enabled(isZoomed)                // ← completely off at 1×, no gesture conflict
+        .enabled(true)
         .averageTouches(true)
         .activeOffsetX([-20, 20])         // must move 20px before activating
         .activeOffsetY([-10, 10])
         .onUpdate(e => {
             'worklet';
+            if (scale.value <= 1.02) return;
             const maxX = (width * (scale.value - 1)) / 2;
             const maxY = (IMG_H * (scale.value - 1)) / 2;
             translateX.value = Math.max(-maxX, Math.min(maxX, savedTransX.value + e.translationX));
@@ -140,6 +183,9 @@ function ImagePreviewItem({
             savedScale.value = 1;
             savedTransX.value = 0;
             savedTransY.value = 0;
+            if (onZoomChange) {
+                runOnJS(onZoomChange)(false);
+            }
         });
 
     // Pinch + pan run simultaneously; double-tap is parallel
@@ -152,6 +198,46 @@ function ImagePreviewItem({
             { translateY: translateY.value as number },
         ] as any,   // Reanimated v4 strict transform types — `as any` is safe here
     }));
+
+    if (Platform.OS === 'web') {
+        return (
+            <View style={{ width, flex: 1, backgroundColor: '#0a0a0f' }}>
+                {loading && (
+                    <View style={StyleSheet.absoluteFillObject as any}>
+                        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                            <ActivityIndicator size="large" color={theme.colors.primary} />
+                            <Text style={{ color: 'rgba(255,255,255,0.6)', marginTop: 14, fontSize: 13, fontWeight: '500' }}>
+                                {useFallback ? 'Loading image...' : 'Loading preview...'}
+                            </Text>
+                        </View>
+                    </View>
+                )}
+                <Image
+                    source={{ uri: src, headers }}
+                    style={{ width, height: IMG_H }}
+                    contentFit="contain"
+                    transition={200}
+                    cachePolicy="disk"
+                    onLoad={() => setLoading(false)}
+                    onError={() => {
+                        if (!useFallback) {
+                            setUseFallback(true);
+                            setLoading(true);
+                        } else {
+                            setLoading(false);
+                            setErrored(true);
+                        }
+                    }}
+                />
+                {errored ? (
+                    <View style={[StyleSheet.absoluteFillObject, { justifyContent: 'center', alignItems: 'center', padding: 24 }]}>
+                        <FileText color="rgba(255,255,255,0.35)" size={64} strokeWidth={1} />
+                        <Text style={{ color: 'rgba(255,255,255,0.65)', marginTop: 12 }}>Could not load image</Text>
+                    </View>
+                ) : null}
+            </View>
+        );
+    }
 
     return (
         <View style={{ width, flex: 1, backgroundColor: '#0a0a0f' }}>
@@ -208,6 +294,7 @@ function ImagePreviewItem({
 // Works in Expo Go (no native modules needed)
 // ─────────────────────────────────────────────────────────────
 function PdfOpenButton({ url, jwt, fileName }: { url: string; jwt: string; fileName: string }) {
+    const { theme } = useTheme();
     const [downloading, setDownloading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -310,6 +397,9 @@ function PdfOpenButton({ url, jwt, fileName }: { url: string; jwt: string; fileN
 // Main Screen
 // ─────────────────────────────────────────────────────────────
 export default function FilePreviewScreen({ route, navigation }: any) {
+    const { theme } = useTheme();
+    const { token: authToken } = useAuth();
+    const deepLinkedFileId = String(route?.params?.fileId || '').trim();
     const routeFiles = Array.isArray(route?.params?.files) ? route.params.files : [];
     const fallbackFile = route?.params?.file ?? null;
     const initialIndex: number = Number.isInteger(route?.params?.initialIndex) ? route.params.initialIndex : 0;
@@ -317,7 +407,12 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         () => routeFiles.filter((f: any) => f?.mime_type !== 'inode/directory'),
         [routeFiles]
     );
-    const previewData = allFiles.length > 0 ? allFiles : (fallbackFile ? [fallbackFile] : []);
+    const hasInlinePreviewPayload = allFiles.length > 0 || Boolean(fallbackFile);
+    const [deepLinkedFile, setDeepLinkedFile] = useState<any>(null);
+    const [loadingDeepLinkedFile, setLoadingDeepLinkedFile] = useState(false);
+    const previewData = allFiles.length > 0
+        ? allFiles
+        : (fallbackFile ? [fallbackFile] : (deepLinkedFile ? [deepLinkedFile] : []));
 
     const { showToast } = useToast();
 
@@ -336,11 +431,19 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const [shareModalVisible, setShareModalVisible] = useState(false);
     const [shareToken, setShareToken] = useState('');
     const [isCreatingShare, setIsCreatingShare] = useState(false);
+    const [shareError, setShareError] = useState('');
 
     // Move file
     const [moveModalVisible, setMoveModalVisible] = useState(false);
     const [folders, setFolders] = useState<any[]>([]);
     const [loadingFolders, setLoadingFolders] = useState(false);
+    const goBackSafe = useCallback(() => {
+        if (navigation?.canGoBack?.()) {
+            navigation.goBack();
+            return;
+        }
+        navigation.navigate('MainTabs');
+    }, [navigation]);
 
     const openMoveModal = useCallback(async () => {
         if (!file?.id) return;
@@ -373,19 +476,48 @@ export default function FilePreviewScreen({ route, navigation }: any) {
             });
             setMoveModalVisible(false);
             showToast('File moved successfully');
-            navigation.goBack();
+            goBackSafe();
         } catch {
             showToast('Could not move file', 'error');
         }
-    }, [file]);
+    }, [file, goBackSafe]);
 
     // Rename
     const [renameModalVisible, setRenameModalVisible] = useState(false);
     const [newName, setNewName] = useState('');
 
     useEffect(() => {
-        AsyncStorage.getItem('jwtToken').then(t => setJwt(t || ''));
-    }, []);
+        let active = true;
+
+        if (!deepLinkedFileId || hasInlinePreviewPayload) {
+            setLoadingDeepLinkedFile(false);
+            setDeepLinkedFile(null);
+            return () => { active = false; };
+        }
+
+        setLoadingDeepLinkedFile(true);
+        apiClient.get(`/files/${encodeURIComponent(deepLinkedFileId)}/details`)
+            .then((res) => {
+                if (!active) return;
+                if (res.data?.success && res.data?.file) {
+                    setDeepLinkedFile(res.data.file);
+                } else {
+                    setDeepLinkedFile(null);
+                }
+            })
+            .catch(() => {
+                if (active) setDeepLinkedFile(null);
+            })
+            .finally(() => {
+                if (active) setLoadingDeepLinkedFile(false);
+            });
+
+        return () => { active = false; };
+    }, [deepLinkedFileId, hasInlinePreviewPayload]);
+
+    useEffect(() => {
+        setJwt(authToken || '');
+    }, [authToken]);
 
     useEffect(() => {
         setIsStarred(!!file?.is_starred);
@@ -410,12 +542,12 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     try {
                         await apiClient.patch(`/files/${file.id}/trash`);
                         showToast('Moved to trash');
-                        navigation.goBack();
+                        goBackSafe();
                     } catch { showToast('Failed to trash', 'error'); }
                 }
             },
         ]);
-    }, [file]);
+    }, [file, goBackSafe]);
 
     const handleDownload = useCallback(() => {
         if (!file?.id) return;
@@ -426,15 +558,38 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     }, [file, jwt, addDownload, showToast]);
 
     const handleCreateShare = async () => {
-        if (!file?.id) return;
+        const shareFileId = String(file?.id || file?.file_id || '').trim();
+        if (!shareFileId) {
+            setShareError('File ID missing. Refresh and try again.');
+            return;
+        }
         setIsCreatingShare(true);
+        setShareError('');
         try {
-            const res = await apiClient.post('/api/share/create', { file_id: file.id, expires_in_hours: 72 });
+            const res = await apiClient.post('/api/v2/shares', { resource_type: 'file', root_file_id: shareFileId, expires_at: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString() });
             if (res.data.success) {
-                const link = String(res.data.share_url || res.data.shareUrl || '');
-                setShareToken(link);
+                const link = normalizeExternalShareUrl(String(res.data.share_url || res.data.shareUrl || ''));
+                if (link) {
+                    setShareToken(link);
+                } else {
+                    setShareError('Share link URL missing from response.');
+                }
+            } else {
+                setShareError(res.data?.message || res.data?.error || 'Could not create share link');
             }
-        } catch { showToast('Could not create share link', 'error'); }
+        } catch (err: any) {
+            const status = Number(err?.response?.status || 0);
+            const apiMsg = String(err?.response?.data?.message || err?.response?.data?.error || '').trim();
+            const msg = apiMsg
+                || (status === 401 ? 'Session expired. Please log in again.' : '')
+                || (status === 404 ? 'Share API not found. Confirm backend exposes /api/v2/shares.' : '')
+                || (status >= 500 ? 'Server error while creating share link. Please retry.' : '')
+                || (err?.code === 'ECONNABORTED' ? 'Request timed out. Server may be waking up, retry in a few seconds.' : '')
+                || (!err?.response ? 'Cannot reach server. Check API URL/server status and retry.' : '')
+                || 'Could not create share link';
+            setShareError(msg);
+            showToast(msg, 'error');
+        }
         finally { setIsCreatingShare(false); }
     };
 
@@ -536,6 +691,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         if (viewableItems.length > 0) {
             const idx = viewableItems[0].index ?? 0;
             setCurrentIndex(idx);
+            setIsZoomed(false);
         }
     }, []);
 
@@ -548,16 +704,69 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + s[i];
     };
 
+    const styles = React.useMemo(() => StyleSheet.create({
+        container: { flex: 1, backgroundColor: theme.colors.background },
+        header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: theme.spacing.lg, zIndex: 10 },
+        headerActions: { flexDirection: 'row', gap: theme.spacing.sm },
+        glassBtn: {
+            width: 44,
+            height: 44,
+            borderRadius: theme.radius.full,
+            backgroundColor: theme.colors.card,
+            borderWidth: 1,
+            borderColor: theme.colors.border,
+            justifyContent: 'center',
+            alignItems: 'center',
+            ...staticTheme.shadows.elevation1,
+        },
+
+        previewContainer: { flex: 1 },
+        previewImage: { width: '100%', height: '100%' },
+        genericPreview: { alignItems: 'center', justifyContent: 'center', padding: theme.spacing['2xl'], flex: 1 },
+        genericLabel: { color: theme.colors.textHeading, fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight as any, marginTop: theme.spacing.xl, textAlign: 'center' },
+        genericSub: { color: theme.colors.textBody, fontSize: theme.typography.caption.fontSize, marginTop: theme.spacing.sm },
+
+        dotRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, paddingVertical: theme.spacing.sm },
+        dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.border },
+        dotActive: { width: 18, backgroundColor: theme.colors.primary },
+
+        detailSheet: { backgroundColor: theme.colors.card, borderTopLeftRadius: theme.radius.modal, borderTopRightRadius: theme.radius.modal, padding: theme.spacing.xl, paddingBottom: theme.spacing['3xl'] },
+        fileName: { fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight as any, color: theme.colors.textHeading, marginBottom: 6 },
+        fileMeta: { fontSize: theme.typography.caption.fontSize, color: theme.colors.textBody, marginBottom: theme.spacing.xl },
+        actionRow: { flexDirection: 'row', gap: theme.spacing.md },
+        primaryBtn: { flex: 1, flexDirection: 'row', backgroundColor: theme.colors.primary, height: 54, borderRadius: theme.radius.card, justifyContent: 'center', alignItems: 'center', gap: theme.spacing.sm, ...staticTheme.shadows.elevation1 },
+        primaryBtnText: { color: '#fff', fontSize: theme.typography.body.fontSize, fontWeight: theme.typography.hero.fontWeight as any },
+        secondaryBtn: { width: 54, height: 54, backgroundColor: theme.colors.inputBg, borderRadius: theme.radius.card, justifyContent: 'center', alignItems: 'center' },
+
+        overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+        bottomSheet: { backgroundColor: theme.colors.card, borderTopLeftRadius: theme.radius.modal, borderTopRightRadius: theme.radius.modal, padding: theme.spacing.xl, paddingBottom: theme.spacing['4xl'] },
+        sheetHandle: { width: 40, height: 4, backgroundColor: theme.colors.border, borderRadius: theme.radius.full, alignSelf: 'center', marginBottom: theme.spacing.xl },
+        sheetTitle: { fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight as any, color: theme.colors.textHeading, marginBottom: theme.spacing.lg },
+
+        linkBox: { backgroundColor: theme.colors.inputBg, borderRadius: theme.radius.md, padding: theme.spacing.lg, marginBottom: theme.spacing.lg },
+        linkText: { fontSize: theme.typography.caption.fontSize, color: theme.colors.textBody, lineHeight: 20 },
+        copyBtn: { backgroundColor: theme.colors.primary, borderRadius: theme.radius.md, height: 50, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: theme.spacing.sm },
+        copyBtnText: { color: '#fff', fontWeight: theme.typography.hero.fontWeight as any, fontSize: theme.typography.body.fontSize },
+        linkSub: { fontSize: theme.typography.metadata.fontSize, color: theme.colors.textBody, textAlign: 'center', marginTop: theme.spacing.md },
+
+        moveRow: { paddingVertical: theme.spacing.lg, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
+        moveLabel: { fontSize: theme.typography.body.fontSize, fontWeight: theme.typography.subtitle.fontWeight as any, color: theme.colors.textHeading },
+
+        centeredOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: theme.spacing.xl },
+        modalCard: { width: '100%', backgroundColor: theme.colors.card, borderRadius: theme.radius.modal, padding: theme.spacing.xl, ...staticTheme.shadows.elevation2 },
+        renameInput: { borderWidth: 1.5, borderColor: theme.colors.border, borderRadius: theme.radius.md, paddingHorizontal: theme.spacing.lg, height: 50, fontSize: theme.typography.body.fontSize, marginBottom: theme.spacing.lg, color: theme.colors.textHeading },
+    }), [theme]);
+
     return (
         <SafeAreaView style={styles.container}>
             {/* Top Header */}
             <View style={styles.header}>
-                <TouchableOpacity style={styles.glassBtn} onPress={() => navigation.goBack()}>
-                    <ArrowLeft color="#fff" size={22} />
+                <TouchableOpacity style={styles.glassBtn} onPress={goBackSafe}>
+                    <ArrowLeft color={theme.colors.textHeading} size={22} />
                 </TouchableOpacity>
                 <View style={styles.headerActions}>
                     <TouchableOpacity style={styles.glassBtn} onPress={handleStar}>
-                        <Star color={isStarred ? theme.colors.accent : '#fff'} size={20} fill={isStarred ? theme.colors.accent : 'transparent'} />
+                        <Star color={isStarred ? theme.colors.accent : theme.colors.textHeading} size={20} fill={isStarred ? theme.colors.accent : 'transparent'} />
                     </TouchableOpacity>
                     <TouchableOpacity style={styles.glassBtn} onPress={handleTrash}>
                         <Trash2 color={theme.colors.danger} size={20} />
@@ -572,6 +781,18 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                         <ActivityIndicator size="large" color={theme.colors.primary} />
                         <Text style={{ color: 'rgba(255,255,255,0.5)', marginTop: 12 }}>Authenticating…</Text>
                     </View>
+                ) : loadingDeepLinkedFile ? (
+                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                        <ActivityIndicator size="large" color={theme.colors.primary} />
+                        <Text style={{ color: 'rgba(255,255,255,0.5)', marginTop: 12 }}>Loading file…</Text>
+                    </View>
+                ) : previewData.length === 0 ? (
+                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 }}>
+                        <FileText color="rgba(255,255,255,0.35)" size={56} />
+                        <Text style={{ color: '#fff', marginTop: 12, fontSize: 16, fontWeight: '600', textAlign: 'center' }}>
+                            This file could not be opened.
+                        </Text>
+                    </View>
                 ) : (
                     <FlatList
                         data={previewData}
@@ -585,7 +806,8 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                         renderItem={renderItem}
                         onViewableItemsChanged={onViewableItemsChanged}
                         viewabilityConfig={viewabilityConfig}
-                        scrollEnabled={previewData.length > 1 && !isZoomed}
+                        onMomentumScrollBegin={() => setIsZoomed(false)}
+                        scrollEnabled={Platform.OS === 'web' ? previewData.length > 1 : (previewData.length > 1 && !isZoomed)}
                         decelerationRate="fast"
                         snapToInterval={width}
                         snapToAlignment="start"
@@ -620,7 +842,12 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                         {downloading ? <ActivityIndicator color="#fff" size="small" /> : <><Download color="#fff" size={20} /><Text style={styles.primaryBtnText}>Download</Text></>}
                     </TouchableOpacity>
 
-                    <TouchableOpacity style={styles.secondaryBtn} onPress={() => { setShareModalVisible(true); handleCreateShare(); }}>
+                    <TouchableOpacity style={styles.secondaryBtn} onPress={() => {
+                        setShareToken('');
+                        setShareError('');
+                        setShareModalVisible(true);
+                        void handleCreateShare();
+                    }}>
                         <Link color={theme.colors.primary} size={20} />
                     </TouchableOpacity>
 
@@ -656,9 +883,18 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                                     <CheckCircle color="#fff" size={18} />
                                     <Text style={styles.copyBtnText}>Copy Link</Text>
                                 </TouchableOpacity>
-                                <Text style={styles.linkSub}>Link expires in 72 hours · Anyone with the link can view</Text>
+                                <Text style={styles.linkSub}>Link expires in 72 hours � Anyone with the link can view</Text>
                             </>
-                        ) : null}
+                        ) : (
+                            <View style={{ paddingVertical: 12 }}>
+                                <Text style={{ color: theme.colors.textBody, marginBottom: 12 }}>
+                                    {shareError || 'Unable to generate link right now.'}
+                                </Text>
+                                <TouchableOpacity style={styles.copyBtn} onPress={() => void handleCreateShare()}>
+                                    <Text style={styles.copyBtnText}>Retry</Text>
+                                </TouchableOpacity>
+                            </View>
+                        )}
                     </View>
                 </View>
             </Modal>
@@ -706,45 +942,5 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     );
 }
 
-const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#0a0a0f' },
-    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: theme.spacing.lg, zIndex: 10 },
-    headerActions: { flexDirection: 'row', gap: theme.spacing.sm },
-    glassBtn: { width: 44, height: 44, borderRadius: theme.radius.full, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
 
-    previewContainer: { flex: 1 },
-    previewImage: { width: '100%', height: '100%' },
-    genericPreview: { alignItems: 'center', justifyContent: 'center', padding: theme.spacing['2xl'], flex: 1 },
-    genericLabel: { color: theme.colors.card, fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight, marginTop: theme.spacing.xl, textAlign: 'center' },
-    genericSub: { color: 'rgba(255,255,255,0.5)', fontSize: theme.typography.caption.fontSize, marginTop: theme.spacing.sm },
 
-    dotRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, paddingVertical: theme.spacing.sm },
-    dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.3)' },
-    dotActive: { width: 18, backgroundColor: theme.colors.primary },
-
-    detailSheet: { backgroundColor: theme.colors.card, borderTopLeftRadius: theme.radius.modal, borderTopRightRadius: theme.radius.modal, padding: theme.spacing.xl, paddingBottom: theme.spacing['3xl'] },
-    fileName: { fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight, color: theme.colors.neutral[900], marginBottom: 6 },
-    fileMeta: { fontSize: theme.typography.caption.fontSize, color: theme.colors.neutral[500], marginBottom: theme.spacing.xl },
-    actionRow: { flexDirection: 'row', gap: theme.spacing.md },
-    primaryBtn: { flex: 1, flexDirection: 'row', backgroundColor: theme.colors.primary, height: 54, borderRadius: theme.radius.card, justifyContent: 'center', alignItems: 'center', gap: theme.spacing.sm, ...theme.shadows.elevation1 },
-    primaryBtnText: { color: theme.colors.card, fontSize: theme.typography.body.fontSize, fontWeight: theme.typography.hero.fontWeight },
-    secondaryBtn: { width: 54, height: 54, backgroundColor: theme.colors.neutral[50], borderRadius: theme.radius.card, justifyContent: 'center', alignItems: 'center' },
-
-    overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
-    bottomSheet: { backgroundColor: theme.colors.card, borderTopLeftRadius: theme.radius.modal, borderTopRightRadius: theme.radius.modal, padding: theme.spacing.xl, paddingBottom: theme.spacing['4xl'] },
-    sheetHandle: { width: 40, height: 4, backgroundColor: theme.colors.neutral[200], borderRadius: theme.radius.full, alignSelf: 'center', marginBottom: theme.spacing.xl },
-    sheetTitle: { fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight, color: theme.colors.neutral[900], marginBottom: theme.spacing.lg },
-
-    linkBox: { backgroundColor: theme.colors.neutral[50], borderRadius: theme.radius.md, padding: theme.spacing.lg, marginBottom: theme.spacing.lg },
-    linkText: { fontSize: theme.typography.caption.fontSize, color: theme.colors.neutral[700], lineHeight: 20 },
-    copyBtn: { backgroundColor: theme.colors.primary, borderRadius: theme.radius.md, height: 50, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: theme.spacing.sm },
-    copyBtnText: { color: theme.colors.card, fontWeight: theme.typography.hero.fontWeight, fontSize: theme.typography.body.fontSize },
-    linkSub: { fontSize: theme.typography.metadata.fontSize, color: theme.colors.neutral[500], textAlign: 'center', marginTop: theme.spacing.md },
-
-    moveRow: { paddingVertical: theme.spacing.lg, borderBottomWidth: 1, borderBottomColor: theme.colors.neutral[100] },
-    moveLabel: { fontSize: theme.typography.body.fontSize, fontWeight: theme.typography.subtitle.fontWeight, color: theme.colors.neutral[900] },
-
-    centeredOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: theme.spacing.xl },
-    modalCard: { width: '100%', backgroundColor: theme.colors.card, borderRadius: theme.radius.modal, padding: theme.spacing.xl, ...theme.shadows.elevation2 },
-    renameInput: { borderWidth: 1.5, borderColor: theme.colors.neutral[200], borderRadius: theme.radius.md, paddingHorizontal: theme.spacing.lg, height: 50, fontSize: theme.typography.body.fontSize, marginBottom: theme.spacing.lg, color: theme.colors.neutral[900] },
-});

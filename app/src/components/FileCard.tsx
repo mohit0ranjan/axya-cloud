@@ -1,39 +1,21 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { FileText, Image as ImageIcon, Film, Music, Archive, Folder, Star, Trash2 } from 'lucide-react-native';
-import { Image } from 'expo-image';
-import { theme } from '../ui/theme';
+import React, { useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Animated, Pressable } from 'react-native';
+import { MoreHorizontal, Star, Trash2 } from 'lucide-react-native';
+import { theme as staticTheme } from '../ui/theme';
+import { useTheme } from '../context/ThemeContext';
+import { FileIcon } from './FileIcon';
 
 interface Props {
     item: any;
     onPress: () => void;
-    onTrash?: () => void;
+    onOptions?: () => void;
     onStar?: () => void;
+    onTrash?: () => void;
     onRestore?: () => void;
     showRestore?: boolean;
     token?: string;
     apiBase?: string;
 }
-
-const ICON_MAP: Record<string, { icon: any; color: string; bg: string }> = {
-    image: { icon: ImageIcon, color: theme.colors.warning, bg: '#FEF3C7' },
-    video: { icon: Film, color: '#9333EA', bg: '#F3E8FF' },
-    audio: { icon: Music, color: theme.colors.success, bg: '#DCFCE7' },
-    pdf: { icon: FileText, color: theme.colors.error, bg: '#FEE2E2' },
-    folder: { icon: Folder, color: theme.colors.primary, bg: theme.colors.primaryLight },
-    zip: { icon: Archive, color: '#F97316', bg: '#FFEDD5' },
-    default: { icon: FileText, color: theme.colors.primary, bg: theme.colors.primaryLight },
-};
-
-const getIconConfig = (item: any) => {
-    if (item.result_type === 'folder' || item.mime_type === 'inode/directory') return ICON_MAP.folder;
-    if (item.mime_type?.includes('image')) return ICON_MAP.image;
-    if (item.mime_type?.includes('video')) return ICON_MAP.video;
-    if (item.mime_type?.includes('audio')) return ICON_MAP.audio;
-    if (item.mime_type?.includes('pdf')) return ICON_MAP.pdf;
-    if (item.mime_type?.includes('zip') || item.mime_type?.includes('compress')) return ICON_MAP.zip;
-    return ICON_MAP.default;
-};
 
 const formatSize = (bytes: number) => {
     if (!bytes) return '';
@@ -51,85 +33,91 @@ const formatDate = (dateStr: string) => {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
-export default function FileCard({ item, onPress, onTrash, onStar, onRestore, showRestore, token, apiBase }: Props) {
-    const config = getIconConfig(item);
-    const IconComp = config.icon;
+export default function FileCard({
+    item,
+    onPress,
+    onOptions,
+    onStar,
+    onTrash,
+    onRestore,
+    showRestore = false,
+    token,
+    apiBase
+}: Props) {
+    const { theme, isDark } = useTheme();
+    const scaleAnim = useRef(new Animated.Value(1)).current;
+
+    const onPressIn = () => {
+        Animated.spring(scaleAnim, {
+            toValue: 0.98,
+            useNativeDriver: true,
+            tension: 300,
+            friction: 20,
+        }).start();
+    };
+
+    const onPressOut = () => {
+        Animated.spring(scaleAnim, {
+            toValue: 1,
+            useNativeDriver: true,
+            tension: 300,
+            friction: 20,
+        }).start();
+    };
+
     const isFolder = item.result_type === 'folder' || item.mime_type === 'inode/directory';
-    const isMedia = (item.mime_type?.includes('image') || item.mime_type?.includes('video')) && !isFolder;
-    const hasStreamUrl = !!token && !!apiBase && !isFolder;
 
     return (
-        <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.7}>
-            {/* Thumbnail / Icon */}
-            <View style={[styles.iconBox, { backgroundColor: config.bg, overflow: 'hidden' }]}>
-                {isMedia && hasStreamUrl ? (
-                    <Image
-                        source={{
-                            uri: `${apiBase}/files/${item.id}/thumbnail`,
-                            headers: { Authorization: `Bearer ${token}` },
-                        }}
-                        style={{ width: '100%', height: '100%' }}
-                        contentFit="cover"
-                        cachePolicy="disk"
-                        transition={200}
-                    />
-                ) : (
-                    <IconComp color={config.color} size={24} />
-                )}
-            </View>
+        <Pressable
+            onPress={onPress}
+            onPressIn={onPressIn}
+            onPressOut={onPressOut}
+        >
+            <Animated.View style={[styles.card, { backgroundColor: theme.colors.background, transform: [{ scale: scaleAnim }] }]}>
+                <FileIcon item={item} size={46} token={token} apiBase={apiBase} themeColors={theme.colors} />
 
-            {/* Meta */}
-            <View style={styles.info}>
-                <Text style={styles.name} numberOfLines={1}>{item.name || item.file_name}</Text>
-                <Text style={styles.meta}>
-                    {isFolder
-                        ? `Folder${item.file_count != null ? ` · ${item.file_count} items` : ''}`
-                        : [formatSize(item.size), formatDate(item.created_at)].filter(Boolean).join('  ·  ')
-                    }
-                </Text>
-            </View>
+                {/* Meta */}
+                <View style={styles.info}>
+                    <Text style={[styles.name, { color: theme.colors.textHeading }]} numberOfLines={1}>{item.name || item.file_name}</Text>
+                    <Text style={[styles.meta, { color: theme.colors.textBody }]}>
+                        {isFolder
+                            ? `Folder${item.file_count != null ? ` · ${item.file_count} items` : ''} `
+                            : [formatSize(item.size), formatDate(item.created_at)].filter(Boolean).join('  ·  ')
+                        }
+                    </Text>
+                </View>
 
-            {/* Actions */}
-            <View style={styles.actions}>
-                {onStar && !showRestore && (
+                {/* Actions */}
+                <View style={styles.actions}>
+                    {showRestore && onRestore ? (
+                        <TouchableOpacity style={styles.actionBtnRestore} onPress={onRestore}>
+                            <Text style={[styles.actionBtnRestoreText, { color: theme.colors.success }]}>Restore</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    {onStar ? (
+                        <TouchableOpacity style={styles.actionBtn} onPress={onStar}>
+                            <Star color={item?.is_starred ? theme.colors.accent : theme.colors.textBody} size={18} />
+                        </TouchableOpacity>
+                    ) : null}
+                    {onTrash ? (
+                        <TouchableOpacity style={styles.actionBtnTrash} onPress={onTrash}>
+                            <Trash2 color={theme.colors.danger} size={18} />
+                        </TouchableOpacity>
+                    ) : null}
                     <TouchableOpacity
-                        style={styles.actionBtn}
+                        style={styles.moreBtn}
                         onPress={(e) => {
                             e.stopPropagation();
-                            onStar();
+                            if (onOptions) onOptions();
+                            else if ((item as any).onOptions) (item as any).onOptions();
                         }}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                     >
-                        <Star
-                            color={item.is_starred ? theme.colors.accent : theme.colors.neutral[400]}
-                            size={20}
-                            fill={item.is_starred ? theme.colors.accent : 'transparent'}
-                        />
+                        <MoreHorizontal color={theme.colors.textBody} size={20} />
                     </TouchableOpacity>
-                )}
-                {showRestore && onRestore && (
-                    <TouchableOpacity
-                        style={[styles.actionBtnRestore]}
-                        onPress={(e) => {
-                            e.stopPropagation();
-                            onRestore();
-                        }}
-                    >
-                        <Text style={styles.actionBtnRestoreText}>Restore</Text>
-                    </TouchableOpacity>
-                )}
-                {onTrash && (
-                    <TouchableOpacity
-                        style={[styles.actionBtnTrash]}
-                        onPress={(e) => {
-                            e.stopPropagation();
-                            onTrash();
-                        }}
-                    >
-                        <Trash2 color={theme.colors.danger} size={20} />
-                    </TouchableOpacity>
-                )}
-            </View>
-        </TouchableOpacity>
+                </View>
+            </Animated.View>
+        </Pressable>
     );
 }
 
@@ -137,49 +125,48 @@ const styles = StyleSheet.create({
     card: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: theme.colors.card,
-        padding: theme.spacing.lg,
-        borderRadius: theme.radius.card,
-        marginBottom: theme.spacing.md,
-        ...theme.shadows.elevation1,
+        paddingVertical: 12,
+        paddingHorizontal: 0,
+        marginBottom: 4,
     },
     iconBox: {
         width: 46, height: 46,
-        borderRadius: theme.radius.md,
+        borderRadius: staticTheme.radius.md,
         justifyContent: 'center', alignItems: 'center'
     },
-    info: { flex: 1, marginHorizontal: theme.spacing.lg },
+    info: { flex: 1, marginHorizontal: staticTheme.spacing.lg },
     name: {
-        fontSize: theme.typography.body.fontSize,
-        fontWeight: theme.typography.subtitle.fontWeight,
-        color: theme.colors.neutral[900],
+        fontSize: staticTheme.typography.body.fontSize,
+        fontWeight: '500',
         marginBottom: 3
     },
     meta: {
-        fontSize: theme.typography.metadata.fontSize,
-        color: theme.colors.neutral[500],
-        fontWeight: theme.typography.metadata.fontWeight
+        fontSize: staticTheme.typography.metadata.fontSize,
+        fontWeight: staticTheme.typography.metadata.fontWeight
     },
-    actions: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+    actions: { flexDirection: 'row', alignItems: 'center', gap: staticTheme.spacing.sm },
     actionBtn: {
         width: 44, height: 44,
-        borderRadius: theme.radius.md,
+        borderRadius: staticTheme.radius.md,
         justifyContent: 'center', alignItems: 'center',
-        backgroundColor: theme.colors.neutral[50]
     },
     actionBtnRestore: {
-        paddingHorizontal: theme.spacing.lg, height: 44,
-        borderRadius: theme.radius.md, justifyContent: 'center', alignItems: 'center',
-        backgroundColor: `${theme.colors.success}1A` // 10% opacity equivalent
+        paddingHorizontal: staticTheme.spacing.lg, height: 44,
+        borderRadius: staticTheme.radius.md, justifyContent: 'center', alignItems: 'center',
+        backgroundColor: `rgba(31, 212, 90, 0.1)` // 10% opacity success
     },
     actionBtnRestoreText: {
-        fontSize: theme.typography.caption.fontSize,
-        fontWeight: theme.typography.hero.fontWeight,
-        color: theme.colors.success
+        fontSize: staticTheme.typography.caption.fontSize,
+        fontWeight: staticTheme.typography.hero.fontWeight,
     },
     actionBtnTrash: {
-        width: 44, height: 44, borderRadius: theme.radius.md,
+        width: 44, height: 44, borderRadius: staticTheme.radius.md,
         justifyContent: 'center', alignItems: 'center',
-        backgroundColor: `${theme.colors.error}14` // 8% opacity equivalent
+        backgroundColor: `rgba(239, 68, 68, 0.08)` // 8% opacity error
     },
+    moreBtn: {
+        padding: 8,
+        justifyContent: 'center',
+        alignItems: 'center',
+    }
 });

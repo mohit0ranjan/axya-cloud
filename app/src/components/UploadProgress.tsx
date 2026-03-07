@@ -15,7 +15,8 @@ import {
 } from 'lucide-react-native';
 
 import { UploadTask } from '../services/UploadManager';
-import { theme } from '../ui/theme';
+import { theme as staticTheme } from '../ui/theme';
+import { useTheme } from '../context/ThemeContext';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -42,6 +43,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
     task, onCancel, onPause, onResume, onRetry,
 }) => {
     const { file, status, progress, bytesUploaded } = task;
+    const { theme } = useTheme();
 
     const animProgress = useRef(new Animated.Value(0)).current;
 
@@ -83,36 +85,37 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
     };
 
     const StatusIcon = () => {
-        if (isCompleted && task.duplicate) return <Copy size={16} color={theme.colors.info} />;
+        if (isCompleted && task.duplicate) return <Copy size={16} color={theme.colors.primary} />;
         if (isCompleted) return <CheckCircle size={16} color={theme.colors.success} />;
-        if (isFailed) return <AlertCircle size={16} color={theme.colors.error} />;
-        if (isPaused) return <Pause size={16} color={theme.colors.warning} />;
-        if (isCancelled) return <X size={16} color={theme.colors.neutral[500]} />;
-        if (isRetrying) return <Loader size={16} color={theme.colors.warning} />;
-        if (isQueued) return <Clock size={16} color={theme.colors.neutral[500]} />;
+        if (isFailed) return <AlertCircle size={16} color={theme.colors.danger} />;
+        if (isPaused) return <Pause size={16} color={theme.colors.accent} />;
+        if (isCancelled) return <X size={16} color={theme.colors.muted} />;
+        if (isRetrying) return <Loader size={16} color={theme.colors.accent} />;
+        if (isQueued) return <Clock size={16} color={theme.colors.muted} />;
         return <CloudUpload size={16} color={theme.colors.primary} />;
     };
 
     const progressColor = isCompleted
-        ? (task.duplicate ? theme.colors.info : theme.colors.success)
-        : isFailed ? theme.colors.error
-            : isPaused ? theme.colors.warning
+        ? (task.duplicate ? theme.colors.primary : theme.colors.success)
+        : isFailed ? theme.colors.danger
+            : isPaused ? theme.colors.accent
                 : theme.colors.primary;
 
     return (
-        <View style={styles.card}>
+        <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
             <View style={styles.header}>
                 <View style={styles.info}>
-                    <Text style={styles.fileName} numberOfLines={1}>{file.name}</Text>
+                    <Text style={[styles.fileName, { color: theme.colors.textHeading }]} numberOfLines={1}>{file.name}</Text>
                     <View style={styles.statusRow}>
                         <StatusIcon />
                         <Text
                             style={[
                                 styles.statusText,
-                                isFailed && styles.statusError,
-                                isCompleted && !task.duplicate && styles.statusSuccess,
-                                isCompleted && task.duplicate && styles.statusDuplicate,
-                                isPaused && styles.statusPaused,
+                                { color: theme.colors.primary },
+                                isFailed && { color: theme.colors.danger },
+                                isCompleted && !task.duplicate && { color: theme.colors.success },
+                                isCompleted && task.duplicate && { color: theme.colors.primary },
+                                isPaused && { color: theme.colors.accent },
                             ]}
                             numberOfLines={1}
                         >
@@ -124,17 +127,17 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                     {canPause && (
                         <TouchableOpacity
                             onPress={() => onPause!(task.id)}
-                            style={styles.iconBtn}
+                            style={[styles.iconBtn, { backgroundColor: theme.colors.inputBg }]}
                             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                             accessibilityLabel="Pause upload"
                         >
-                            <Pause size={17} color={theme.colors.neutral[500]} />
+                            <Pause size={17} color={theme.colors.muted} />
                         </TouchableOpacity>
                     )}
                     {canResume && !canRetry && (
                         <TouchableOpacity
                             onPress={() => onResume!(task.id)}
-                            style={[styles.iconBtn, styles.resumeBtn]}
+                            style={[styles.iconBtn, { backgroundColor: theme.colors.primaryLight }]}
                             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                             accessibilityLabel="Resume upload"
                         >
@@ -144,7 +147,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                     {canRetry && (
                         <TouchableOpacity
                             onPress={() => onRetry!(task.id)}
-                            style={[styles.iconBtn, styles.resumeBtn]}
+                            style={[styles.iconBtn, { backgroundColor: theme.colors.primaryLight }]}
                             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                             accessibilityLabel="Retry upload"
                         >
@@ -154,16 +157,16 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                     {canCancel && (
                         <TouchableOpacity
                             onPress={() => onCancel(task.id)}
-                            style={[styles.iconBtn, styles.cancelBtn]}
+                            style={[styles.iconBtn, { backgroundColor: `${theme.colors.danger}1A` }]}
                             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                             accessibilityLabel="Cancel upload"
                         >
-                            <X size={17} color={theme.colors.error} />
+                            <X size={17} color={theme.colors.danger} />
                         </TouchableOpacity>
                     )}
                 </View>
             </View>
-            <View style={styles.progressTrack}>
+            <View style={[styles.progressTrack, { backgroundColor: theme.colors.border }]}>
                 <Animated.View
                     style={[
                         styles.progressFill,
@@ -177,27 +180,25 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                     ]}
                 />
             </View>
-            <Text style={styles.sizeText}>{formatFileSize(file.size)}</Text>
+            <Text style={[styles.sizeText, { color: theme.colors.textBody }]}>{formatFileSize(file.size)}</Text>
         </View>
     );
 };
 
 const styles = StyleSheet.create({
     card: {
-        backgroundColor: theme.colors.card,
-        borderRadius: theme.radius.card,
-        padding: theme.spacing.lg,
-        marginBottom: theme.spacing.md,
-        ...theme.shadows.elevation1,
+        borderRadius: staticTheme.radius.card,
+        padding: staticTheme.spacing.lg,
+        marginBottom: staticTheme.spacing.md,
+        ...staticTheme.shadows.elevation1,
         borderWidth: 1,
-        borderColor: theme.colors.neutral[100],
     },
     header: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        marginBottom: theme.spacing.md,
-        gap: theme.spacing.sm,
+        marginBottom: staticTheme.spacing.md,
+        gap: staticTheme.spacing.sm,
     },
     info: {
         flex: 1,
@@ -205,9 +206,8 @@ const styles = StyleSheet.create({
         minWidth: 0,
     },
     fileName: {
-        fontSize: theme.typography.body.fontSize,
-        fontWeight: theme.typography.subtitle.fontWeight,
-        color: theme.colors.neutral[900],
+        fontSize: staticTheme.typography.body.fontSize,
+        fontWeight: staticTheme.typography.subtitle.fontWeight,
     },
     statusRow: {
         flexDirection: 'row',
@@ -217,44 +217,30 @@ const styles = StyleSheet.create({
     statusText: {
         fontSize: 12,
         fontWeight: '600',
-        color: theme.colors.primary,
         flexShrink: 1,
     },
-    statusError: { color: theme.colors.error },
-    statusSuccess: { color: theme.colors.success },
-    statusDuplicate: { color: theme.colors.info },
-    statusPaused: { color: theme.colors.warning },
     actions: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 6,
     },
     iconBtn: {
-        padding: theme.spacing.sm,
-        borderRadius: theme.radius.md,
-        backgroundColor: theme.colors.neutral[50],
-    },
-    resumeBtn: {
-        backgroundColor: theme.colors.primaryLight,
-    },
-    cancelBtn: {
-        backgroundColor: `${theme.colors.error}1A`, // 10% opacity equivalent
+        padding: staticTheme.spacing.sm,
+        borderRadius: staticTheme.radius.md,
     },
     progressTrack: {
         height: 6,
-        borderRadius: theme.radius.full,
-        backgroundColor: theme.colors.neutral[100],
+        borderRadius: staticTheme.radius.full,
         overflow: 'hidden',
         marginBottom: 6,
     },
     progressFill: {
         height: '100%',
-        borderRadius: theme.radius.full,
+        borderRadius: staticTheme.radius.full,
     },
     sizeText: {
-        fontSize: theme.typography.metadata.fontSize,
-        color: theme.colors.neutral[500],
-        fontWeight: theme.typography.metadata.fontWeight,
+        fontSize: staticTheme.typography.metadata.fontSize,
+        fontWeight: staticTheme.typography.metadata.fontWeight,
     },
 });
 

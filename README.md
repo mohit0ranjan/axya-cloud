@@ -260,6 +260,13 @@ cd anyx
 
 ## 2. Install Dependencies
 
+Node runtime (required):
+
+```bash
+nvm use 20
+node -v
+```
+
 Mobile app
 
 ```bash
@@ -278,24 +285,28 @@ npm install
 
 ## 3. Configure Environment
 
-Create file:
+Create from template:
 
 ```
-server/.env
+cp server/.env.example server/.env
+cp app/.env.example app/.env
 ```
 
-Example:
+Minimum required values:
 
 ```
-PORT=5000
-
 DATABASE_URL=postgresql://user:password@host/db
-
-TELEGRAM_BOT_TOKEN=your_bot_token
-
-TELEGRAM_CHANNEL_ID=-100xxxxxxxxxx
-
 JWT_SECRET=supersecret
+TELEGRAM_API_ID=123456
+TELEGRAM_API_HASH=your_api_hash
+TELEGRAM_SESSION=your_string_session
+```
+
+Production-only required:
+
+```
+NODE_ENV=production
+COOKIE_SECRET=separate-strong-cookie-secret
 ```
 
 ---

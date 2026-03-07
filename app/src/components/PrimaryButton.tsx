@@ -69,14 +69,14 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         gap: 12,
         backgroundColor: '#4B6EF5',
-        borderRadius: 18,
-        height: 58,
+        borderRadius: 16,
+        height: 52,
         width: '100%',
         shadowColor: '#3B5DE7',
-        shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 0.3,
-        shadowRadius: 18,
-        elevation: 8,
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.25,
+        shadowRadius: 14,
+        elevation: 6,
     },
     ctaDisabled: {
         backgroundColor: '#CBD5E1',
@@ -86,13 +86,13 @@ const styles = StyleSheet.create({
         elevation: 0,
     },
     ctaText: {
-        fontSize: 17,
-        fontWeight: '700',
+        fontSize: 16,
+        fontWeight: '600',
         color: '#fff',
-        letterSpacing: 0.3
+        letterSpacing: 0.2
     },
     ctaArrow: {
-        width: 30, height: 30, borderRadius: 15,
+        width: 28, height: 28, borderRadius: 14,
         backgroundColor: 'rgba(255,255,255,0.25)',
         justifyContent: 'center', alignItems: 'center',
     },

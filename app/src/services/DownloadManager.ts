@@ -43,6 +43,8 @@ class DownloadManager {
     public tasks: DownloadTask[] = [];
 
     private readonly MAX_CONCURRENT = 3;
+    private readonly notificationsEnabled =
+        Platform.OS !== 'web' && typeof Notifications.scheduleNotificationAsync === 'function';
     private activeDownloads = 0;
     private listeners: ((tasks: DownloadTask[]) => void)[] = [];
 
@@ -80,6 +82,7 @@ class DownloadManager {
     // ── Notifications ────────────────────────────────────────────────────────
 
     private async updateNotification() {
+        if (!this.notificationsEnabled) return;
         const active = this.tasks.filter(
             t => t.status === 'downloading' || t.status === 'queued'
         );
@@ -265,6 +268,45 @@ class DownloadManager {
 
     // ── Core Download Logic ──────────────────────────────────────────────────
 
+    private sanitizeFileName(name: string): string {
+        const trimmed = String(name || '').trim();
+        const base = trimmed || 'download';
+        const cleaned = base
+            .replace(/[\/\\:*?"<>|\r\n]+/g, '_')
+            .replace(/\s+/g, ' ')
+            .trim();
+        return cleaned || 'download';
+    }
+
+    private buildHttpErrorMessage(status: number, responseBody?: string): string {
+        const parsed = responseBody?.trim();
+        let code = '';
+        let backendError = '';
+        if (parsed) {
+            try {
+                const json = JSON.parse(parsed);
+                code = String(json?.code || '').toLowerCase();
+                backendError = String(json?.message || json?.error || '').trim();
+            } catch {
+                // keep defaults
+            }
+        }
+
+        if (code === 'schema_not_ready') return 'Service is starting. Please retry in a moment.';
+        if (code === 'telegram_session_expired') return 'Telegram session expired. Please reconnect Telegram.';
+        if (code === 'telegram_message_not_found') return 'File no longer exists in Telegram.';
+        if (code === 'telegram_chat_invalid') return 'File source mapping is invalid. Re-upload may be required.';
+        if (backendError) return backendError;
+
+        if (status === 401) return 'Unauthorized. Please sign in again.';
+        if (status === 403) return 'You do not have access to this file.';
+        if (status === 404) return 'File not found.';
+        if (status === 409) return 'File metadata is invalid. Please re-upload the file.';
+        if (status === 502) return 'Telegram file fetch failed. Try again.';
+        if (status === 503) return 'Telegram session unavailable. Please reconnect Telegram.';
+        return `Download failed (${status})`;
+    }
+
     private async performDownload(task: DownloadTask, jwt: string): Promise<void> {
         const throwIfCancelled = () => {
             if (task.status === 'cancelled') {
@@ -275,7 +317,8 @@ class DownloadManager {
         throwIfCancelled();
 
         const downloadUrl = `${API_BASE}/files/${task.fileId}/download`;
-        const destFile = new File(Paths.document, task.fileName);
+        const safeFileName = this.sanitizeFileName(task.fileName);
+        const destFile = new File(Paths.document, safeFileName);
 
         task.progress = 5; // Starting
         this.notifyListeners();
@@ -298,6 +341,21 @@ class DownloadManager {
         this.downloadWorkers.set(task.id, worker);
         const result = await worker.downloadAsync();
         if (!result?.uri) throw new Error('Download failed');
+        if ((result.status ?? 0) < 200 || (result.status ?? 0) >= 300) {
+            let body = '';
+            try {
+                body = await LegacyFileSystem.readAsStringAsync(result.uri);
+            } catch {
+                // non-fatal, fallback to status code only
+            }
+            const message = this.buildHttpErrorMessage(result.status || 0, body);
+            try {
+                await LegacyFileSystem.deleteAsync(result.uri, { idempotent: true });
+            } catch {
+                // cleanup failure is non-critical
+            }
+            throw new Error(message);
+        }
 
         throwIfCancelled();
 

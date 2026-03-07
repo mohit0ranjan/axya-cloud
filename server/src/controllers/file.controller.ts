@@ -9,7 +9,8 @@ import crypto from 'crypto';
 import os from 'os';
 import sharp from 'sharp';
 import { logger } from '../utils/logger';
-import { getShareUrl, signShareLinkToken, ShareRow } from '../services/share.service';
+import { sendApiError } from '../utils/apiError';
+import { mapTelegramError } from '../utils/telegramErrors';
 
 // ── Allowed MIME types ─────────────────────────────────────────────────────
 const ALLOWED_TYPES = [
@@ -20,6 +21,117 @@ const ALLOWED_TYPES = [
 ];
 
 const isAllowedMime = (mime: string) => ALLOWED_TYPES.some(t => mime.startsWith(t));
+const clampInt = (value: unknown, fallback: number, min: number, max: number) => {
+    const parsed = Number.parseInt(String(value ?? ''), 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(Math.max(parsed, min), max);
+};
+
+const getFileReadSessionCandidates = (ownerSessionString: string) => {
+    const candidates = [
+        String(process.env.TELEGRAM_STORAGE_SESSION || '').trim(),
+        String(process.env.TELEGRAM_SESSION || '').trim(),
+        String(ownerSessionString || '').trim(),
+    ].filter(Boolean);
+    return Array.from(new Set(candidates));
+};
+
+type TelegramReadClient = {
+    client: any;
+    isStorageSession: boolean;
+};
+
+const getTelegramReadClients = async (ownerSessionString: string): Promise<TelegramReadClient[]> => {
+    const storageSession = String(process.env.TELEGRAM_STORAGE_SESSION || '').trim();
+    const legacyStorageSession = String(process.env.TELEGRAM_SESSION || '').trim();
+    const sessions = getFileReadSessionCandidates(ownerSessionString);
+    const clients: TelegramReadClient[] = [];
+    let lastErr: unknown = null;
+
+    for (const session of sessions) {
+        try {
+            const client = await getDynamicClient(session);
+            clients.push({
+                client,
+                isStorageSession: session === storageSession || session === legacyStorageSession,
+            });
+        } catch (err) {
+            lastErr = err;
+        }
+    }
+
+    if (!clients.length) {
+        throw lastErr || new Error('No Telegram session available');
+    }
+
+    return clients;
+};
+
+const getChatCandidatesForClient = (chatId: string, isStorageSession: boolean): string[] => {
+    const raw = String(chatId || '').trim() || 'me';
+    const storageChat = String(process.env.TELEGRAM_STORAGE_CHAT_ID || '').trim();
+    const out: string[] = [];
+
+    if (raw === 'me') {
+        if (isStorageSession && storageChat) out.push(storageChat);
+        out.push('me');
+        if (!isStorageSession && storageChat) out.push(storageChat);
+    } else {
+        out.push(raw);
+    }
+
+    return Array.from(new Set(out.filter(Boolean)));
+};
+
+const resolveMessageFromTelegramClients = async (
+    clients: TelegramReadClient[],
+    chatId: string,
+    messageId: number
+): Promise<{ client: any; message: any; chatIdUsed: string } | null> => {
+    let lastErr: unknown = null;
+
+    for (const entry of clients) {
+        const chatCandidates = getChatCandidatesForClient(chatId, entry.isStorageSession);
+        for (const chatCandidate of chatCandidates) {
+            try {
+                const messages = await entry.client.getMessages(chatCandidate, { ids: messageId });
+                if (messages && messages.length > 0) {
+                    return {
+                        client: entry.client,
+                        message: messages[0],
+                        chatIdUsed: chatCandidate,
+                    };
+                }
+            } catch (err) {
+                lastErr = err;
+            }
+        }
+    }
+
+    if (lastErr) {
+        throw lastErr;
+    }
+    return null;
+};
+
+const deleteMessageAcrossTelegramClients = async (
+    clients: TelegramReadClient[],
+    chatId: string,
+    messageId: number
+) => {
+    for (const entry of clients) {
+        const chatCandidates = getChatCandidatesForClient(chatId, entry.isStorageSession);
+        for (const chatCandidate of chatCandidates) {
+            try {
+                await entry.client.deleteMessages(chatCandidate, [messageId], { revoke: true });
+                return true;
+            } catch {
+                // best effort across sessions/chats
+            }
+        }
+    }
+    return false;
+};
 
 const logActivity = async (userId: string, action: string, fileId?: string, folderId?: string, meta?: object) => {
     try {
@@ -47,9 +159,6 @@ const formatFileRow = (row: any) => ({
 // UPLOAD
 // ─────────────────────────────────────────────────────────────────────────────
 export const uploadFile = async (req: AuthRequest, res: Response) => {
-    // 🔍 Debug: log what we actually receive
-    console.log('[upload] req.user =', req.user ? { id: req.user.id, phone: req.user.phone } : 'MISSING');
-    console.log('[upload] req.file =', req.file ? { name: req.file.originalname, size: req.file.size } : 'MISSING');
 
     if (!req.file || !req.user) {
         return res.status(400).json({ success: false, error: 'Request invalid or Unauthorized.' });
@@ -103,7 +212,9 @@ export const uploadFile = async (req: AuthRequest, res: Response) => {
 export const fetchFiles = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
-    const { limit = '50', offset = '0', folder_id, sort = 'created_at', order = 'DESC' } = req.query;
+    const { folder_id, sort = 'created_at', order = 'DESC' } = req.query;
+    const limit = clampInt(req.query.limit, 50, 1, 500);
+    const offset = clampInt(req.query.offset, 0, 0, 100_000);
     const validSorts = ['created_at', 'file_name', 'file_size', 'updated_at'];
     const sortCol = validSorts.includes(sort as string) ? sort : 'created_at';
     const sortOrder = order === 'ASC' ? 'ASC' : 'DESC';
@@ -119,9 +230,9 @@ export const fetchFiles = async (req: AuthRequest, res: Response) => {
     }
 
     query += ` ORDER BY ${sortCol} ${sortOrder}`;
-    params.push(parseInt(limit as string, 10));
+    params.push(limit);
     query += ` LIMIT $${params.length}`;
-    params.push(parseInt(offset as string, 10));
+    params.push(offset);
     query += ` OFFSET $${params.length}`;
 
     try {
@@ -140,8 +251,8 @@ export const searchFiles = async (req: AuthRequest, res: Response) => {
 
     const { q, type, folder_id } = req.query;
     // ✅ Fix 2.2: Accept limit/offset for paginated search (hardcoded LIMIT 50 removed)
-    const limit = Math.min(parseInt((req.query.limit as string) || '50', 10), 200);
-    const offset = parseInt((req.query.offset as string) || '0', 10);
+    const limit = clampInt(req.query.limit, 50, 1, 200);
+    const offset = clampInt(req.query.offset, 0, 0, 100_000);
     if (!q) return res.status(400).json({ success: false, error: 'Search query required.' });
 
     try {
@@ -214,10 +325,23 @@ export const updateFile = async (req: AuthRequest, res: Response) => {
     const values: any[] = [];
 
     if (file_name !== undefined) {
-        values.push(file_name.trim());
+        if (typeof file_name !== 'string') {
+            return res.status(400).json({ success: false, error: 'file_name must be a string' });
+        }
+        const normalizedName = file_name.trim();
+        if (!normalizedName) {
+            return res.status(400).json({ success: false, error: 'file_name cannot be empty' });
+        }
+        if (normalizedName.length > 255) {
+            return res.status(400).json({ success: false, error: 'file_name is too long (max 255 chars)' });
+        }
+        values.push(normalizedName);
         updates.push(`file_name = $${values.length}`);
     }
     if (folder_id !== undefined) {
+        if (folder_id !== null && typeof folder_id !== 'string') {
+            return res.status(400).json({ success: false, error: 'folder_id must be a string or null' });
+        }
         values.push(folder_id);
         updates.push(`folder_id = $${values.length}`);
     }
@@ -336,8 +460,12 @@ export const deleteFile = async (req: AuthRequest, res: Response) => {
         const { telegram_message_id, telegram_chat_id } = fileResult.rows[0];
 
         try {
-            const client = await getDynamicClient(req.user.sessionString);
-            await client.deleteMessages(String(telegram_chat_id), [parseInt(telegram_message_id, 10)], { revoke: true });
+            const clients = await getTelegramReadClients(req.user.sessionString);
+            const messageId = Number.parseInt(String(telegram_message_id || ''), 10);
+            const chatId = String(telegram_chat_id || '').trim();
+            if (chatId && Number.isFinite(messageId) && messageId > 0) {
+                await deleteMessageAcrossTelegramClients(clients, chatId, messageId);
+            }
         } catch (e) {
             console.warn('Could not delete Telegram message, removing from DB anyway:', e);
         }
@@ -379,7 +507,12 @@ export const emptyTrash = async (req: AuthRequest, res: Response) => {
         const files = result.rows;
         if (files.length === 0) return res.json({ success: true, message: 'Trash is already empty.' });
 
-        const client = await getDynamicClient(req.user.sessionString);
+        let clients: TelegramReadClient[] = [];
+        try {
+            clients = await getTelegramReadClients(req.user.sessionString);
+        } catch (sessionErr) {
+            console.warn('Could not initialize Telegram clients for emptyTrash. Proceeding DB cleanup only.', sessionErr);
+        }
 
         // Group by chat for efficiency
         const byChat: Record<string, number[]> = {};
@@ -390,9 +523,13 @@ export const emptyTrash = async (req: AuthRequest, res: Response) => {
 
         // Delete from Telegram
         for (const chat_id in byChat) {
-            try {
-                await client.deleteMessages(chat_id, byChat[chat_id], { revoke: true });
-            } catch (e) { console.warn(`Could not delete batch in chat ${chat_id}`, e); }
+            for (const messageId of byChat[chat_id]) {
+                if (!clients.length || !Number.isFinite(messageId) || messageId <= 0) continue;
+                const deleted = await deleteMessageAcrossTelegramClients(clients, String(chat_id), messageId);
+                if (!deleted) {
+                    console.warn(`Could not delete message ${messageId} in chat ${chat_id}`);
+                }
+            }
         }
 
         // Delete from DB
@@ -411,7 +548,7 @@ export const emptyTrash = async (req: AuthRequest, res: Response) => {
 // DOWNLOAD — Buffer download (fine for one-shot file saves)
 // ─────────────────────────────────────────────────────────────────────────────
 export const downloadFile = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
 
     try {
@@ -419,24 +556,86 @@ export const downloadFile = async (req: AuthRequest, res: Response) => {
             'SELECT telegram_message_id, telegram_chat_id, mime_type, file_name, file_size FROM files WHERE id = $1 AND user_id = $2 AND is_trashed = false',
             [id, req.user.id]
         );
-        if (fileResult.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
+        if (fileResult.rows.length === 0) return sendApiError(res, 404, 'not_found', 'File not found', { retryable: false });
 
         const { telegram_message_id, telegram_chat_id, mime_type, file_name } = fileResult.rows[0];
-        const client = await getDynamicClient(req.user.sessionString);
+        const chatId = String(telegram_chat_id || '').trim();
+        const messageId = Number.parseInt(String(telegram_message_id || ''), 10);
 
-        const messages = await client.getMessages(telegram_chat_id, { ids: parseInt(telegram_message_id, 10) });
-        if (!messages || messages.length === 0) return res.status(404).json({ success: false, error: 'File no longer exists in Telegram' });
+        if (!chatId || !Number.isFinite(messageId) || messageId <= 0) {
+            return sendApiError(res, 409, 'invalid_request', 'File metadata is incomplete. Re-upload required.', { retryable: false });
+        }
 
-        const buffer = await client.downloadMedia(messages[0] as any);
-        if (!buffer) return res.status(500).json({ success: false, error: 'Failed to retrieve file' });
+        let clients: TelegramReadClient[] = [];
+        try {
+            clients = await getTelegramReadClients(req.user.sessionString);
+        } catch (clientErr: any) {
+            logger.error('backend.download', 'telegram_session_init_failed', {
+                fileId: id,
+                userId: req.user.id,
+                message: clientErr?.message,
+            });
+            const mapped = mapTelegramError(clientErr, 'Telegram session unavailable. Please reconnect Telegram.');
+            return sendApiError(res, mapped.status, mapped.code, mapped.message, { retryable: mapped.retryable });
+        }
+
+        let resolved: { client: any; message: any; chatIdUsed: string } | null = null;
+        try {
+            resolved = await resolveMessageFromTelegramClients(clients, chatId, messageId);
+        } catch (messageErr: any) {
+            logger.error('backend.download', 'telegram_message_fetch_failed', {
+                fileId: id,
+                userId: req.user.id,
+                chatId,
+                messageId,
+                message: messageErr?.message,
+            });
+            const mapped = mapTelegramError(messageErr, 'Could not load file from Telegram');
+            return sendApiError(res, mapped.status, mapped.code, mapped.message, { retryable: mapped.retryable });
+        }
+
+        if (!resolved) {
+            return sendApiError(res, 404, 'telegram_message_not_found', 'File no longer exists in Telegram', { retryable: false });
+        }
+
+        const mediaData = await resolved.client.downloadMedia(resolved.message as any);
+        if (!mediaData) return sendApiError(res, 502, 'telegram_transient', 'Failed to retrieve file from Telegram', { retryable: true });
+
+        const buffer = Buffer.isBuffer(mediaData)
+            ? mediaData
+            : typeof mediaData === 'string' && fs.existsSync(mediaData)
+                ? fs.readFileSync(mediaData)
+                : Buffer.from(mediaData);
+
+        if (!buffer || buffer.length === 0) {
+            return sendApiError(res, 502, 'telegram_transient', 'Downloaded file is empty', { retryable: true });
+        }
+
+        const rawName = String(file_name || 'download');
+        const safeAsciiName = rawName
+            .replace(/[\/\\:*?"<>|\r\n]+/g, '_')
+            .replace(/\s+/g, ' ')
+            .trim() || 'download';
 
         res.set('Content-Type', mime_type || 'application/octet-stream');
-        res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(file_name)}"`);
-        res.set('Content-Length', buffer.length.toString());
+        res.set('Content-Disposition', `attachment; filename="${safeAsciiName}"; filename*=UTF-8''${encodeURIComponent(rawName)}`);
+        res.set('X-Download-Source', 'telegram');
+        res.set('X-File-Id', String(id));
+        res.set('X-Telegram-Message-Id', String(messageId));
+        res.set('X-Telegram-Chat-Id', resolved.chatIdUsed);
         res.set('Cache-Control', 'private, max-age=3600');
         res.send(buffer);
     } catch (err: any) {
-        if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
+        logger.error('backend.download', 'download_failed', {
+            fileId: id,
+            userId: req.user?.id,
+            message: err?.message,
+            stack: err?.stack,
+        });
+        if (!res.headersSent) {
+            const mapped = mapTelegramError(err, 'Internal download error');
+            sendApiError(res, mapped.status, mapped.code, mapped.message, { retryable: mapped.retryable });
+        }
     }
 };
 
@@ -451,7 +650,7 @@ const THUMB_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 try { fs.mkdirSync(THUMB_CACHE_DIR, { recursive: true }); } catch { }
 
 export const getThumbnail = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
 
     try {
@@ -472,18 +671,35 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
             'SELECT telegram_message_id, telegram_chat_id, file_name, mime_type FROM files WHERE id = $1 AND user_id = $2 AND is_trashed = false',
             [id, req.user.id]
         );
-        if (fileResult.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
+        if (fileResult.rows.length === 0) return sendApiError(res, 404, 'not_found', 'File not found', { retryable: false });
 
         const { telegram_message_id, telegram_chat_id, file_name, mime_type } = fileResult.rows[0];
-        const client = await getDynamicClient(req.user.sessionString);
-
-        const messages = await client.getMessages(telegram_chat_id, { ids: parseInt(telegram_message_id, 10) });
-        if (!messages || messages.length === 0) return res.status(404).json({ success: false, error: 'File no longer exists' });
+        const messageId = Number.parseInt(String(telegram_message_id || ''), 10);
+        const chatId = String(telegram_chat_id || '').trim();
+        if (!chatId || !Number.isFinite(messageId) || messageId <= 0) {
+            return sendApiError(res, 404, 'telegram_message_not_found', 'File source is unavailable', { retryable: false });
+        }
+        let clients: TelegramReadClient[] = [];
+        try {
+            clients = await getTelegramReadClients(req.user.sessionString);
+        } catch (err) {
+            const mapped = mapTelegramError(err, 'Telegram session unavailable.');
+            return sendApiError(res, mapped.status, mapped.code, mapped.message, { retryable: mapped.retryable });
+        }
+        let resolved: { client: any; message: any; chatIdUsed: string } | null = null;
+        try {
+            resolved = await resolveMessageFromTelegramClients(clients, chatId, messageId);
+        } catch (err) {
+            const mapped = mapTelegramError(err, 'Unable to resolve media in Telegram.');
+            return sendApiError(res, mapped.status, mapped.code, mapped.message, { retryable: mapped.retryable });
+        }
+        if (!resolved) return sendApiError(res, 404, 'telegram_message_not_found', 'File no longer exists', { retryable: false });
 
         res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
         res.setHeader('X-Cache', 'MISS');
 
-        const message = messages[0];
+        const message = resolved.message;
+        const client = resolved.client;
         let buffer: Buffer | undefined;
 
         // 1. First attempt: Try to find a Telegram-generated thumbnail natively (fastest)
@@ -507,7 +723,7 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
         }
 
         if (!buffer || buffer.length === 0) {
-            return res.status(404).json({ success: false, error: 'Failed to extract any media data for thumbnail.' });
+            return sendApiError(res, 404, 'telegram_message_not_found', 'Failed to extract any media data for thumbnail.', { retryable: false });
         }
 
         // 3. Compress with Sharp
@@ -536,7 +752,10 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
             message: err.message,
             stack: err.stack,
         });
-        if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
+        if (!res.headersSent) {
+            const mapped = mapTelegramError(err, err.message || 'Thumbnail failed');
+            sendApiError(res, mapped.status, mapped.code, mapped.message, { retryable: mapped.retryable });
+        }
     }
 };
 
@@ -559,7 +778,7 @@ const streamDownloadLocks = new Map<string, Promise<string>>();
 
 async function ensureStreamCached(
     fileId: string,
-    sessionString: string,
+    ownerSessionString: string,
     telegramMessageId: string,
     telegramChatId: string,
 ): Promise<string> {
@@ -581,15 +800,19 @@ async function ensureStreamCached(
     // Start new download
     const downloadPromise = (async () => {
         try {
-            const client = await getDynamicClient(sessionString);
-            const messages = await client.getMessages(telegramChatId, {
-                ids: parseInt(telegramMessageId, 10),
-            });
-            if (!messages || messages.length === 0) {
+            const messageId = Number.parseInt(String(telegramMessageId || ''), 10);
+            const chatId = String(telegramChatId || '').trim();
+            if (!chatId || !Number.isFinite(messageId) || messageId <= 0) {
+                throw new Error('File source metadata is invalid');
+            }
+
+            const clients = await getTelegramReadClients(ownerSessionString);
+            const resolved = await resolveMessageFromTelegramClients(clients, chatId, messageId);
+            if (!resolved) {
                 throw new Error('File no longer exists in Telegram');
             }
 
-            const result = await client.downloadMedia(messages[0] as any, {
+            const result = await resolved.client.downloadMedia(resolved.message as any, {
                 outputFile: cachePath,
             } as any);
 
@@ -718,7 +941,7 @@ export const createFolder = async (req: AuthRequest, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FOLDERS: LIST
+// FOLDERS: LIST (with recursive file counts)
 // ─────────────────────────────────────────────────────────────────────────────
 export const fetchFolders = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
@@ -734,10 +957,41 @@ export const fetchFolders = async (req: AuthRequest, res: Response) => {
     const sortOrder = (order as string)?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
     try {
+        // Use recursive CTE to count all files in folder and subfolders
         let query = `
-            SELECT f.*, COUNT(fi.id)::int as file_count
+            WITH RECURSIVE folder_tree AS (
+                -- Base case: direct children of the requested parent
+                SELECT id, user_id FROM folders
+                WHERE user_id = $1 AND is_trashed = false
+                ${parent_id ? 'AND parent_id = $2' : 'AND parent_id IS NULL'}
+                
+                UNION ALL
+                -- Recursive case: all descendants
+                SELECT f.id, f.user_id
+                FROM folders f
+                INNER JOIN folder_tree ft ON f.parent_id = ft.id
+                WHERE f.user_id = $1 AND f.is_trashed = false
+            ),
+            folder_file_counts AS (
+                SELECT ft.id as folder_id, COUNT(fi.id)::int as total_files
+                FROM folder_tree ft
+                LEFT JOIN files fi ON fi.folder_id = ft.id AND fi.is_trashed = false
+                GROUP BY ft.id
+            )
+            SELECT f.*, 
+                   COALESCE(direct_files.file_count, 0)::int as file_count,
+                   COALESCE(total_files.total_files, 0)::int as total_file_count,
+                   COALESCE(subfolder_count.subfolders, 0)::int as folder_count
             FROM folders f
-            LEFT JOIN files fi ON fi.folder_id = f.id AND fi.is_trashed = false
+            LEFT JOIN (
+                SELECT folder_id, COUNT(*)::int as file_count 
+                FROM files WHERE is_trashed = false GROUP BY folder_id
+            ) direct_files ON direct_files.folder_id = f.id
+            LEFT JOIN folder_file_counts total_files ON total_files.folder_id = f.id
+            LEFT JOIN (
+                SELECT parent_id, COUNT(*)::int as subfolders 
+                FROM folders WHERE is_trashed = false GROUP BY parent_id
+            ) subfolder_count ON subfolder_count.parent_id = f.id
             WHERE f.user_id = $1 AND f.is_trashed = false
         `;
         const params: any[] = [req.user.id];
@@ -749,7 +1003,7 @@ export const fetchFolders = async (req: AuthRequest, res: Response) => {
             query += ` AND f.parent_id IS NULL`;
         }
 
-        query += ` GROUP BY f.id ORDER BY ${sortCol} ${sortOrder}`;
+        query += ` ORDER BY ${sortCol} ${sortOrder}`;
 
         const result = await pool.query(query, params);
         res.json({ success: true, folders: result.rows });
@@ -923,6 +1177,10 @@ export const bulkAction = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
     const { ids, action, folder_id } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ success: false, error: 'ids array required' });
+    if (ids.length > 200) return res.status(400).json({ success: false, error: 'max 200 ids per request' });
+    if (ids.some((id: unknown) => typeof id !== 'string' || !id.trim())) {
+        return res.status(400).json({ success: false, error: 'ids must be non-empty strings' });
+    }
 
     try {
         switch (action) {
@@ -1050,9 +1308,9 @@ export const getFileDetails = async (req: AuthRequest, res: Response) => {
             pool.query(`SELECT f.*, fo.name as folder_name FROM files f LEFT JOIN folders fo ON fo.id = f.folder_id WHERE f.id = $1 AND f.user_id = $2`, [id, req.user.id]),
             pool.query(`SELECT tag FROM file_tags WHERE file_id = $1 AND user_id = $2 ORDER BY tag`, [id, req.user.id]),
             pool.query(
-                `SELECT id, folder_id, file_id, expires_at, created_at, download_count, allow_download, view_only
-                 FROM shares
-                 WHERE file_id = $1 AND created_by = $2
+                `SELECT id, slug, expires_at, allow_download, allow_preview
+                 FROM share_links_v2
+                 WHERE root_file_id = $1 AND owner_user_id = $2
                  ORDER BY created_at DESC
                  LIMIT 1`,
                 [id, req.user.id]
@@ -1061,23 +1319,17 @@ export const getFileDetails = async (req: AuthRequest, res: Response) => {
         if (fileRes.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
 
         const file = fileRes.rows[0];
-        const latestShare = shareRes.rows[0] as ShareRow | undefined;
-        const shareLink = latestShare
-            ? (() => {
-                const token = signShareLinkToken(latestShare, latestShare.expires_at);
-                const shareUrl = getShareUrl(latestShare.id, token, req);
-                return {
-                    id: latestShare.id,
-                    expires_at: latestShare.expires_at,
-                    download_count: Number((latestShare as any).download_count || 0),
-                    allow_download: Boolean((latestShare as any).allow_download),
-                    view_only: Boolean((latestShare as any).view_only),
-                    token,
-                    share_url: shareUrl,
-                    shareUrl,
-                };
-            })()
-            : null;
+        const latestShare = shareRes.rows[0] as { id: string; slug: string; expires_at: string | null; allow_download: boolean; allow_preview: boolean } | undefined;
+        const shareLink = latestShare ? {
+            id: latestShare.id,
+            slug: latestShare.slug,
+            expires_at: latestShare.expires_at,
+            allow_download: Boolean(latestShare.allow_download),
+            allow_preview: Boolean(latestShare.allow_preview),
+            // The secret is intentionally not persisted/recoverable; create a new share if a full URL is needed.
+            share_url: null,
+            shareUrl: null,
+        } : null;
 
         res.json({
             success: true,
@@ -1087,3 +1339,4 @@ export const getFileDetails = async (req: AuthRequest, res: Response) => {
         });
     } catch (err: any) { res.status(500).json({ success: false, error: err.message }); }
 };
+

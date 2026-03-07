@@ -1,4 +1,7 @@
 {
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "build": "cd server && npm install && npm run build",
     "start": "cd server && npm start"

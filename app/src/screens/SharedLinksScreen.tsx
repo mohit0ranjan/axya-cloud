@@ -8,6 +8,8 @@ import { ArrowLeft, Clock, Eye, Download, Link as LinkIcon, Trash2, Folder, File
 import apiClient from '../services/apiClient';
 import { revokeShareLink } from '../services/api';
 import { useTheme } from '../context/ThemeContext';
+import { useToast } from '../context/ToastContext';
+import { ErrorState } from '../ui/ErrorState';
 
 // Lightweight replacement for date-fns formatDistanceToNow
 function formatDistanceToNow(date: Date, opts?: { addSuffix?: boolean }): string {
@@ -34,18 +36,23 @@ function formatDistanceToNow(date: Date, opts?: { addSuffix?: boolean }): string
 
 export default function SharedLinksScreen({ navigation }: any) {
     const { theme } = useTheme();
+    const { showToast } = useToast();
     const [links, setLinks] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [loadError, setLoadError] = useState('');
 
     const fetchLinks = async () => {
         setIsLoading(true);
+        setLoadError('');
         try {
-            const res = await apiClient.get('/api/share');
+            const res = await apiClient.get('/api/v2/shares');
             if (res.data.success) {
-                setLinks(res.data.links || []);
+                setLinks(res.data.shares || []);
             }
-        } catch (e) {
-            console.error(e);
+        } catch (e: any) {
+            const message = e?.response?.data?.error || 'Could not load shared links right now.';
+            setLoadError(message);
+            showToast(message, 'error');
         } finally {
             setIsLoading(false);
         }
@@ -70,8 +77,8 @@ export default function SharedLinksScreen({ navigation }: any) {
                     try {
                         await revokeShareLink(token);
                         fetchLinks();
-                    } catch (e) {
-                        Alert.alert('Error', 'Failed to revoke link.');
+                    } catch (e: any) {
+                        Alert.alert('Error', e?.response?.data?.error || 'Failed to revoke link.');
                     }
                 }
             }
@@ -79,9 +86,12 @@ export default function SharedLinksScreen({ navigation }: any) {
     };
 
     const renderItem = ({ item }: { item: any }) => {
-        const isFolder = !!item.folder_id;
-        const name = item.folder_name || item.file_name || 'Unknown Item';
-        const isExpired = item.expires_at ? new Date(item.expires_at) < new Date() : false;
+        const isFolder = String(item.resourceType || '').toLowerCase() === 'folder';
+        const name = isFolder ? 'Shared Folder' : 'Shared File';
+        const createdAt = item.createdAt || item.created_at;
+        const expiresAt = item.expiresAt || item.expires_at;
+        const shareUrl = String(item.share_url || item.shareUrl || '').trim();
+        const isExpired = expiresAt ? new Date(expiresAt) < new Date() : false;
 
         return (
             <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
@@ -92,7 +102,7 @@ export default function SharedLinksScreen({ navigation }: any) {
                     <View style={{ flex: 1 }}>
                         <Text style={[styles.itemName, { color: theme.colors.textHeading }]} numberOfLines={1}>{name}</Text>
                         <Text style={[styles.itemDate, { color: theme.colors.textBody }]}>
-                            Created {formatDistanceToNow(new Date(item.created_at), { addSuffix: true })}
+                            Created {formatDistanceToNow(new Date(createdAt || Date.now()), { addSuffix: true })}
                         </Text>
                     </View>
                     {isExpired && (
@@ -111,20 +121,22 @@ export default function SharedLinksScreen({ navigation }: any) {
                         <Download color={theme.colors.textBody} size={14} />
                         <Text style={[styles.statText, { color: theme.colors.textBody }]}>{item.download_count || 0} dl</Text>
                     </View>
-                    {item.expires_at && !isExpired && (
+                    {expiresAt && !isExpired && (
                         <View style={styles.stat}>
                             <Clock color={theme.colors.textBody} size={14} />
                             <Text style={[styles.statText, { color: theme.colors.textBody }]}>
-                                {formatDistanceToNow(new Date(item.expires_at))} left
+                                {formatDistanceToNow(new Date(expiresAt))} left
                             </Text>
                         </View>
                     )}
                 </View>
 
                 <View style={[styles.actions, { borderTopColor: theme.colors.border }]}>
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => void handleCopy(String(item.share_url || item.shareUrl || ''))}>
+                    <TouchableOpacity style={styles.actionBtn} disabled={!shareUrl} onPress={() => void handleCopy(shareUrl)}>
                         <LinkIcon color={theme.colors.primary} size={16} />
-                        <Text style={[styles.actionText, { color: theme.colors.primary }]}>Copy Link</Text>
+                        <Text style={[styles.actionText, { color: shareUrl ? theme.colors.primary : theme.colors.textBody }]}>
+                            {shareUrl ? 'Copy Link' : 'Link unavailable'}
+                        </Text>
                     </TouchableOpacity>
                     <View style={[styles.divider, { backgroundColor: theme.colors.border }]} />
                     <TouchableOpacity style={styles.actionBtn} onPress={() => handleRevoke(item.id)}>
@@ -150,6 +162,12 @@ export default function SharedLinksScreen({ navigation }: any) {
                 <View style={styles.center}>
                     <ActivityIndicator size="large" color={theme.colors.primary} />
                 </View>
+            ) : loadError && links.length === 0 ? (
+                <ErrorState
+                    title="Could not load shared links"
+                    message={loadError}
+                    onRetry={() => void fetchLinks()}
+                />
             ) : (
                 <FlatList
                     data={links}

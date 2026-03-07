@@ -69,6 +69,13 @@ export default function StarredScreen({ navigation }: any) {
 
     const sortedFiles = clientSort(files, sortKey);
     const currentSort = SORT_OPTIONS.find(s => s.key === sortKey) ?? SORT_OPTIONS[0];
+    const handleBack = () => {
+        if (navigation?.canGoBack?.()) {
+            navigation.goBack();
+            return;
+        }
+        navigation?.navigate?.('MainTabs', { screen: 'Home' });
+    };
 
     const handleStar = async (id: string) => {
         try {
@@ -108,7 +115,7 @@ export default function StarredScreen({ navigation }: any) {
 
             {/* Header */}
             <View style={[styles.header, { backgroundColor: C.card, borderBottomColor: C.border }]}>
-                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconBtn}>
+                <TouchableOpacity onPress={handleBack} style={styles.iconBtn}>
                     <ArrowLeft color={C.textHeading} size={24} />
                 </TouchableOpacity>
                 <View style={{ flex: 1, marginLeft: 8 }}>

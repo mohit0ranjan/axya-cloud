@@ -3,8 +3,7 @@ import jwt from 'jsonwebtoken';
 import pool from '../config/db';
 
 const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) throw new Error('🔴 FATAL: JWT_SECRET environment variable is not set. Server cannot start safely.');
-
+if (!JWT_SECRET) throw new Error('FATAL: JWT_SECRET environment variable is not set. Server cannot start safely.');
 
 export interface AuthRequest extends Request {
     user?: {
@@ -38,7 +37,7 @@ export const requireAuth = async (req: AuthRequest, res: Response, next: NextFun
         };
 
         next();
-    } catch (error) {
+    } catch {
         return res.status(401).json({ success: false, error: 'Unauthorized: Invalid token payload' });
     }
 };

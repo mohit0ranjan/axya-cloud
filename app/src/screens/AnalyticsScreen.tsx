@@ -88,8 +88,20 @@ export default function AnalyticsScreen({ navigation }: any) {
     });
 
     const totalBytes = stats.totalBytes || 0;
-    const quotaBytes = 5 * 1024 ** 3; // 5 GB
-    const usedPct = Math.min((totalBytes / quotaBytes) * 100, 100);
+    // Axya supports unlimited storage - usage indicator only (not a quota)
+    // Visual reference: show usage level bar (not percentage of quota)
+    // For usage visualization: 0-50GB range (caps at 100% for visual purposes)
+    const usedGB = totalBytes / (1024 ** 3);
+    const usagePct = Math.min((usedGB / 50) * 100, 100); // Reference: 50GB = 100%
+    
+    // Usage level colors: Green < 5GB, Yellow < 20GB, Orange < 50GB, Red >= 50GB
+    const getUsageColor = (gb: number) => {
+        if (gb < 5) return C.success;
+        if (gb < 20) return C.accent;
+        if (gb < 50) return '#F97316';
+        return C.danger;
+    };
+    const usageColor = getUsageColor(usedGB);
 
     const chartData = CATEGORIES.map(cat => ({
         ...cat,
@@ -134,22 +146,21 @@ export default function AnalyticsScreen({ navigation }: any) {
                 ) : (
                     <>
                         {/* ── Storage Quota Card ── */}
-                        {/* UI shows unlimited storage, but progress is still calculated
-                            relative to the original 5GB reference to visualize usage growth. */}
+                        {/* Axya now supports unlimited storage - show usage level only */}
                         <View style={[styles.quotaCard, { backgroundColor: C.card }]}>
                             <HardDrive color={C.primary} size={22} />
                             <View style={{ flex: 1, marginLeft: 14 }}>
                                 <Text style={[styles.quotaTitle, { color: C.textBody }]}>Storage Used</Text>
                                 <Text style={[styles.quotaValues, { color: C.textHeading }]}>
                                     {formatSize(totalBytes)}{' '}
-                                    <Text style={{ color: C.textBody, fontWeight: '400', fontSize: 24 }}>/ ∞</Text>
+                                    <Text style={{ color: C.textBody, fontWeight: '400', fontSize: 24 }}>· Unlimited</Text>
                                 </Text>
                                 <View style={[styles.quotaBarTrack, { backgroundColor: C.border }]}>
-                                    <View style={[styles.quotaBarFill, { width: `${usedPct.toFixed(0)}%` as any, backgroundColor: C.primary }]} />
+                                    <View style={[styles.quotaBarFill, { width: `${usagePct.toFixed(0)}%` as any, backgroundColor: usageColor }]} />
                                 </View>
                             </View>
-                            <Text style={[styles.quotaPct, { color: usedPct > 80 ? '#EF4444' : C.primary }]}>
-                                {usedPct.toFixed(0)}%
+                            <Text style={[styles.quotaPct, { color: usageColor }]}>
+                                {usedGB < 1 ? `${Math.round(usedGB * 1000)} MB` : `${usedGB.toFixed(1)} GB`}
                             </Text>
                         </View>
 

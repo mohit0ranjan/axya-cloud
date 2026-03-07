@@ -7,6 +7,8 @@ import { theme } from '../ui/theme';
 import { EmptyState } from '../ui/EmptyState';
 import { FolderCardSkeleton } from '../ui/Skeleton';
 import ShareFolderModal from '../components/ShareFolderModal';
+import AppButton from '../components/AppButton';
+import IconButton from '../components/IconButton';
 
 const { width } = Dimensions.get('window');
 const CARD_MARGIN = 12;
@@ -24,8 +26,8 @@ const asArray = <T,>(value: any): T[] => (Array.isArray(value) ? value : []);
 const SORT_OPTIONS = [
     { key: 'created_at_DESC', label: 'Newest First', icon: SortDesc, col: 'created_at', order: 'DESC' },
     { key: 'created_at_ASC', label: 'Oldest First', icon: SortAsc, col: 'created_at', order: 'ASC' },
-    { key: 'name_ASC', label: 'Name Aâ†’Z', icon: SortAsc, col: 'name', order: 'ASC' },
-    { key: 'name_DESC', label: 'Name Zâ†’A', icon: SortDesc, col: 'name', order: 'DESC' },
+    { key: 'name_ASC', label: 'Name A-Z', icon: SortAsc, col: 'name', order: 'ASC' },
+    { key: 'name_DESC', label: 'Name Z-A', icon: SortDesc, col: 'name', order: 'DESC' },
     { key: 'file_count_DESC', label: 'Most Files', icon: SortDesc, col: 'file_count', order: 'DESC' },
     { key: 'file_count_ASC', label: 'Fewest Files', icon: SortAsc, col: 'file_count', order: 'ASC' },
 ];
@@ -42,11 +44,13 @@ export default function FoldersScreen({ navigation }: any) {
     // Create
     const [isCreateModalVisible, setCreateModalVisible] = useState(false);
     const [newFolderName, setNewFolderName] = useState('');
+    const [isCreatingFolder, setIsCreatingFolder] = useState(false);
 
     // Rename
     const [isRenameModalVisible, setRenameModalVisible] = useState(false);
     const [renameTarget, setRenameTarget] = useState<any>(null);
     const [renameValue, setRenameValue] = useState('');
+    const [isRenamingFolder, setIsRenamingFolder] = useState(false);
     const [pinnedFolderIds, setPinnedFolderIds] = useState<string[]>([]);
 
     // Share Folder
@@ -98,7 +102,8 @@ export default function FoldersScreen({ navigation }: any) {
     };
 
     const handleCreateFolder = async () => {
-        if (!newFolderName.trim()) return;
+        if (!newFolderName.trim() || isCreatingFolder) return;
+        setIsCreatingFolder(true);
         try {
             const res = await apiClient.post('/files/folder', { name: newFolderName.trim() });
             if (res.data.success) {
@@ -108,11 +113,14 @@ export default function FoldersScreen({ navigation }: any) {
             }
         } catch (e: any) {
             Alert.alert('Error', e.response?.data?.error || 'Could not create folder');
+        } finally {
+            setIsCreatingFolder(false);
         }
     };
 
     const handleRenameFolder = async () => {
-        if (!renameValue.trim() || !renameTarget) return;
+        if (!renameValue.trim() || !renameTarget || isRenamingFolder) return;
+        setIsRenamingFolder(true);
         try {
             const res = await apiClient.patch(`/files/folder/${renameTarget.id}`, { name: renameValue.trim() });
             if (res.data.success) {
@@ -122,6 +130,8 @@ export default function FoldersScreen({ navigation }: any) {
             }
         } catch (e: any) {
             Alert.alert('Error', e.response?.data?.error || 'Could not rename folder');
+        } finally {
+            setIsRenamingFolder(false);
         }
     };
 
@@ -208,13 +218,23 @@ export default function FoldersScreen({ navigation }: any) {
 
     const filtered = folders.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()));
     const currentSort = SORT_OPTIONS.find(s => s.key === sortKey) ?? SORT_OPTIONS[0];
+    const handleBack = () => {
+        if (navigation?.canGoBack?.()) {
+            navigation.goBack();
+            return;
+        }
+        navigation?.navigate?.('MainTabs', { screen: 'Home' });
+    };
 
     return (
         <SafeAreaView style={styles.container}>
             <View style={styles.header}>
-                <TouchableOpacity style={styles.backBtn} onPress={() => navigation?.goBack()}>
-                    <ArrowLeft color={theme.colors.textHeading} size={24} />
-                </TouchableOpacity>
+                <IconButton
+                    variant="ghost"
+                    style={styles.backBtn}
+                    onPress={handleBack}
+                    icon={<ArrowLeft color={theme.colors.textHeading} size={24} />}
+                />
                 <View style={styles.headerActions}>
                     <TouchableOpacity
                         style={styles.sortBtn}
@@ -225,15 +245,18 @@ export default function FoldersScreen({ navigation }: any) {
                             {currentSort.label.split(' ').slice(0, 2).join(' ')}
                         </Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.addBtn} onPress={() => setCreateModalVisible(true)}>
-                        <Plus color={theme.colors.textHeading} size={22} />
-                    </TouchableOpacity>
+                    <IconButton
+                        variant="surface"
+                        style={styles.addBtn}
+                        onPress={() => setCreateModalVisible(true)}
+                        icon={<Plus color={theme.colors.textHeading} size={22} />}
+                    />
                 </View>
             </View>
 
             <View style={styles.titleSection}>
                 <Text style={styles.pageTitle}>Your <Text style={{ fontWeight: '700' }}>Folders</Text></Text>
-                <Text style={styles.statsSubtitle}>{folders.length} folder{folders.length !== 1 ? 's' : ''} Â· {currentSort.label}</Text>
+                <Text style={styles.statsSubtitle}>{folders.length} folder{folders.length !== 1 ? 's' : ''} | {currentSort.label}</Text>
             </View>
 
             <ScrollView style={styles.scrollArea} showsVerticalScrollIndicator={false}>
@@ -270,17 +293,16 @@ export default function FoldersScreen({ navigation }: any) {
                                     <View style={[styles.iconBox, { backgroundColor: folder.color + '22' }]}>
                                         <FolderIcon color={folder.color} size={24} fill={folder.color} />
                                     </View>
-                                    <TouchableOpacity
-                                        style={{ zIndex: 10, padding: 8, margin: -8 }}
-                                        hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+                                    <IconButton
+                                        variant="ghost"
+                                        style={{ zIndex: 10 }}
                                         onPress={(e: any) => {
                                             if (e && e.stopPropagation) e.stopPropagation();
                                             if (e && e.preventDefault) e.preventDefault();
                                             openFolderMenu(folder);
                                         }}
-                                    >
-                                        <MoreHorizontal color={folder.color} size={20} />
-                                    </TouchableOpacity>
+                                        icon={<MoreHorizontal color={folder.color} size={20} />}
+                                    />
                                 </View>
                                 <View style={styles.cardFooter}>
                                     <Text style={styles.folderName} numberOfLines={1}>{folder.name}</Text>
@@ -309,7 +331,7 @@ export default function FoldersScreen({ navigation }: any) {
             < Modal visible={isCreateModalVisible} transparent animationType="fade" >
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
                     <View style={styles.modalCard}>
-                        <Text style={styles.modalTitle}>ðŸ“ New Folder</Text>
+                        <Text style={styles.modalTitle}>New Folder</Text>
                         <TextInput
                             style={styles.modalInput}
                             placeholder="Folder name"
@@ -319,12 +341,17 @@ export default function FoldersScreen({ navigation }: any) {
                             onSubmitEditing={handleCreateFolder}
                         />
                         <View style={styles.modalActions}>
-                            <TouchableOpacity style={styles.modalBtn} onPress={() => { setCreateModalVisible(false); setNewFolderName(''); }}>
-                                <Text style={styles.modalBtnText}>Cancel</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={[styles.modalBtn, { backgroundColor: theme.colors.primary }]} onPress={handleCreateFolder}>
-                                <Text style={[styles.modalBtnText, { color: '#fff' }]}>Create</Text>
-                            </TouchableOpacity>
+                            <AppButton
+                                label="Cancel"
+                                variant="secondary"
+                                onPress={() => { setCreateModalVisible(false); setNewFolderName(''); }}
+                            />
+                            <AppButton
+                                label="Create"
+                                onPress={handleCreateFolder}
+                                loading={isCreatingFolder}
+                                disabled={!newFolderName.trim() || isCreatingFolder}
+                            />
                         </View>
                     </View>
                 </KeyboardAvoidingView>
@@ -334,7 +361,7 @@ export default function FoldersScreen({ navigation }: any) {
             < Modal visible={isRenameModalVisible} transparent animationType="fade" >
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
                     <View style={styles.modalCard}>
-                        <Text style={styles.modalTitle}>âœï¸ Rename Folder</Text>
+                        <Text style={styles.modalTitle}>Rename Folder</Text>
                         <TextInput
                             style={styles.modalInput}
                             placeholder="New folder name"
@@ -344,12 +371,17 @@ export default function FoldersScreen({ navigation }: any) {
                             onSubmitEditing={handleRenameFolder}
                         />
                         <View style={styles.modalActions}>
-                            <TouchableOpacity style={styles.modalBtn} onPress={() => { setRenameModalVisible(false); setRenameTarget(null); }}>
-                                <Text style={styles.modalBtnText}>Cancel</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={[styles.modalBtn, { backgroundColor: theme.colors.primary }]} onPress={handleRenameFolder}>
-                                <Text style={[styles.modalBtnText, { color: '#fff' }]}>Rename</Text>
-                            </TouchableOpacity>
+                            <AppButton
+                                label="Cancel"
+                                variant="secondary"
+                                onPress={() => { setRenameModalVisible(false); setRenameTarget(null); }}
+                            />
+                            <AppButton
+                                label="Rename"
+                                onPress={handleRenameFolder}
+                                loading={isRenamingFolder}
+                                disabled={!renameValue.trim() || isRenamingFolder}
+                            />
                         </View>
                     </View>
                 </KeyboardAvoidingView>

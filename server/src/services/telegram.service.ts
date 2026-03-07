@@ -50,50 +50,66 @@ clientPool.on('expired', async (_key, val: TelegramClient) => {
 const sessionKey = (s: string) =>
     crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
 
+// Prevent duplicate concurrent client initialization for the same session
+const clientInitPromises = new Map<string, Promise<TelegramClient>>();
+
 // ─── getDynamicClient ────────────────────────────────────────────────────────
 // Returns a connected TelegramClient for the given session string.
 // Auto-reconnects if the cached client is disconnected.
 
 export const getDynamicClient = async (sessionString: string): Promise<TelegramClient> => {
+    if (!String(sessionString || '').trim()) {
+        throw new Error('Telegram session string is missing.');
+    }
+
     const key = sessionKey(sessionString);
 
     if (clientPool.has(key)) {
         const cachedClient = clientPool.get(key) as TelegramClient;
 
-        // Auto-reconnect if connection was lost
+        // Auto-reconnect flow:
+        // Do NOT safely `await cachedClient.connect()` dynamically.
+        // It's safer in GramJS to dump the dead TCP socket and
+        // fall through to our full initialization mutex lock below.
         if (!cachedClient.connected) {
-            try {
-                await cachedClient.connect();
-            } catch (e: any) {
-                // Session may be expired/revoked — evict from pool
-                logger.warn('backend.telegram', 'reconnect_failed', { key, message: e.message });
-                clientPool.del(key);
-                throw new Error('Telegram session expired or revoked. Please log in again.');
-            }
+            logger.warn('backend.telegram', 'reconnect_evicted', { key, message: 'Client found disconnected, dropping cache for clean reconnect.' });
+            clientPool.del(key);
+            // Fall through to initialization lock ⬇️
+        } else {
+            // Touch TTL — keep active sessions alive
+            clientPool.ttl(key, CLIENT_TTL_SECONDS);
+            return cachedClient;
+        }
+    }
+
+    if (clientInitPromises.has(key)) {
+        return clientInitPromises.get(key)!;
+    }
+
+    const initPromise = (async () => {
+        // Create new client
+        const { apiId, apiHash } = getApiConfig();
+        const client = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+            connectionRetries: 5,
+            requestRetries: 5,
+            useWSS: false, // Prevents MTProto WebSocket timeouts on large uploads
+        });
+
+        try {
+            await client.connect();
+        } catch (e: any) {
+            logger.error('backend.telegram', 'connect_failed', { key, message: e.message });
+            throw new Error('Failed to connect to Telegram. Session may be expired.');
         }
 
-        // Touch TTL — keep active sessions alive
-        clientPool.ttl(key, CLIENT_TTL_SECONDS);
-        return cachedClient;
-    }
-
-    // Create new client
-    const { apiId, apiHash } = getApiConfig();
-    const client = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-        connectionRetries: 5,
-        requestRetries: 5,
-        useWSS: false, // Prevents MTProto WebSocket timeouts on large uploads
+        clientPool.set(key, client);
+        return client;
+    })().finally(() => {
+        clientInitPromises.delete(key);
     });
 
-    try {
-        await client.connect();
-    } catch (e: any) {
-        logger.error('backend.telegram', 'connect_failed', { key, message: e.message });
-        throw new Error('Failed to connect to Telegram. Session may be expired.');
-    }
-
-    clientPool.set(key, client);
-    return client;
+    clientInitPromises.set(key, initPromise);
+    return initPromise;
 };
 
 // ─── Auth Flow ───────────────────────────────────────────────────────────────
@@ -226,9 +242,25 @@ export async function* iterFileDownload(
     let bytesYielded = 0;
     const maxBytes = limit;
 
+    let fileToDownload: any = media.document || media;
+
+    if (media.photo) {
+        // GramJS requires an explicit InputPhotoFileLocation for iterDownload
+        const photo = media.photo;
+        const size = photo.sizes?.[photo.sizes.length - 1]; // largest size
+        if (size && size.type) {
+            fileToDownload = new Api.InputPhotoFileLocation({
+                id: photo.id,
+                accessHash: photo.accessHash,
+                fileReference: photo.fileReference,
+                thumbSize: size.type,
+            });
+        }
+    }
+
     const iterOptions: any = {
-        file: media.document || media.photo || media,
-        offset: BigInt(offset),
+        file: fileToDownload,
+        offset: require('big-integer')(offset),
         requestSize: chunkSize,
     };
 

@@ -2,18 +2,23 @@
   "expo": {
     "name": "Axya",
     "slug": "axya",
+    "scheme": "axya",
     "version": "1.1.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./assets/axya_logo.png",
+      "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#F4F6FB"
+      "backgroundColor": "#4B6EF5"
     },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.mohit.axya",
+      "associatedDomains": [
+        "applinks:axyzcloud.com",
+        "applinks:axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net"
+      ],
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Axya needs access to save files to your library.",
         "NSPhotoLibraryAddUsageDescription": "Axya saves downloaded files to your Photos.",
@@ -34,12 +39,32 @@
         "USE_FINGERPRINT"
       ],
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/icon.png"
-      }
+        "backgroundColor": "#4B6EF5",
+        "foregroundImage": "./assets/icon-foreground.png"
+      },
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "scheme": "https",
+              "host": "axyzcloud.com"
+            },
+            {
+              "scheme": "https",
+              "host": "axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net"
+            }
+          ]
+        }
+      ]
     },
     "web": {
-      "favicon": "./assets/axya_logo.png"
+      "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-sharing",

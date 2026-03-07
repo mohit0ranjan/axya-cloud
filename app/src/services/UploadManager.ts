@@ -94,19 +94,17 @@ async function readFileChunkAsBase64(
     offset: number,
     length: number
 ): Promise<string> {
-    // Prefer new File API for file:// URIs
-    if (uri.startsWith('file://')) {
-        try {
-            const fileObj = new File(uri);
-            const handle = fileObj.open();
-            handle.offset = offset;
-            const chunk = handle.readBytes(length);
-            handle.close();
-            return uint8ArrayToBase64(chunk);
-        } catch (e) {
-            // Fall through to fetch fallback
-            console.warn('[UploadManager] FileHandle read failed, using fetch fallback:', e);
-        }
+    // Prefer new File API for all URI types; content:// often works here too.
+    try {
+        const fileObj = new File(uri);
+        const handle = fileObj.open();
+        handle.offset = offset;
+        const chunk = handle.readBytes(length);
+        handle.close();
+        return uint8ArrayToBase64(chunk);
+    } catch (e) {
+        // Fall through to fetch fallback
+        console.warn('[UploadManager] FileHandle read failed, using fetch fallback:', e);
     }
 
     // Fetch fallback (content:// URIs, web simulator, edge cases)
@@ -133,6 +131,8 @@ class UploadManager {
     // ✅ Throttle notify to ~200ms to avoid excessive React re-renders
     private readonly NOTIFY_THROTTLE_MS = 200;
     private readonly SPEED_WINDOW_MS = 3000;
+    private readonly notificationsEnabled =
+        Platform.OS !== 'web' && typeof Notifications.scheduleNotificationAsync === 'function';
 
     // ── Historical stats for auto-cleared tasks ──
     private clearedCompletedCount = 0;
@@ -236,6 +236,38 @@ class UploadManager {
         } catch (e) {
             console.error('[UploadManager] Failed to load queue:', e);
         }
+    }
+
+    private isFatalUploadError(error: any): boolean {
+        const message = String(error?.message || '').toLowerCase();
+        const status = Number(error?.response?.status || 0);
+        const code = String(error?.response?.data?.code || error?.code || '').toUpperCase();
+        const retryable = (error?.response?.data?.retryable);
+
+        if (retryable === false) return true;
+        if (code === 'TELEGRAM_SESSION_EXPIRED' || code === 'SCHEMA_NOT_READY') return true;
+        if (status === 400 || status === 401 || status === 403 || status === 404 || status === 409 || status === 413 || status === 422) {
+            return true;
+        }
+
+        return message.includes('session expired')
+            || message.includes('session invalid')
+            || message.includes('re-login')
+            || message.includes('unauthorized')
+            || message.includes('forbidden')
+            || message.includes('quota exceeded')
+            || message.includes('empty file')
+            || message.includes('schema_not_ready');
+    }
+
+    private toUserFacingUploadError(error: any): string {
+        const code = String(error?.response?.data?.code || error?.code || '').toLowerCase();
+        const backendMessage = String(error?.response?.data?.message || error?.response?.data?.error || '').trim();
+        if (code === 'schema_not_ready') return 'Service is starting. Please retry in a moment.';
+        if (code === 'telegram_session_expired') return 'Telegram session expired. Please reconnect Telegram in Profile.';
+        if (code === 'telegram_transient') return 'Telegram is temporarily unavailable. Retrying may help.';
+        if (backendMessage) return backendMessage;
+        return error?.message || 'Upload failed';
     }
 
     private saveQueue() {
@@ -447,6 +479,7 @@ class UploadManager {
     // ── Notifications ─────────────────────────────────────────────────────────
 
     private async updateNotification() {
+        if (!this.notificationsEnabled) return;
         const stats = this.getStats();
 
         if (stats.activeCount > 0) {
@@ -705,6 +738,7 @@ class UploadManager {
                 || e?.message?.includes('MEDIA_EMPTY')
                 || e?.message?.includes('FILE_ID_INVALID')
                 || (e?.message?.includes('400:') && !e?.message?.includes('FLOOD'));
+            const isFatalUploadError = this.isFatalUploadError(e);
 
             if (isCancelOrPauseError || status === 'cancelled') {
                 if (status !== 'paused') {
@@ -714,18 +748,27 @@ class UploadManager {
                 // If status is already 'paused', keep it
             } else if (status === 'paused') {
                 // Keep paused
-            } else if (isFatalSchemaError || isFatalTelegramError) {
+            } else if (isFatalSchemaError || isFatalTelegramError || isFatalUploadError) {
                 // Do not retry fatal database/Telegram errors
+                if (nextTask.uploadId) {
+                    uploadClient.post('/files/upload/cancel', { uploadId: nextTask.uploadId }).catch(() => { });
+                }
                 this.updateTask(nextTask.id, {
                     status: 'failed',
-                    error: e?.message || 'Upload failed (non-recoverable)'
+                    error: this.toUserFacingUploadError(e)
                 });
             } else {
                 const newRetryCount = nextTask.retryCount + 1;
                 if (newRetryCount <= this.MAX_RETRIES) {
+                    if (nextTask.uploadId) {
+                        try { uploadClient.post('/files/upload/cancel', { uploadId: nextTask.uploadId }).catch(() => { }); } catch { }
+                    }
                     this.updateTask(nextTask.id, {
                         status: 'waiting_retry',
-                        retryCount: newRetryCount
+                        retryCount: newRetryCount,
+                        uploadId: undefined, // Clear old session ID since server cancelled it
+                        progress: 0,
+                        bytesUploaded: 0
                     });
                     const delay = (Math.pow(2, newRetryCount) + 1) * 1000;
                     console.warn(
@@ -745,7 +788,7 @@ class UploadManager {
                 } else {
                     this.updateTask(nextTask.id, {
                         status: 'failed',
-                        error: e?.message || 'Upload failed'
+                        error: this.toUserFacingUploadError(e)
                     });
                 }
             }
@@ -940,14 +983,19 @@ class UploadManager {
                         `/files/upload/status/${uploadId}`,
                         { signal: abort.signal, _maxRetries: 0 } as any
                     );
-                    const { status, progress: tgProgress, error: tgError } = res.data;
+                    const { status, progress: tgProgress, error: tgError, errorCode } = res.data;
 
                     if (status === 'completed') {
                         this.updateTask(task.id, { progress: 100, bytesUploaded: file.size });
                         settle(() => resolve());
                         return;
                     } else if (status === 'error' || status === 'cancelled') {
-                        settle(() => reject(new Error(tgError || 'Telegram upload failed')));
+                        const err = new Error(tgError || 'Telegram upload failed') as any;
+                        if (errorCode) err.code = errorCode;
+                        if (typeof res.data?.retryable === 'boolean') {
+                            err.response = { data: { retryable: res.data.retryable, code: errorCode, error: tgError } };
+                        }
+                        settle(() => reject(err));
                         return;
                     } else {
                         // Fix: update bytesUploaded during poll phase so stats compute correctly
@@ -964,6 +1012,10 @@ class UploadManager {
                     }
                     if (e.response?.status === 404 || e.response?.status === 403) {
                         settle(() => reject(new Error(e.response?.data?.error || `Upload fatal error ${e.response?.status}`)));
+                        return;
+                    }
+                    if (e.response?.data?.retryable === false) {
+                        settle(() => reject(new Error(e.response?.data?.error || e.response?.data?.message || 'Upload failed')));
                         return;
                     }
                 }

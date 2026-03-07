@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Ayxa Shared Space',
-  description: 'Public shared files for Ayxa',
+  title: 'Axya Shared Space',
+  description: 'Public shared files for Axya',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

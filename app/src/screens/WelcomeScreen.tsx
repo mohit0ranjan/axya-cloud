@@ -82,7 +82,15 @@ export default function WelcomeScreen({ navigation }: any) {
 
             {/* ── Back arrow ── */}
             <SafeAreaView style={{ position: 'absolute', top: 0, left: 0 }}>
-                <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
+                <TouchableOpacity
+                    style={styles.backBtn}
+                    onPress={() => {
+                        // Only go back if we're not at the root of the stack
+                        if (navigation.canGoBack()) {
+                            navigation.goBack();
+                        }
+                    }}
+                >
                     <ArrowLeft color="#8892A4" size={22} />
                 </TouchableOpacity>
             </SafeAreaView>

@@ -8,6 +8,7 @@ import pool from '../config/db';
 import { getDynamicClient } from '../services/telegram.service';
 import { CustomFile } from 'telegram/client/uploads';
 import { logger } from '../utils/logger';
+import { sendApiError } from '../utils/apiError';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -49,6 +50,12 @@ const uploadToTelegramWithRetry = async (
         } catch (error: any) {
             const raw = error?.message || '';
             console.error(`[Telegram] Upload attempt ${i + 1}/${maxRetries} failed:`, raw);
+
+            // Fatal Session / Auth Errors
+            if (/AUTH_KEY|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED|PHONE_MIGRATE/i.test(raw)) {
+                console.error(`[Telegram] Fatal session error during upload. Aborting retries.`, raw);
+                throw new Error('Telegram session expired or revoked. Please log in again.');
+            }
 
             // Handle FLOOD_WAIT — Telegram explicitly gives wait time
             if (raw.includes('FLOOD_WAIT') || raw.includes('FLOOD')) {
@@ -99,6 +106,81 @@ class Semaphore {
 }
 const telegramSemaphore = new Semaphore(3); // max 3 concurrent Telegram operations
 
+const normalizeTelegramChatTarget = (value: unknown): string => {
+    const raw = String(value || '').trim();
+    if (!raw) return 'me';
+
+    if (raw === 'me') return 'me';
+    if (raw.startsWith('@')) return raw.slice(1);
+
+    const linkMatch = raw.match(/^(?:https?:\/\/)?(?:t|telegram)\.me\/(.+)$/i);
+    if (!linkMatch) return raw;
+
+    const pathPart = linkMatch[1].split('?')[0].split('#')[0];
+    const parts = pathPart.split('/').filter(Boolean);
+    if (parts.length === 0) return 'me';
+
+    // t.me/c/<internal_chat_id>/<message_id> -> channel peer id format
+    if (parts[0] === 'c' && parts[1]) {
+        return `-100${parts[1]}`;
+    }
+
+    // t.me/<username>/<message_id> -> use username peer
+    if (parts[0]) {
+        return parts[0].replace(/^@/, '');
+    }
+
+    return raw;
+};
+
+const getUploadSessionCandidates = (ownerSessionString: string, requestedChatId: unknown) => {
+    const requested = normalizeTelegramChatTarget(requestedChatId);
+    const storageChat = String(process.env.TELEGRAM_STORAGE_CHAT_ID || '').trim();
+
+    // Fallbacks if personal session is invalid or they specifically use the bot
+    const sessionCandidates = [
+        String(process.env.TELEGRAM_STORAGE_SESSION || '').trim(),
+        String(process.env.TELEGRAM_SESSION || '').trim(),
+        String(ownerSessionString || '').trim(),
+    ].filter(Boolean);
+
+    const uniqueSessions = Array.from(new Set(sessionCandidates));
+    return uniqueSessions.map((session) => {
+        const isStorageSession =
+            session === String(process.env.TELEGRAM_STORAGE_SESSION || '').trim()
+            || session === String(process.env.TELEGRAM_SESSION || '').trim();
+
+        // Critical FIX: If the user requested "me" but we are falling back to the global storage 
+        // bot session, we MUST rewrite "me" to the bot's explicitly configured storage channel ID.
+        // Otherwise, "me" routes to the bot's personal Saved Messages, breaking ID-mapping for the user.
+        let targetChatId = requested || 'me';
+        if (targetChatId === 'me' && isStorageSession && storageChat) {
+            targetChatId = storageChat;
+        }
+
+        return {
+            session,
+            chatId: targetChatId,
+        };
+    });
+};
+
+const resolveUploadTransport = async (ownerSessionString: string, requestedChatId: unknown) => {
+    const candidates = getUploadSessionCandidates(ownerSessionString, requestedChatId);
+    let lastErr: any = null;
+
+    for (const candidate of candidates) {
+        try {
+            await getDynamicClient(candidate.session);
+            return candidate;
+        } catch (err: any) {
+            lastErr = err;
+        }
+    }
+
+    throw lastErr || new Error('No Telegram session available for upload.');
+};
+
 // ─── Upload State (in-memory, auto-cleans after 1h) ─────────────────────────
 export const uploadState = new Map<string, any>();
 
@@ -131,6 +213,29 @@ const formatFileRow = (row: any) => ({
     updated_at: row.updated_at,
 });
 
+const classifyUploadFailure = (err: unknown) => {
+    const raw = String((err as any)?.message || '');
+    if (/AUTH_KEY|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED|PHONE_MIGRATE/i.test(raw)) {
+        return {
+            code: 'telegram_session_expired',
+            message: 'Telegram session expired. Please re-login.',
+            retryable: false,
+        };
+    }
+    if (/FLOOD_WAIT|NETWORK|TIMEOUT|ECONNRESET|ETIMEDOUT/i.test(raw)) {
+        return {
+            code: 'telegram_transient',
+            message: 'Telegram is temporarily unavailable. Please retry.',
+            retryable: true,
+        };
+    }
+    return {
+        code: 'internal_error',
+        message: raw || 'Upload failed',
+        retryable: false,
+    };
+};
+
 // ─── Step 1: Init Upload ────────────────────────────────────────────────────
 // Checks hash first → if duplicate, returns existing file immediately.
 export const initUpload = async (req: AuthRequest, res: Response) => {
@@ -140,6 +245,22 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
 
     if (!originalname || size === undefined || size === null) {
         return res.status(400).json({ success: false, error: 'Missing file info (originalname, size required)' });
+    }
+
+    // Fast-fail if no usable Telegram session before spending bandwidth on chunks.
+    let uploadTransport: { session: string; chatId: string };
+    try {
+        uploadTransport = await resolveUploadTransport(req.user.sessionString, telegram_chat_id);
+    } catch (sessionErr: any) {
+        const msg = sessionErr?.message || 'Telegram session invalid';
+        const isExpired = msg.includes('expired') || msg.includes('revoked');
+        return sendApiError(
+            res,
+            503,
+            'telegram_session_expired',
+            isExpired ? 'Telegram session expired. Please re-login.' : msg,
+            { retryable: false }
+        );
     }
 
     // ── Deduplication: check hash in DB ────────────────────────────────────
@@ -209,6 +330,40 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
         }
     }
 
+    // ── Storage Quota Check (Unlimited Storage) ────────────────────────────────
+    // Axya now supports unlimited storage - quota check disabled
+    // Keeping the code structure for potential future plan limits
+    const fileSize = parseInt(size, 10);
+    const quotaCheckEnabled = process.env.STORAGE_QUOTA_ENABLED === 'true';
+
+    if (quotaCheckEnabled) {
+        try {
+            const quotaCheck = await pool.query(
+                'SELECT storage_used_bytes, storage_quota_bytes FROM users WHERE id = $1',
+                [req.user.id]
+            );
+
+            if (quotaCheck.rows.length > 0) {
+                const { storage_used_bytes, storage_quota_bytes } = quotaCheck.rows[0];
+                if (storage_used_bytes + fileSize > storage_quota_bytes) {
+                    const usedMB = Math.round(storage_used_bytes / (1024 * 1024));
+                    const quotaMB = Math.round(storage_quota_bytes / (1024 * 1024));
+                    const neededMB = Math.round(fileSize / (1024 * 1024));
+                    return res.status(413).json({
+                        success: false,
+                        error: `Storage quota exceeded. Used: ${usedMB}MB, Quota: ${quotaMB}MB, Needed: ${neededMB}MB`,
+                        code: 'QUOTA_EXCEEDED',
+                        storage_used: storage_used_bytes,
+                        storage_quota: storage_quota_bytes,
+                    });
+                }
+            }
+        } catch (quotaErr: any) {
+            console.warn('[Upload] Quota check failed (non-fatal):', quotaErr.message);
+            // Continue with upload if quota check fails - fail open
+        }
+    }
+
     // ── No duplicate, proceed with upload ──────────────────────────────────
     const uploadId = crypto.randomUUID();
     const uploadDir = path.join(os.tmpdir(), 'axya_uploads', uploadId);
@@ -221,14 +376,14 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
     // Mark upload session
     uploadState.set(uploadId, {
         userId: req.user.id,
-        sessionString: req.user.sessionString,  // ✅ was session_string (wrong field name)
+        sessionString: uploadTransport!.session,
         filePath,
         fileName: originalname,
-        fileSize: parseInt(size, 10),
+        fileSize: fileSize,
         mimeType: mimetype || 'application/octet-stream',
         folderId: folder_id || null,
-        chatId: telegram_chat_id || 'me',
-        totalBytes: parseInt(size, 10),
+        chatId: uploadTransport!.chatId,
+        totalBytes: fileSize,
         receivedBytes: 0,
         nextExpectedChunk: 0, // ✅ Fix 4: chunk ordering guard
         status: 'initialized',
@@ -288,6 +443,8 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
 // ─── Step 3: Complete Upload ────────────────────────────────────────────────
 export const completeUpload = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    const correlationId = String(req.headers['x-correlation-id'] || crypto.randomUUID());
+    const idempotencyKey = String(req.headers['idempotency-key'] || '').trim() || undefined;
 
     const { uploadId } = req.body;
     if (!uploadId) return res.status(400).json({ success: false, error: 'Missing uploadId' });
@@ -298,7 +455,7 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
 
     // ✅ Fix 1: Idempotency guard — prevent duplicate Telegram uploads on retried /complete
     if (state.status !== 'initialized') {
-        return res.json({ success: true, message: 'Already processing' });
+        return res.json({ success: true, message: 'Already processing', correlation_id: correlationId, idempotency_key: idempotencyKey });
     }
 
     // ✅ Reject 0-byte uploads — prevents FILE_PARTS_INVALID from Telegram
@@ -310,7 +467,12 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
 
     // Immediate response — Telegram upload runs async
     state.status = 'uploading_to_telegram';
-    res.json({ success: true, message: 'Upload finalizing to Telegram in background' });
+    res.json({
+        success: true,
+        message: 'Upload finalizing to Telegram in background',
+        correlation_id: correlationId,
+        idempotency_key: idempotencyKey,
+    });
 
     // Async Telegram upload — guarded by semaphore so max 3 run simultaneously
     (async () => {
@@ -363,6 +525,9 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                 {
                     file: customFile,
                     caption: `[Axya] ${state.fileName}`,
+                    // ⚠️ `workers: 4` concurrently multiplexes the MTProto chunk upload.
+                    // This is ONLY safe because `useWSS: false` is hardcoded in `telegram.service.ts`.
+                    // Using parallel workers with WebSockets in GramJS will deadlock the Node thread.
                     workers: 4,
                     progressCallback,
                 }
@@ -437,16 +602,21 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
             state.fileResult = fileResult;
 
         } catch (err: any) {
+            const mapped = classifyUploadFailure(err);
             logger.error('backend.upload', 'telegram_upload_failed', {
                 uploadId,
                 userId: state.userId,
                 fileName: state.fileName,
                 message: err.message,
                 stack: err.stack,
+                code: mapped.code,
+                retryable: mapped.retryable,
             });
             cleanupUpload(state, uploadId);
             state.status = 'error';
-            state.error = err.message || 'Unknown error';
+            state.error = mapped.message;
+            state.errorCode = mapped.code;
+            state.retryable = mapped.retryable;
         } finally {
             release();
         }
@@ -505,6 +675,9 @@ export const checkUploadStatus = async (req: AuthRequest, res: Response) => {
         status: state.status,
         file: state.fileResult,
         error: state.error,
+        errorCode: state.errorCode,
+        code: state.errorCode,
+        retryable: Boolean(state.retryable),
         receivedBytes: state.receivedBytes,
         totalBytes: state.totalBytes,
     });

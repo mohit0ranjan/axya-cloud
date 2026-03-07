@@ -21,13 +21,15 @@ export const sendCode = async (req: Request, res: Response) => {
         console.error('❌ [Auth Error] Telegram SendCode failed:', err);
 
         let errorMessage = err.message || 'Telegram connection failed';
+        let statusCode = 500;
         if (errorMessage.includes('API_ID_INVALID')) {
             errorMessage = 'Invalid Telegram API ID or Hash. Check your .env variables.';
         } else if (errorMessage.includes('PHONE_NUMBER_INVALID')) {
             errorMessage = 'The phone number format is invalid. Use international format (e.g., +1234567890).';
+            statusCode = 400;
         }
 
-        res.status(500).json({ success: false, error: errorMessage });
+        res.status(statusCode).json({ success: false, error: errorMessage });
     }
 };
 
@@ -64,7 +66,24 @@ export const verifyCode = async (req: Request, res: Response) => {
             user: { id: userId, phone: phoneNumber, name: profileData.name, username: profileData.username }
         });
     } catch (err: any) {
-        res.status(500).json({ success: false, error: err.message });
+        const raw = String(err?.message || '');
+        if (/SESSION_PASSWORD_NEEDED/i.test(raw)) {
+            return res.status(401).json({
+                success: false,
+                code: 'TELEGRAM_2FA_REQUIRED',
+                error: 'Two-step verification is enabled on this Telegram account.',
+            });
+        }
+        if (/PHONE_CODE_EXPIRED/i.test(raw)) {
+            return res.status(400).json({ success: false, error: 'OTP expired. Request a new code.' });
+        }
+        if (/PHONE_CODE_INVALID/i.test(raw)) {
+            return res.status(400).json({ success: false, error: 'Invalid OTP code.' });
+        }
+        if (/AUTH_KEY|SESSION|USER_DEACTIVATED/i.test(raw)) {
+            return res.status(503).json({ success: false, error: 'Telegram session unavailable. Try login again.' });
+        }
+        res.status(500).json({ success: false, error: raw || 'Telegram sign-in failed' });
     }
 };
 
@@ -85,7 +104,7 @@ export const getMe = async (req: any, res: Response) => {
 export const deleteAccount = async (req: any, res: Response) => {
     if (!req.user || !req.user.id) return res.status(401).json({ success: false, error: 'Unauthorized' });
     try {
-        // Cascade delete works via FK ON DELETE CASCADE on: files, folders, activity_log, file_tags, shared_links
+        // Cascade delete works via FK ON DELETE CASCADE on: files, folders, activity_log, file_tags, share_links_v2
         await pool.query('DELETE FROM users WHERE id = $1', [req.user.id]);
         res.json({ success: true, message: 'Account permanently deleted.' });
     } catch (err: any) {

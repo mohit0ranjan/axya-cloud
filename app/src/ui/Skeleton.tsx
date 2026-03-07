@@ -39,7 +39,7 @@ export const SkeletonBlock = ({ width = '100%', height = 20, borderRadius = 8, s
     return (
         <Animated.View
             style={[
-                { width: width as any, height, borderRadius, backgroundColor: '#E2E8F0', opacity: pulse },
+                { width: width as any, height, borderRadius, backgroundColor: '#F1F5F9', opacity: pulse },
                 style,
             ]}
         />
@@ -76,27 +76,17 @@ export const StatCardSkeleton = () => (
 
 const styles = StyleSheet.create({
     card: {
-        flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
-        padding: 16, borderRadius: 16, marginBottom: 10,
-        ...(Platform.OS !== 'web' ? {
-            shadowColor: '#8a95a5', shadowOffset: { width: 0, height: 4 },
-            shadowOpacity: 0.06, shadowRadius: 12, elevation: 3,
-        } : {}),
+        flexDirection: 'row', alignItems: 'center', backgroundColor: 'transparent',
+        paddingVertical: 12, marginBottom: 4,
     },
     info: { flex: 1, marginLeft: 16 },
     folderCard: {
-        width: '47%', backgroundColor: '#fff', borderRadius: 16, padding: 18,
+        width: '47%', backgroundColor: '#fff', borderRadius: 20, padding: 16,
         marginBottom: 12, minHeight: 138, justifyContent: 'flex-end',
-        ...(Platform.OS !== 'web' ? {
-            shadowColor: '#8a95a5', shadowOffset: { width: 0, height: 4 },
-            shadowOpacity: 0.06, shadowRadius: 12, elevation: 3,
-        } : {}),
+        borderWidth: 1.5, borderColor: '#F1F5F9'
     },
     statCard: {
-        flex: 1, backgroundColor: '#fff', borderRadius: 16, padding: 20,
-        ...(Platform.OS !== 'web' ? {
-            shadowColor: '#8a95a5', shadowOffset: { width: 0, height: 4 },
-            shadowOpacity: 0.06, shadowRadius: 12, elevation: 3,
-        } : {}),
+        flex: 1, backgroundColor: '#fff', borderRadius: 20, padding: 20,
+        borderWidth: 1.5, borderColor: '#F1F5F9'
     },
 });

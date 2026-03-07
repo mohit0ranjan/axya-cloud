@@ -6,7 +6,8 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "typecheck": "node --stack_size=10000 ./node_modules/typescript/lib/tsc.js -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@gorhom/bottom-sheet": "^5.2.8",
@@ -26,6 +27,7 @@
     "expo-intent-launcher": "~55.0.8",
     "expo-linear-gradient": "~55.0.8",
     "expo-notifications": "~55.0.11",
+    "expo-secure-store": "^55.0.8",
     "expo-sharing": "~55.0.11",
     "expo-splash-screen": "~55.0.10",
     "expo-status-bar": "~55.0.4",

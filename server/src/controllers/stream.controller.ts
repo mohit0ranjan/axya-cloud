@@ -34,6 +34,8 @@ import { AuthRequest } from '../middlewares/auth.middleware';
 import { getDynamicClient } from '../services/telegram.service';
 import pool from '../config/db';
 import { logger } from '../utils/logger';
+import { sendApiError } from '../utils/apiError';
+import { mapTelegramError } from '../utils/telegramErrors';
 
 // ─── Disk Cache Config ───────────────────────────────────────────────────────
 
@@ -266,14 +268,14 @@ async function ensureCached(
 // ─── Stream Status Endpoint ──────────────────────────────────────────────────
 
 export const streamStatus = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
 
     const { fileId } = req.params;
 
     // FIX C2: Use ownership cache — avoids DB query on every 2s poll
     const fileSize = await checkOwnershipCached(String(fileId), req.user.id);
     if (fileSize === null) {
-        return res.status(404).json({ success: false, error: 'File not found' });
+        return sendApiError(res, 404, 'not_found', 'File not found', { retryable: false });
     }
 
     const prog = downloadProgress.get(String(fileId));
@@ -320,7 +322,7 @@ export const streamStatus = async (req: AuthRequest, res: Response) => {
 // ─── Stream Endpoint ─────────────────────────────────────────────────────────
 
 export const streamMedia = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
 
     const { fileId } = req.params;
 
@@ -328,7 +330,7 @@ export const streamMedia = async (req: AuthRequest, res: Response) => {
         // ── 1. Validate file ownership (full row needed for stream) ─────────────
         const fileRow = await getFileOwnership(String(fileId), req.user.id);
         if (!fileRow) {
-            return res.status(404).json({ success: false, error: 'File not found or access denied' });
+            return sendApiError(res, 404, 'not_found', 'File not found or access denied', { retryable: false });
         }
 
         const { telegram_message_id, telegram_chat_id, mime_type, file_name } = fileRow;
@@ -348,8 +350,8 @@ export const streamMedia = async (req: AuthRequest, res: Response) => {
             logger.error('backend.stream', 'cache_download_failed', {
                 fileId, userId: req.user.id, message: e.message,
             });
-            const status = e.message?.includes('session') || e.message?.includes('expired') ? 401 : 500;
-            return res.status(status).json({ success: false, error: e.message });
+            const mapped = mapTelegramError(e, e.message || 'Stream cache warmup failed');
+            return sendApiError(res, mapped.status, mapped.code, mapped.message, { retryable: mapped.retryable });
         }
 
         const { path: activePath, isComplete } = cacheInfo;
@@ -440,7 +442,7 @@ export const streamMedia = async (req: AuthRequest, res: Response) => {
                 fileId, message: err.message,
             });
             if (!res.headersSent) {
-                res.status(500).json({ success: false, error: 'Stream read failed' });
+                sendApiError(res, 500, 'internal_error', 'Stream read failed', { retryable: true });
             }
         });
         stream.pipe(res);
@@ -453,7 +455,8 @@ export const streamMedia = async (req: AuthRequest, res: Response) => {
             stack: err.stack,
         });
         if (!res.headersSent) {
-            res.status(500).json({ success: false, error: err.message });
+            const mapped = mapTelegramError(err, err.message || 'Stream failed');
+            sendApiError(res, mapped.status, mapped.code, mapped.message, { retryable: mapped.retryable });
         }
     }
 };

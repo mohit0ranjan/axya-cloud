@@ -94,8 +94,8 @@ const styles = StyleSheet.create({
         marginBottom: 24,
     },
     title: {
-        fontSize: 18,
-        fontWeight: '700',
+        fontSize: 17,
+        fontWeight: '600',
         textAlign: 'center',
         marginBottom: 8,
         letterSpacing: -0.3,

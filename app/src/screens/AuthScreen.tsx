@@ -345,8 +345,8 @@ const styles = StyleSheet.create({
         marginTop: 4,
     },
     sheetTitle: {
-        fontSize: 28,
-        fontWeight: '700',
+        fontSize: 26,
+        fontWeight: '600',
         color: '#0F172A',
         letterSpacing: -0.3,
         textAlign: 'center',

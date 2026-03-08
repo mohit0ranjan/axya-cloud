@@ -153,6 +153,10 @@ const formatFileRow = (row: any) => ({
     is_trashed: row.is_trashed,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    blurhash: row.blurhash || null,
+    thumbnail_url: row.mime_type?.startsWith('image/') || row.mime_type?.startsWith('video/')
+        ? `${process.env.SERVER_BASE_URL || ''}/api/files/${row.id}/thumbnail`
+        : null,
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -214,7 +218,8 @@ export const fetchFiles = async (req: AuthRequest, res: Response) => {
 
     const { folder_id, sort = 'created_at', order = 'DESC' } = req.query;
     const limit = clampInt(req.query.limit, 50, 1, 500);
-    const offset = clampInt(req.query.offset, 0, 0, 100_000);
+    const page = clampInt(req.query.page, 1, 1, 100_000);
+    const offset = req.query.offset !== undefined ? clampInt(req.query.offset, 0, 0, 100_000) : (page - 1) * limit;
     const validSorts = ['created_at', 'file_name', 'file_size', 'updated_at'];
     const sortCol = validSorts.includes(sort as string) ? sort : 'created_at';
     const sortOrder = order === 'ASC' ? 'ASC' : 'DESC';
@@ -661,19 +666,23 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
             const age = Date.now() - stat.mtimeMs;
             if (age < THUMB_CACHE_TTL_MS && stat.size > 0) {
                 res.setHeader('Content-Type', 'image/webp');
-                res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+                res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+                res.setHeader('ETag', `W/"${id}-thumb"`);
                 res.setHeader('X-Cache', 'HIT');
                 return fs.createReadStream(cacheFile).pipe(res);
             }
         }
 
         const fileResult = await pool.query(
-            'SELECT telegram_message_id, telegram_chat_id, file_name, mime_type FROM files WHERE id = $1 AND user_id = $2 AND is_trashed = false',
+            'SELECT telegram_message_id, telegram_chat_id, file_name, mime_type, thumbnail_failed_count FROM files WHERE id = $1 AND user_id = $2 AND is_trashed = false',
             [id, req.user.id]
         );
         if (fileResult.rows.length === 0) return sendApiError(res, 404, 'not_found', 'File not found', { retryable: false });
 
-        const { telegram_message_id, telegram_chat_id, file_name, mime_type } = fileResult.rows[0];
+        const { telegram_message_id, telegram_chat_id, file_name, mime_type, thumbnail_failed_count } = fileResult.rows[0];
+        if (thumbnail_failed_count >= 3) {
+            return sendApiError(res, 404, 'thumbnail_failed', 'Thumbnail generation previously failed multiple times for this file', { retryable: false });
+        }
         const messageId = Number.parseInt(String(telegram_message_id || ''), 10);
         const chatId = String(telegram_chat_id || '').trim();
         if (!chatId || !Number.isFinite(messageId) || messageId <= 0) {
@@ -695,7 +704,8 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
         }
         if (!resolved) return sendApiError(res, 404, 'telegram_message_not_found', 'File no longer exists', { retryable: false });
 
-        res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+                res.setHeader('ETag', `W/"${id}-thumb"`);
         res.setHeader('X-Cache', 'MISS');
 
         const message = resolved.message;
@@ -741,6 +751,8 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
 
         } catch (sharpError: any) {
             console.warn(`[Thumbnail] Sharp compression failed/skipped:`, sharpError.message);
+            // Increment fail count
+            await pool.query('UPDATE files SET thumbnail_failed_count = thumbnail_failed_count + 1 WHERE id = $1', [id]);
             res.setHeader('Content-Type', mime_type || 'application/octet-stream');
             return res.send(buffer);
         }

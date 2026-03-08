@@ -36,6 +36,7 @@ export const FileIcon = ({ item = {}, size = 46, token, apiBase, themeColors = {
                         uri: `${baseUrl}/files/${itemId}/thumbnail`,
                         headers: { Authorization: `Bearer ${token}` },
                     }}
+                    placeholder={item?.blurhash}
                     style={{ width: '100%', height: '100%' }}
                     contentFit="cover"
                     cachePolicy="disk"

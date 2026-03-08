@@ -9,6 +9,8 @@ import { getDynamicClient } from '../services/telegram.service';
 import { CustomFile } from 'telegram/client/uploads';
 import { logger } from '../utils/logger';
 import { sendApiError } from '../utils/apiError';
+import sharp from 'sharp';
+import { encode } from 'blurhash';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -105,6 +107,7 @@ class Semaphore {
     }
 }
 const telegramSemaphore = new Semaphore(3); // max 3 concurrent Telegram operations
+const thumbnailSemaphore = new Semaphore(2); // max 2 concurrent thumbnail generations
 
 const normalizeTelegramChatTarget = (value: unknown): string => {
     const raw = String(value || '').trim();
@@ -211,6 +214,10 @@ const formatFileRow = (row: any) => ({
     is_trashed: row.is_trashed,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    blurhash: row.blurhash || null,
+    thumbnail_url: row.mime_type?.startsWith('image/') || row.mime_type?.startsWith('video/')
+        ? `${process.env.SERVER_BASE_URL || ''}/api/files/${row.id}/thumbnail`
+        : null,
 });
 
 const classifyUploadFailure = (err: unknown) => {
@@ -292,8 +299,8 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
                 if (effectiveFolderId && effectiveFolderId !== existingFile.folder_id) {
                     // Insert a new DB row that reuses the same telegram_file_id
                     const newFileRes = await pool.query(
-                        `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+                        `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash, blurhash)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
                         [
                             req.user.id,
                             effectiveFolderId,
@@ -549,14 +556,49 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                     : '';
 
             // ── Insert with ON CONFLICT + 23505 catch ───────────────────────
+            // ── Pre-generate Thumbnail & BlurHash ──────────────────
+            let finalBlurhash = null;
+            let finalThumbBuffer: Buffer | null = null;
+
+            if (state.mimeType.startsWith('image/') && state.totalBytes < 20 * 1024 * 1024) {
+                try {
+                    const releaseThumb = await thumbnailSemaphore.acquire();
+                    try {
+                        const image = sharp(state.filePath);
+                        const metadata = await image.metadata();
+
+                        if (metadata.width && metadata.height) {
+                            // Blurhash needs a small raw buffer
+                            const { data, info } = await sharp(state.filePath)
+                                .raw()
+                                .ensureAlpha()
+                                .resize(32, 32, { fit: 'inside' })
+                                .toBuffer({ resolveWithObject: true });
+                            finalBlurhash = encode(new Uint8ClampedArray(data), info.width, info.height, 4, 3);
+
+                            // WebP thumb
+                            finalThumbBuffer = await sharp(state.filePath, { failOnError: false })
+                                .resize(1080, 1080, { fit: 'inside', withoutEnlargement: true })
+                                .toFormat('webp', { quality: 85, effort: 3 })
+                                .toBuffer();
+                        }
+                    } finally {
+                        releaseThumb();
+                    }
+                } catch (e: any) {
+                    console.warn(`[Upload] Thumb/Blurhash pre-generation failed:`, e.message);
+                }
+            }
+
+            // ── Insert with ON CONFLICT + 23505 catch ───────────────────────
             let fileResult: any = null;
             try {
                 const result = await pool.query(
-                    `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                     ON CONFLICT (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL AND is_trashed = false
-                     DO NOTHING
-                     RETURNING *`,
+                    `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash, blurhash)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         ON CONFLICT (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL AND is_trashed = false
+         DO NOTHING
+         RETURNING *`,
                     [
                         state.userId,
                         state.folderId,
@@ -568,6 +610,7 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                         state.mimeType,
                         serverHash,
                         serverMd5,
+                        finalBlurhash,
                     ]
                 );
 
@@ -583,7 +626,6 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                     fileResult = formatFileRow(result.rows[0]);
                 }
             } catch (insertErr: any) {
-                // ── Handle 23505 (unique_violation) when sha256 is null ──────
                 if (insertErr.code === '23505') {
                     console.warn(`[Upload] Caught 23505 unique_violation for "${state.fileName}" — fetching existing row`);
                     const existing = await pool.query(
@@ -593,6 +635,16 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                     fileResult = existing.rows.length > 0 ? formatFileRow(existing.rows[0]) : null;
                 } else {
                     throw insertErr; // Re-throw non-duplicate errors
+                }
+            }
+
+            if (fileResult && finalThumbBuffer) {
+                try {
+                    const THUMB_DIR = path.join(os.tmpdir(), 'axya_thumbs');
+                    fs.mkdirSync(THUMB_DIR, { recursive: true });
+                    fs.writeFileSync(path.join(THUMB_DIR, `${fileResult.id}.webp`), finalThumbBuffer);
+                } catch (e: any) {
+                    console.warn('[Upload] Failed to save thumb to disk:', e.message);
                 }
             }
 

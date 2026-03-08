@@ -10,6 +10,7 @@ import {
     SortAsc, SortDesc, Filter, X, Check, Share2, ShieldCheck, Search
 } from 'lucide-react-native';
 import { Image } from '../components/AppImage';
+import { FlashList } from '@shopify/flash-list';
 import * as DocumentPicker from 'expo-document-picker';
 import apiClient from '../services/apiClient';
 import { AuthContext } from '../context/AuthContext';

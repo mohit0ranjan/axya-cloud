@@ -8,30 +8,7 @@ import { X, Copy, Link as LinkIcon } from 'lucide-react-native';
 import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
 import { createShareLink } from '../services/api';
-
-const sanitizeShareBase = (value: string): string => {
-    const trimmed = String(value || '').trim().replace(/\/+$/, '');
-    if (!trimmed) return '';
-    return trimmed.replace(/\/api$/i, '');
-};
-import { API_URL as API_BASE } from '../config/urls';
-
-const EXTERNAL_SHARE_BASE = sanitizeShareBase(
-    process.env.EXPO_PUBLIC_SHARE_BASE_URL
-    || API_BASE
-);
-
-const normalizeExternalShareUrl = (rawUrl: string): string => {
-    const input = String(rawUrl || '').trim();
-    if (!input) return '';
-    try {
-        const parsed = new URL(input);
-        return `${EXTERNAL_SHARE_BASE}${parsed.pathname}${parsed.search}`.replace(/([^:]\/)\/+/g, '$1');
-    } catch {
-        // ignore parse failure
-    }
-    return input;
-};
+import { normalizeExternalShareUrl } from '../utils/shareUrls';
 
 interface ShareFolderModalProps {
     visible: boolean;

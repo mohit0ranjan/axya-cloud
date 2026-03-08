@@ -340,6 +340,7 @@ export const listSharesV2 = async (req: AuthRequest, res: Response) => {
     }
 
     try {
+        const base = deriveShareBaseUrlFromRequest(req);
         const result = await pool.query(
             `SELECT
                 s.*,
@@ -354,19 +355,24 @@ export const listSharesV2 = async (req: AuthRequest, res: Response) => {
 
         return res.json({
             success: true,
-            shares: result.rows.map((row: any) => ({
-                id: row.id,
-                slug: row.slug,
-                resourceType: row.resource_type,
-                allowDownload: Boolean(row.allow_download),
-                allowPreview: Boolean(row.allow_preview),
-                requiresPassword: Boolean(row.password_hash),
-                expiresAt: row.expires_at,
-                revokedAt: row.revoked_at,
-                fileCount: Number(row.file_count || 0),
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            })),
+            shares: result.rows.map((row: any) => {
+                const sharePath = `/s/${encodeURIComponent(String(row.slug || ''))}`;
+                return {
+                    id: row.id,
+                    slug: row.slug,
+                    resourceType: row.resource_type,
+                    allowDownload: Boolean(row.allow_download),
+                    allowPreview: Boolean(row.allow_preview),
+                    requiresPassword: Boolean(row.password_hash),
+                    expiresAt: row.expires_at,
+                    revokedAt: row.revoked_at,
+                    fileCount: Number(row.file_count || 0),
+                    createdAt: row.created_at,
+                    updatedAt: row.updated_at,
+                    share_url: `${base}${sharePath}`,
+                    shareUrl: `${base}${sharePath}`,
+                };
+            }),
         });
     } catch {
         return sendApiError(res, 500, 'internal_error', 'Failed to list v2 shares.', { retryable: false });

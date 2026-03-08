@@ -20,6 +20,7 @@ import { useDownload } from '../context/DownloadContext';
 import { useAuth } from '../context/AuthContext';
 import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
+import { normalizeExternalShareUrl } from '../utils/shareUrls';
 
 // react-native-reanimated v3/v4 — import as `Animated` (standard naming)
 import Animated2, {
@@ -34,27 +35,6 @@ import Animated2, {
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 
 const { width, height } = Dimensions.get('window');
-const sanitizeShareBase = (value: string): string => {
-    const trimmed = String(value || '').trim().replace(/\/+$/, '');
-    if (!trimmed) return '';
-    return trimmed.replace(/\/api$/i, '');
-};
-const EXTERNAL_SHARE_BASE = sanitizeShareBase(
-    process.env.EXPO_PUBLIC_SHARE_BASE_URL
-    || API_BASE
-);
-
-const normalizeExternalShareUrl = (rawUrl: string): string => {
-    const input = String(rawUrl || '').trim();
-    if (!input) return '';
-    try {
-        const parsed = new URL(input);
-        return `${EXTERNAL_SHARE_BASE}${parsed.pathname}${parsed.search}`.replace(/([^:]\/)\/+/g, '$1');
-    } catch {
-        // ignore parsing issue and return original
-    }
-    return input;
-};
 
 // ─────────────────────────────────────────────────────────────
 // Module-level constants (safe to capture inside worklets)

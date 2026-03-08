@@ -10,6 +10,7 @@ import { revokeShareLink } from '../services/api';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import { ErrorState } from '../ui/ErrorState';
+import { buildExternalShareUrl, normalizeExternalShareUrl } from '../utils/shareUrls';
 
 // Lightweight replacement for date-fns formatDistanceToNow
 function formatDistanceToNow(date: Date, opts?: { addSuffix?: boolean }): string {
@@ -90,7 +91,9 @@ export default function SharedLinksScreen({ navigation }: any) {
         const name = isFolder ? 'Shared Folder' : 'Shared File';
         const createdAt = item.createdAt || item.created_at;
         const expiresAt = item.expiresAt || item.expires_at;
-        const shareUrl = String(item.share_url || item.shareUrl || '').trim();
+        const shareUrl = normalizeExternalShareUrl(
+            String(item.share_url || item.shareUrl || buildExternalShareUrl(item.slug || '', item.secret || ''))
+        ).trim();
         const isExpired = expiresAt ? new Date(expiresAt) < new Date() : false;
 
         return (

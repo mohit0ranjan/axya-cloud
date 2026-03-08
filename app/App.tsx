@@ -14,7 +14,6 @@ import { ServerStatusProvider } from './src/context/ServerStatusContext';
 import { UploadProvider } from './src/context/UploadContext';
 import { DownloadProvider } from './src/context/DownloadContext';
 
-import SplashScreen from './src/screens/SplashScreen';
 import WelcomeScreen from './src/screens/WelcomeScreen';
 import AuthScreen from './src/screens/AuthScreen';
 import FolderFilesScreen from './src/screens/FolderFilesScreen';
@@ -25,6 +24,7 @@ import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import FilesScreen from './src/screens/FilesScreen';
 import SharedLinksScreen from './src/screens/SharedLinksScreen';
 import MainTabs from './src/navigation/MainTabs';
+import AnimatedSplashScreen from './src/screens/AnimatedSplashScreen';
 
 import UploadProgressOverlay from './src/components/UploadProgressOverlay';
 import DownloadProgressOverlay from './src/components/DownloadProgressOverlay';
@@ -54,18 +54,7 @@ function RootNavigator() {
     const isAuthenticated = auth?.isAuthenticated;
     const isLoading = auth?.isLoading;
     const linking = getLinking(Boolean(isAuthenticated));
-    const [nativeSplashHidden, setNativeSplashHidden] = useState(false);
-    const [animatedSplashDone, setAnimatedSplashDone] = useState(false);
-
-    useEffect(() => {
-        if (!isLoading && !nativeSplashHidden) {
-            ExpoSplashScreen.hideAsync().catch(() => { });
-            setNativeSplashHidden(true);
-        }
-    }, [isLoading, nativeSplashHidden]);
-
-    if (!nativeSplashHidden) return null;
-    if (!animatedSplashDone) return <SplashScreen onFinish={() => setAnimatedSplashDone(true)} />;
+    const [isSplashAnimationDone, setIsSplashAnimationDone] = useState(false);
 
     return (
         <NavigationContainer linking={linking}>
@@ -96,6 +85,13 @@ function RootNavigator() {
                 <UploadProgressOverlay />
                 <DownloadProgressOverlay />
                 <ServerWakingOverlay />
+
+                {(!isSplashAnimationDone || !!isLoading) && (
+                    <AnimatedSplashScreen
+                        onAnimationComplete={() => setIsSplashAnimationDone(true)}
+                        isAuthLoading={!!isLoading}
+                    />
+                )}
             </View>
         </NavigationContainer>
     );

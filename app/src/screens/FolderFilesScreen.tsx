@@ -22,6 +22,7 @@ import { ErrorState } from '../ui/ErrorState';
 import { FileCardSkeleton } from '../ui/Skeleton';
 import ShareFolderModal from '../components/ShareFolderModal';
 import { FileIcon } from '../components/FileIcon';
+import { normalizeExternalShareUrl } from '../utils/shareUrls';
 
 
 const { width } = Dimensions.get('window');
@@ -386,7 +387,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             if (item.result_type !== 'folder') {
                 const shareRes = await apiClient.post('/api/v2/shares', { resource_type: 'file', root_file_id: item.id, expires_at: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString() })
                     .catch(() => ({ data: { share_url: null, shareUrl: null } }));
-                const link = String(shareRes.data?.share_url || shareRes.data?.shareUrl || '');
+                const link = normalizeExternalShareUrl(String(shareRes.data?.share_url || shareRes.data?.shareUrl || ''));
                 setInfoShareLink(link || null);
             } else {
                 setInfoShareLink(null); // Folders don't have share links

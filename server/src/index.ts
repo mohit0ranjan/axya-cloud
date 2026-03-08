@@ -165,6 +165,13 @@ app.use(cookieParser(cookieSecret));
 app.use((req, res, next) => {
     if (schemaReady) return next();
     if (req.path === '/' || req.path === '/health') return next();
+    logger.warn('backend.http', 'schema_not_ready_reject', {
+        method: req.method,
+        url: redactSensitiveQuery(req.originalUrl || req.url || ''),
+        schemaState,
+        retryAfterSeconds: SCHEMA_RETRY_AFTER_SECONDS,
+        ip: req.ip,
+    });
     return sendApiError(
         res,
         503,
@@ -199,7 +206,24 @@ app.use(globalLimiter);
 const authLimiter = rateLimit({
     windowMs: 10 * 60 * 1000,
     max: 15,  // ✅ was 10, slightly raised to allow 5 phone numbers + retries
-    message: { success: false, error: 'Too many auth attempts, please wait 10 minutes.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: (req, res) => {
+        logger.warn('backend.auth', 'rate_limit_hit', {
+            path: req.path,
+            method: req.method,
+            ip: req.ip,
+            origin: req.headers.origin,
+            userAgent: req.headers['user-agent'],
+        });
+        return sendApiError(
+            res,
+            429,
+            'rate_limited',
+            'Too many auth attempts, please wait 10 minutes.',
+            { retryable: false, retryAfterSeconds: 10 * 60 }
+        );
+    },
 });
 
 // ── Routes ──────────────────────────────────────────────────────────────────

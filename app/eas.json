@@ -16,12 +16,16 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_ENV": "production"
+        "EXPO_PUBLIC_ENV": "production",
+        "EXPO_PUBLIC_API_URL": "https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net"
       }
     },
     "production": {
       "autoIncrement": true,
-      "channel": "production"
+      "channel": "production",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net"
+      }
     }
   },
   "submit": {

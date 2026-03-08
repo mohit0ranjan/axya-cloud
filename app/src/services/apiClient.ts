@@ -14,6 +14,35 @@ interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
     _allowRetry?: boolean;
 }
 
+const serializeAxiosRequest = (request: unknown) => {
+    if (!request || typeof request !== 'object') return undefined;
+
+    const candidate = request as Record<string, unknown>;
+    return {
+        readyState: candidate.readyState,
+        status: candidate.status,
+        timeout: candidate.timeout,
+        responseURL: candidate.responseURL,
+        hasResponse: Boolean(candidate.response),
+        responseType: candidate.responseType,
+        withCredentials: candidate.withCredentials,
+    };
+};
+
+export const serializeAxiosError = (error: AxiosError) => ({
+    code: error.code,
+    message: error.message,
+    status: error.response?.status,
+    response: error.response
+        ? {
+            status: error.response.status,
+            headers: error.response.headers,
+            data: error.response.data,
+        }
+        : undefined,
+    request: serializeAxiosRequest(error.request),
+});
+
 const apiClient = axios.create({
     baseURL: API_BASE,
     timeout: 15_000, // 15s for standard API
@@ -46,6 +75,7 @@ const injectTokenAndLog = async (config: CustomAxiosRequestConfig) => {
     logger.info('frontend.api', 'request.start', {
         reqId,
         method: config.method,
+        baseURL: config.baseURL,
         url: config.url,
         timeout: config.timeout,
     });
@@ -95,10 +125,18 @@ apiClient.interceptors.response.use(
         logger.error('frontend.api', 'request.error', {
             reqId: config?.reqId,
             method: config?.method,
+            baseURL: config?.baseURL,
             url: config?.url,
             code: error.code,
             status: error.response?.status,
             message: error.message,
+            response: error.response
+                ? {
+                    headers: error.response.headers,
+                    data: error.response.data,
+                }
+                : undefined,
+            request: serializeAxiosRequest(error.request),
             durationMs: config?._startedAt ? Date.now() - config._startedAt : undefined,
         });
 

@@ -7,8 +7,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft } from 'lucide-react-native';
 
-import apiClient from '../services/apiClient';
 import { useAuth } from '../context/AuthContext';
+import { sendOtp, verifyOtp } from '../services/authService';
 
 import HeroSection from '../components/HeroSection';
 import LoginCard from '../components/LoginCard';
@@ -112,18 +112,13 @@ export default function AuthScreen({ navigation }: any) {
 
         try {
             const fullPhone = `+91${phone}`;
-            const res = await apiClient.post('/auth/send-code', { phoneNumber: fullPhone });
-
-            if (res.data.success) {
-                setTempSession(res.data.tempSession);
-                setPhoneCodeHash(res.data.phoneCodeHash);
-                animateStep();
-                setStep('otp');
-            } else {
-                setError(res.data.error || 'Failed to send code');
-            }
+            const result = await sendOtp(fullPhone);
+            setTempSession(result.tempSession);
+            setPhoneCodeHash(result.phoneCodeHash);
+            animateStep();
+            setStep('otp');
         } catch (e: any) {
-            setError(e?.response?.data?.error || 'Network error. Please try again.');
+            setError(e?.message || 'Network error. Please try again.');
         } finally {
             setIsLoading(false);
         }
@@ -142,19 +137,15 @@ export default function AuthScreen({ navigation }: any) {
         setIsLoading(true);
         try {
             const fullPhone = `+91${phone}`;
-            const res = await apiClient.post('/auth/verify-code', {
+            const result = await verifyOtp({
                 phoneNumber: fullPhone,
                 phoneCodeHash,
                 phoneCode: otpToVerify,
                 tempSession,
             });
-            if (res.data.success && res.data.token) {
-                await login(res.data.token, res.data.user);
-            } else {
-                setError(res.data.error || 'Incorrect OTP');
-            }
+            await login(result.token, result.user);
         } catch (e: any) {
-            setError(e?.response?.data?.error || 'Verification failed');
+            setError(e?.message || 'Verification failed');
         } finally {
             setIsLoading(false);
             isVerifying.current = false;

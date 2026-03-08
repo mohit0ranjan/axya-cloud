@@ -30,13 +30,10 @@
       "package": "com.mohit.axya",
       "versionCode": 2,
       "permissions": [
-        "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE",
         "CAMERA",
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
-        "USE_BIOMETRIC",
-        "USE_FINGERPRINT"
+        "USE_BIOMETRIC"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#4B6EF5",
@@ -90,22 +87,14 @@
             "javaVersion": "17"
           }
         }
-      ]
+      ],
+      "./plugins/with-android-gradle-tuning"
     ],
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
     "extra": {
       "eas": {
-        "projectId": "07889e0f-db9c-4dc8-9828-cbb821f5a1e9"
+        "projectId": "48ec9ee9-c4e5-498b-b432-fd6981dc80d4"
       }
     },
-    "owner": "mohit234",
-    "updates": {
-      "url": "https://u.expo.dev/07889e0f-db9c-4dc8-9828-cbb821f5a1e9",
-      "enabled": true,
-      "checkAutomatically": "ON_ERROR_RECOVERY",
-      "fallbackToCacheTimeout": 30000
-    }
+    "owner": "mohit2344"
   }
 }

@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import {
   Image as RNImage,
+  ImageErrorEventData,
   ImageProps as RNImageProps,
   ImageSourcePropType,
+  NativeSyntheticEvent,
   Platform,
 } from 'react-native';
 
@@ -64,7 +66,10 @@ export function Image({ source, contentFit, onError, ...rest }: AppImageProps) {
       } catch (error) {
         if (!cancelled) {
           setWebSource(source as ImageSourcePropType);
-          onError?.({ nativeEvent: { error: error instanceof Error ? error.message : 'Image load failed' } });
+          const nativeEvent = {
+            error: error instanceof Error ? error.message : 'Image load failed',
+          } as ImageErrorEventData;
+          onError?.({ nativeEvent } as NativeSyntheticEvent<ImageErrorEventData>);
         }
       }
     };

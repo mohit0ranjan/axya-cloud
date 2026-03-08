@@ -1,11 +1,9 @@
-import React, { useContext, useEffect, useRef, useState, useCallback } from 'react';
-import { Alert, AppState, AppStateStatus, Platform, View } from 'react-native';
+import React, { useContext, useEffect, useState } from 'react';
+import { Platform, View } from 'react-native';
 import { NavigationContainer, LinkingOptions } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import * as ExpoSplashScreen from 'expo-splash-screen';
-import * as Updates from 'expo-updates';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
@@ -37,9 +35,6 @@ import { logger } from './src/utils/logger';
 ExpoSplashScreen.preventAutoHideAsync().catch(() => { });
 
 const Stack = createNativeStackNavigator();
-const OTA_LAST_RELOADED_UPDATE_ID_KEY = '@ota_last_reloaded_update_id';
-const OTA_LAST_CHECKED_AT_KEY = '@ota_last_checked_at';
-const OTA_FOREGROUND_CHECK_INTERVAL_MS = 1 * 60 * 1000; // 1 minute for testing
 
 const linkingPrefixes = [
     'axya://',
@@ -107,91 +102,6 @@ function RootNavigator() {
 }
 
 export default function App() {
-    const hasCheckedOtaRef = useRef(false);
-    const appStateRef = useRef<AppStateStatus>(AppState.currentState);
-
-    const checkForOtaUpdate = useCallback(async (reason: 'launch' | 'foreground') => {
-        if (__DEV__) return;
-
-        if (!Updates.isEnabled) {
-            logger.warn('frontend.ota', 'OTA disabled for this build', {
-                reason,
-                channel: Updates.channel ?? null,
-                runtimeVersion: Updates.runtimeVersion ?? null,
-                updateId: Updates.updateId ?? null,
-            });
-            return;
-        }
-
-        try {
-            const now = Date.now();
-            if (reason === 'foreground') {
-                const lastCheckedRaw = await AsyncStorage.getItem(OTA_LAST_CHECKED_AT_KEY);
-                const lastChecked = Number(lastCheckedRaw || '0');
-                if (Number.isFinite(lastChecked) && now - lastChecked < OTA_FOREGROUND_CHECK_INTERVAL_MS) {
-                    return;
-                }
-            }
-            await AsyncStorage.setItem(OTA_LAST_CHECKED_AT_KEY, String(now));
-
-            logger.info('frontend.ota', 'Checking OTA updates', {
-                reason,
-                channel: Updates.channel ?? null,
-                runtimeVersion: Updates.runtimeVersion ?? null,
-                updateId: Updates.updateId ?? null,
-            });
-
-            const update = await Updates.checkForUpdateAsync();
-            if (!update.isAvailable) return;
-
-            const fetchResult = await Updates.fetchUpdateAsync();
-            if (!fetchResult.isNew) return;
-
-            const nextUpdateId = (fetchResult.manifest as { id?: string } | undefined)?.id;
-            const lastReloadedUpdateId = await AsyncStorage.getItem(OTA_LAST_RELOADED_UPDATE_ID_KEY);
-            if (nextUpdateId && nextUpdateId === lastReloadedUpdateId) {
-                logger.warn('frontend.ota', 'Skipping reload to prevent update loop', {
-                    reason,
-                    updateId: nextUpdateId,
-                });
-                return;
-            }
-
-            Alert.alert(
-                'Update Available',
-                'A new update is ready. Restart now to apply it.',
-                [
-                    { text: 'Later', style: 'cancel' },
-                    {
-                        text: 'Restart',
-                        onPress: async () => {
-                            try {
-                                if (nextUpdateId) {
-                                    await AsyncStorage.setItem(OTA_LAST_RELOADED_UPDATE_ID_KEY, nextUpdateId);
-                                }
-                                await Updates.reloadAsync();
-                            } catch (error: any) {
-                                logger.error('frontend.ota', 'Failed to reload into OTA update', {
-                                    reason,
-                                    message: error?.message,
-                                    updateId: nextUpdateId,
-                                });
-                            }
-                        },
-                    },
-                ],
-                { cancelable: true }
-            );
-        } catch (error: any) {
-            logger.warn('frontend.ota', 'OTA check failed', {
-                reason,
-                message: error?.message,
-                channel: Updates.channel ?? null,
-                runtimeVersion: Updates.runtimeVersion ?? null,
-            });
-        }
-    }, []);
-
     useEffect(() => {
         const globalAny = global as any;
         const ErrorUtilsRef = globalAny?.ErrorUtils;
@@ -238,23 +148,6 @@ export default function App() {
             }
         };
     }, []);
-
-    useEffect(() => {
-        if (hasCheckedOtaRef.current) return;
-        hasCheckedOtaRef.current = true;
-        void checkForOtaUpdate('launch');
-    }, [checkForOtaUpdate]);
-
-    useEffect(() => {
-        const subscription = AppState.addEventListener('change', (nextState) => {
-            const wasBackgrounded = appStateRef.current === 'background' || appStateRef.current === 'inactive';
-            appStateRef.current = nextState;
-            if (wasBackgrounded && nextState === 'active') {
-                void checkForOtaUpdate('foreground');
-            }
-        });
-        return () => subscription.remove();
-    }, [checkForOtaUpdate]);
 
     return (
         <AppErrorBoundary>

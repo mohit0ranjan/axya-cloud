@@ -14,7 +14,6 @@ import { useTheme } from '../context/ThemeContext';
 import apiClient from '../services/apiClient';
 import { SkeletonBlock } from '../ui/Skeleton';
 import Constants from 'expo-constants';
-import * as Updates from 'expo-updates';
 
 const ACTION_ICONS: Record<string, string> = {
     upload: 'UP',
@@ -85,7 +84,6 @@ export default function ProfileScreen({ navigation }: any) {
     const [stats, setStats] = useState<any>({});
     const [activity, setActivity] = useState<any[]>([]);
     const appVersion = Constants.expoConfig?.version || 'dev';
-    const updateLabel = Updates.channel || Updates.runtimeVersion || 'default';
 
     const fadeAnim = useRef(new Animated.Value(0)).current;
     const slideAnim = useRef(new Animated.Value(20)).current;
@@ -378,7 +376,7 @@ export default function ProfileScreen({ navigation }: any) {
                     </Text>
                 </TouchableOpacity>
 
-                <Text style={[st.footerText, { color: C.muted }]}>Axya Cloud v{appVersion} ({updateLabel})</Text>
+                <Text style={[st.footerText, { color: C.muted }]}>Axya Cloud v{appVersion}</Text>
             </Animated.ScrollView>
         </SafeAreaView>
     );

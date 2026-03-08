@@ -1,17 +1,15 @@
 {
   "cli": {
     "version": ">= 18.0.5",
-    "appVersionSource": "remote"
+    "appVersionSource": "local"
   },
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal",
-      "channel": "development"
+      "distribution": "internal"
     },
     "preview": {
       "distribution": "internal",
-      "channel": "preview",
       "android": {
         "buildType": "apk"
       },
@@ -22,13 +20,9 @@
     },
     "production": {
       "autoIncrement": true,
-      "channel": "production",
       "env": {
         "EXPO_PUBLIC_API_URL": "https://axya-server.onrender.com"
       }
     }
-  },
-  "submit": {
-    "production": {}
   }
 }

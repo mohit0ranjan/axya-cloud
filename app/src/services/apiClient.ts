@@ -6,6 +6,8 @@ import { getSecureValue, SECURE_KEYS } from '../utils/secureStorage';
 
 import { API_URL as API_BASE } from '../config/urls';
 
+export { API_BASE };
+
 interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
     reqId?: string;
     _retryCount?: number;

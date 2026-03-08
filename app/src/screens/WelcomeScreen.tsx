@@ -3,7 +3,7 @@ import {
     View, Text, StyleSheet, TouchableOpacity,
     SafeAreaView, Animated, Easing, Dimensions, StatusBar,
 } from 'react-native';
-import { Image } from 'expo-image';
+import { Image } from '../components/AppImage';
 import { ArrowRight, ArrowLeft } from 'lucide-react-native';
 
 const { width, height } = Dimensions.get('window');

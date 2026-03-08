@@ -68,7 +68,6 @@
     },
     "plugins": [
       "expo-sharing",
-      "expo-image",
       "expo-video",
       [
         "expo-notifications",

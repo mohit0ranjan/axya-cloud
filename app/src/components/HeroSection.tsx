@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated } from 'react-native';
-import { Image } from 'expo-image';
+import { Image } from './AppImage';
 import { Shield, Zap, HardDrive } from 'lucide-react-native';
 
 const FEATURES = [

@@ -8,7 +8,7 @@ import {
     Text,
     View,
 } from 'react-native';
-import { Image } from 'expo-image';
+import { Image } from '../components/AppImage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { FileText, Folder, Image as ImageIcon, Film } from 'lucide-react-native';
 

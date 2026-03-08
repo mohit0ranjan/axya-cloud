@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, StyleSheet } from 'react-native';
-import { Image } from 'expo-image';
+import { Image } from './AppImage';
 import { Folder, Image as ImageIcon, FileText, Film, Music, Archive } from 'lucide-react-native';
 
 const failedThumbnailIds = new Set<string>();

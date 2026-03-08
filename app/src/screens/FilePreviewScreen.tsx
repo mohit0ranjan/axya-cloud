@@ -11,7 +11,7 @@ import * as IntentLauncher from 'expo-intent-launcher';
 import * as Sharing from 'expo-sharing';
 import { ArrowLeft, Download, Trash2, FileText, FolderInput, Star, Link, CheckCircle, X } from 'lucide-react-native';
 
-import { Image } from 'expo-image';
+import { Image } from '../components/AppImage';
 import VideoPlayer from '../components/VideoPlayer';
 import * as Clipboard from 'expo-clipboard';
 import apiClient, { API_BASE } from '../services/apiClient';

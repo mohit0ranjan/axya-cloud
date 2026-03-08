@@ -9,7 +9,7 @@ import {
     MoreHorizontal, Star, Grid, List, Info, Move, Tag, CheckSquare, Square,
     SortAsc, SortDesc, Filter, X, Check, Share2, ShieldCheck, Search
 } from 'lucide-react-native';
-import { Image } from 'expo-image';
+import { Image } from '../components/AppImage';
 import * as DocumentPicker from 'expo-document-picker';
 import apiClient from '../services/apiClient';
 import { AuthContext } from '../context/AuthContext';

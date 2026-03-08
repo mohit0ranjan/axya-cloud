@@ -44,7 +44,7 @@ const OTA_FOREGROUND_CHECK_INTERVAL_MS = 1 * 60 * 1000; // 1 minute for testing
 const linkingPrefixes = [
     'axya://',
     'https://axyzcloud.com',
-    'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net',
+    'https://axya-web.onrender.com',
 ];
 
 const getLinking = (isAuthenticated: boolean): LinkingOptions<any> => ({

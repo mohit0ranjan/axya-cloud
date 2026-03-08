@@ -78,7 +78,7 @@ app.use(helmet({
 }));
 
 const defaultAllowedOrigins = isProduction ? [
-    'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net'
+    'https://axya-web.onrender.com'
 ] : [
     'http://localhost:3000',
     'http://localhost:3001',

@@ -17,14 +17,14 @@
       },
       "env": {
         "EXPO_PUBLIC_ENV": "production",
-        "EXPO_PUBLIC_API_URL": "https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net"
+        "EXPO_PUBLIC_API_URL": "https://axya-server.onrender.com"
       }
     },
     "production": {
       "autoIncrement": true,
       "channel": "production",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net"
+        "EXPO_PUBLIC_API_URL": "https://axya-server.onrender.com"
       }
     }
   },

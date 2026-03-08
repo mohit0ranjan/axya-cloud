@@ -1,6 +1,6 @@
 import { logger } from '../utils/logger';
 
-const AZURE_BACKEND_URL = 'https://axyzcloud-a8fgczdhhjhxexhg.centralindia-01.azurewebsites.net';
+const DEFAULT_BACKEND_URL = 'https://axya-server.onrender.com';
 const LOCAL_ADDRESS_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
 
 const sanitizeUrl = (url: string | undefined, fallback: string): string => {
@@ -21,9 +21,9 @@ const sanitizeUrl = (url: string | undefined, fallback: string): string => {
 
 export const API_URL = sanitizeUrl(
     process.env.EXPO_PUBLIC_API_URL,
-    AZURE_BACKEND_URL
+    DEFAULT_BACKEND_URL
 );
 
 if (LOCAL_ADDRESS_RE.test(API_URL)) {
-    throw new Error('API_URL resolved to localhost/127.0.0.1. Mobile builds must use the Azure backend URL.');
+    throw new Error('API_URL resolved to localhost/127.0.0.1. Mobile builds must use the deployed backend URL.');
 }

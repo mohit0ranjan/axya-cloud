@@ -8,7 +8,8 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "backgroundColor": "#F8FAFF"
+      "backgroundColor": "#F8FAFF",
+      "image": "./assets/transparent.png"
     },
     "ios": {
       "supportsTablet": true,

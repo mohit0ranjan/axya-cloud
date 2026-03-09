@@ -26,6 +26,7 @@ import {
 import { rebuildShareSnapshot } from '../services/share-v2/snapshot.service';
 import { logShareV2Event } from '../services/share-v2/events.service';
 import { resolveTelegramMessageForShareItem } from '../services/share-v2/telegram-read.service';
+import { getMessageCacheState } from '../services/share-v2/telegram-read-cache.service';
 import { iterFileDownload } from '../services/telegram.service';
 import { sendApiError } from '../utils/apiError';
 import { FRONTEND_BASE_URL } from '../config/urls';
@@ -106,6 +107,48 @@ const getShareByIdForOwner = async (shareId: string, ownerUserId: string): Promi
         [shareId, ownerUserId]
     );
     return (res.rows[0] as ShareLinkV2Row | undefined) || null;
+};
+
+const getOwnerShareInsights = async (shareId: string) => {
+    const [eventSummaryRes, recentEventsRes] = await Promise.all([
+        pool.query(
+            `SELECT
+                COUNT(*) FILTER (WHERE event_type = 'open')::int AS opens,
+                COUNT(*) FILTER (WHERE event_type = 'preview')::int AS previews,
+                COUNT(*) FILTER (WHERE event_type = 'download')::int AS downloads,
+                COUNT(*) FILTER (WHERE event_type = 'download_zip')::int AS zip_downloads,
+                COUNT(*) FILTER (WHERE event_type = 'error')::int AS errors
+             FROM share_events_v2
+             WHERE share_id = $1`,
+            [shareId]
+        ),
+        pool.query(
+            `SELECT event_type, status_code, error_code, meta, created_at
+             FROM share_events_v2
+             WHERE share_id = $1
+             ORDER BY created_at DESC
+             LIMIT 20`,
+            [shareId]
+        ),
+    ]);
+
+    const summary = eventSummaryRes.rows[0] || {};
+    return {
+        summary: {
+            opens: Number(summary.opens || 0),
+            previews: Number(summary.previews || 0),
+            downloads: Number(summary.downloads || 0),
+            zipDownloads: Number(summary.zip_downloads || 0),
+            errors: Number(summary.errors || 0),
+        },
+        recentEvents: recentEventsRes.rows.map((row: any) => ({
+            eventType: String(row.event_type || ''),
+            statusCode: row.status_code == null ? null : Number(row.status_code),
+            errorCode: row.error_code || null,
+            meta: row.meta || {},
+            createdAt: row.created_at,
+        })),
+    };
 };
 
 const getShareBySlug = async (slug: string): Promise<ShareLinkV2Row | null> => {
@@ -344,11 +387,28 @@ export const listSharesV2 = async (req: AuthRequest, res: Response) => {
         const result = await pool.query(
             `SELECT
                 s.*,
-                COUNT(si.id)::int AS file_count
+                COALESCE(items.file_count, 0)::int AS file_count,
+                COALESCE(events.view_count, 0)::int AS view_count,
+                COALESCE(events.download_count, 0)::int AS download_count,
+                COALESCE(events.preview_count, 0)::int AS preview_count,
+                COALESCE(events.error_count, 0)::int AS error_count
              FROM share_links_v2 s
-             LEFT JOIN share_items_v2 si ON si.share_id = s.id
+             LEFT JOIN (
+                SELECT share_id, COUNT(*)::int AS file_count
+                FROM share_items_v2
+                GROUP BY share_id
+             ) items ON items.share_id = s.id
+             LEFT JOIN (
+                SELECT
+                    share_id,
+                    COUNT(*) FILTER (WHERE event_type = 'open')::int AS view_count,
+                    COUNT(*) FILTER (WHERE event_type = 'download')::int AS download_count,
+                    COUNT(*) FILTER (WHERE event_type = 'preview')::int AS preview_count,
+                    COUNT(*) FILTER (WHERE event_type = 'error')::int AS error_count
+                FROM share_events_v2
+                GROUP BY share_id
+             ) events ON events.share_id = s.id
              WHERE s.owner_user_id = $1
-             GROUP BY s.id
              ORDER BY s.created_at DESC`,
             [req.user.id]
         );
@@ -367,6 +427,10 @@ export const listSharesV2 = async (req: AuthRequest, res: Response) => {
                     expiresAt: row.expires_at,
                     revokedAt: row.revoked_at,
                     fileCount: Number(row.file_count || 0),
+                    views: Number(row.view_count || 0),
+                    download_count: Number(row.download_count || 0),
+                    preview_count: Number(row.preview_count || 0),
+                    error_count: Number(row.error_count || 0),
                     createdAt: row.created_at,
                     updatedAt: row.updated_at,
                     share_url: `${base}${sharePath}`,
@@ -376,6 +440,46 @@ export const listSharesV2 = async (req: AuthRequest, res: Response) => {
         });
     } catch {
         return sendApiError(res, 500, 'internal_error', 'Failed to list v2 shares.', { retryable: false });
+    }
+};
+
+export const getShareDetailsV2 = async (req: AuthRequest, res: Response) => {
+    if (!req.user) {
+        return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
+    }
+
+    const shareId = String(req.params.id || '');
+    if (!isUuid(shareId)) {
+        return sendApiError(res, 400, 'invalid_request', 'Invalid share id.', { retryable: false });
+    }
+
+    try {
+        const share = await getShareByIdForOwner(shareId, req.user.id);
+        if (!share) {
+            return sendApiError(res, 404, 'not_found', 'Share not found.', { retryable: false });
+        }
+
+        const [meta, insights] = await Promise.all([
+            buildShareMeta(share),
+            getOwnerShareInsights(share.id),
+        ]);
+        const base = deriveShareBaseUrlFromRequest(req);
+        const sharePath = `/s/${encodeURIComponent(String(share.slug || ''))}`;
+
+        return res.json({
+            success: true,
+            share: {
+                ...meta,
+                createdAt: share.created_at,
+                updatedAt: share.updated_at,
+                share_url: `${base}${sharePath}`,
+                shareUrl: `${base}${sharePath}`,
+            },
+            analytics: insights.summary,
+            recentEvents: insights.recentEvents,
+        });
+    } catch {
+        return sendApiError(res, 500, 'internal_error', 'Failed to load share details.', { retryable: false });
     }
 };
 
@@ -572,36 +676,42 @@ export const listPublicShareItemsV2 = async (req: Request, res: Response) => {
     const sort = String(req.query.sort || 'name_asc').trim().toLowerCase();
 
     try {
-        const whereParts = ['share_id = $1'];
+        const whereParts = ['si.share_id = $1'];
         const values: any[] = [share.id];
         let idx = 2;
 
-        whereParts.push(`relative_path = $${idx++}`);
+        whereParts.push(`si.relative_path = $${idx++}`);
         values.push(path);
 
         if (search) {
-            whereParts.push(`display_name ILIKE $${idx++} ESCAPE '\\'`);
+            whereParts.push(`si.display_name ILIKE $${idx++} ESCAPE '\\'`);
             values.push(`%${search.replace(/[%_]/g, '\\$&')}%`);
         }
 
         const sortSql = (() => {
             switch (sort) {
-                case 'name_desc': return 'display_name DESC, id DESC';
-                case 'size_asc': return 'size_bytes ASC, id ASC';
-                case 'size_desc': return 'size_bytes DESC, id DESC';
-                case 'date_asc': return 'created_at ASC, id ASC';
-                case 'date_desc': return 'created_at DESC, id DESC';
-                case 'position_asc': return 'position_index ASC, id ASC';
-                case 'position_desc': return 'position_index DESC, id DESC';
+                case 'name_desc': return 'si.display_name DESC, si.id DESC';
+                case 'size_asc': return 'si.size_bytes ASC, si.id ASC';
+                case 'size_desc': return 'si.size_bytes DESC, si.id DESC';
+                case 'date_asc': return 'si.created_at ASC, si.id ASC';
+                case 'date_desc': return 'si.created_at DESC, si.id DESC';
+                case 'position_asc': return 'si.position_index ASC, si.id ASC';
+                case 'position_desc': return 'si.position_index DESC, si.id DESC';
                 case 'name_asc':
                 default:
-                    return 'display_name ASC, id ASC';
+                    return 'si.display_name ASC, si.id ASC';
             }
         })();
 
         const filesRes = await pool.query(
-            `SELECT *, COUNT(*) OVER()::int AS total_count
-             FROM share_items_v2
+            `SELECT
+                si.*,
+                tph.pointer_status,
+                CASE WHEN fsm.mode = 'segmented' AND fsm.status IN ('scheduled', 'building', 'ready') THEN true ELSE false END AS segment_mode_enabled,
+                COUNT(*) OVER()::int AS total_count
+             FROM share_items_v2 si
+             LEFT JOIN telegram_pointer_health tph ON tph.share_item_id = si.id
+             LEFT JOIN file_segment_manifests fsm ON fsm.file_id = si.file_id
              WHERE ${whereParts.join(' AND ')}
              ORDER BY ${sortSql}
              LIMIT $${idx++} OFFSET $${idx}`,
@@ -650,7 +760,12 @@ export const listPublicShareItemsV2 = async (req: Request, res: Response) => {
                     path: toDisplayPath(path ? `${path}/${row.name}` : row.name),
                     fileCount: Number(row.file_count || 0),
                 })),
-            files: filesRes.rows.map(({ total_count, ...row }: any) => row),
+            files: filesRes.rows.map(({ total_count, pointer_status, segment_mode_enabled, ...row }: any) => ({
+                ...row,
+                pointer_health: pointer_status || null,
+                cache_state: getMessageCacheState(String(row.telegram_chat_id || ''), Number(row.telegram_message_id || 0)),
+                segment_mode_enabled: Boolean(segment_mode_enabled),
+            })),
             page: {
                 offset,
                 limit,
@@ -763,7 +878,11 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
             return sendApiError(res, 404, 'telegram_message_missing', 'File source is unavailable.', { retryable: false });
         }
 
-        const resolved = await resolveTelegramMessageForShareItem(share.owner_user_id, chatId, messageId);
+        const resolved = await resolveTelegramMessageForShareItem(share.owner_user_id, chatId, messageId, {
+            shareItemId: item.id,
+            fileId: item.file_id,
+            priority: 'interactive',
+        });
         if ('failure' in resolved) {
             await logShareV2Event({
                 shareId: share.id,
@@ -890,7 +1009,11 @@ const addItemsToArchive = async (share: ShareLinkV2Row, items: ShareItemV2Row[],
         const messageId = Number.parseInt(String(row.telegram_message_id || ''), 10);
         if (!chatId || !Number.isFinite(messageId) || messageId <= 0) continue;
 
-        const resolved = await resolveTelegramMessageForShareItem(share.owner_user_id, chatId, messageId);
+        const resolved = await resolveTelegramMessageForShareItem(share.owner_user_id, chatId, messageId, {
+            shareItemId: row.id,
+            fileId: row.file_id,
+            priority: 'background',
+        });
         if ('failure' in resolved) {
             await logShareV2Event({
                 shareId: share.id,

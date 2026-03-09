@@ -181,7 +181,7 @@ export default function FilesScreen({ navigation }: any) {
                         <TextInput
                             ref={searchInputRef}
                             style={[styles.searchInput, { color: C.textHeading }]}
-                            placeholder="Search filesâ€¦"
+                            placeholder="Search files..."
                             placeholderTextColor={C.textBody}
                             value={searchQuery}
                             onChangeText={setSearchQuery}
@@ -199,7 +199,7 @@ export default function FilesScreen({ navigation }: any) {
                         <View style={{ flex: 1, marginLeft: 8 }}>
                             <Text style={[styles.headerTitle, { color: C.textHeading }]}>All Files</Text>
                             <Text style={[styles.headerSub, { color: C.textBody }]}>
-                                {filteredFiles.length} files Â· {currentSort.label}
+                                {filteredFiles.length} files · {currentSort.label}
                             </Text>
                         </View>
                         {/* Sort button */}
@@ -303,7 +303,7 @@ export default function FilesScreen({ navigation }: any) {
                                 </Text>
                                 {sortKey === opt.key && (
                                     <View style={[styles.sortCheck, { backgroundColor: C.primary }]}>
-                                        <Text style={{ color: '#fff', fontSize: 10, fontWeight: '600' }}>âœ“</Text>
+                                        <Text style={{ color: '#fff', fontSize: 10, fontWeight: '600' }}>✓</Text>
                                     </View>
                                 )}
                             </TouchableOpacity>
@@ -347,10 +347,10 @@ const styles = StyleSheet.create({
         paddingHorizontal: 16, height: 60,
         borderBottomWidth: 1,
     },
-    iconBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
+    iconBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
     sortBtn: {
         flexDirection: 'row', alignItems: 'center', gap: 4,
-        paddingHorizontal: 10, borderRadius: 20, height: 34,
+        paddingHorizontal: 10, borderRadius: 20, height: 44,
         maxWidth: 130,
     },
     sortBtnText: { fontSize: 12, fontWeight: '600' },
@@ -358,7 +358,7 @@ const styles = StyleSheet.create({
     headerSub: { fontSize: 12, marginTop: 1 },
     searchBar: {
         flex: 1, flexDirection: 'row', alignItems: 'center',
-        borderRadius: 12, paddingHorizontal: 12, height: 40,
+        borderRadius: 12, paddingHorizontal: 12, height: 44,
         borderWidth: 1, gap: 8,
     },
     searchInput: { flex: 1, fontSize: 15 },

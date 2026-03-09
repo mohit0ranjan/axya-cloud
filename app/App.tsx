@@ -23,6 +23,7 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import FilesScreen from './src/screens/FilesScreen';
 import SharedLinksScreen from './src/screens/SharedLinksScreen';
+import SharedLinkDetailScreen from './src/screens/SharedLinkDetailScreen';
 import MainTabs from './src/navigation/MainTabs';
 import AnimatedSplashScreen from './src/screens/AnimatedSplashScreen';
 
@@ -79,6 +80,7 @@ function RootNavigator() {
                             <Stack.Screen name="Analytics" component={AnalyticsScreen} />
                             <Stack.Screen name="Files" component={FilesScreen} />
                             <Stack.Screen name="SharedLinks" component={SharedLinksScreen} />
+                            <Stack.Screen name="SharedLinkDetail" component={SharedLinkDetailScreen} />
                         </>
                     )}
                 </Stack.Navigator>

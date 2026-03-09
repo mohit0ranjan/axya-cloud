@@ -1,9 +1,9 @@
-import React, { useRef } from 'react';
+﻿import React, { useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Animated, Pressable } from 'react-native';
 import { MoreHorizontal, Star, Trash2 } from 'lucide-react-native';
-import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
 import { FileIcon } from './FileIcon';
+import { formatFolderMeta } from '../utils/folderMeta';
 
 interface Props {
     item: any;
@@ -44,7 +44,7 @@ export default function FileCard({
     token,
     apiBase
 }: Props) {
-    const { theme, isDark } = useTheme();
+    const { theme } = useTheme();
     const scaleAnim = useRef(new Animated.Value(1)).current;
 
     const onPressIn = () => {
@@ -76,18 +76,16 @@ export default function FileCard({
             <Animated.View style={[styles.card, { backgroundColor: theme.colors.background, transform: [{ scale: scaleAnim }] }]}>
                 <FileIcon item={item} size={46} token={token} apiBase={apiBase} themeColors={theme.colors} />
 
-                {/* Meta */}
                 <View style={styles.info}>
                     <Text style={[styles.name, { color: theme.colors.textHeading }]} numberOfLines={1}>{item.name || item.file_name}</Text>
                     <Text style={[styles.meta, { color: theme.colors.textBody }]}>
                         {isFolder
-                            ? `Folder${item.file_count != null ? ` · ${item.file_count} items` : ''} `
-                            : [formatSize(item.size), formatDate(item.created_at)].filter(Boolean).join('  ·  ')
+                            ? formatFolderMeta(item)
+                            : [formatSize(item.size), formatDate(item.created_at)].filter(Boolean).join(' · ')
                         }
                     </Text>
                 </View>
 
-                {/* Actions */}
                 <View style={styles.actions}>
                     {showRestore && onRestore ? (
                         <TouchableOpacity style={styles.actionBtnRestore} onPress={onRestore}>
@@ -131,38 +129,38 @@ const styles = StyleSheet.create({
     },
     iconBox: {
         width: 46, height: 46,
-        borderRadius: staticTheme.radius.md,
+        borderRadius: 12,
         justifyContent: 'center', alignItems: 'center'
     },
-    info: { flex: 1, marginHorizontal: staticTheme.spacing.lg },
+    info: { flex: 1, marginHorizontal: 16 },
     name: {
-        fontSize: staticTheme.typography.body.fontSize,
+        fontSize: 15,
         fontWeight: '500',
         marginBottom: 3
     },
     meta: {
-        fontSize: staticTheme.typography.metadata.fontSize,
-        fontWeight: staticTheme.typography.metadata.fontWeight
+        fontSize: 12,
+        fontWeight: '500'
     },
-    actions: { flexDirection: 'row', alignItems: 'center', gap: staticTheme.spacing.sm },
+    actions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     actionBtn: {
         width: 44, height: 44,
-        borderRadius: staticTheme.radius.md,
+        borderRadius: 12,
         justifyContent: 'center', alignItems: 'center',
     },
     actionBtnRestore: {
-        paddingHorizontal: staticTheme.spacing.lg, height: 44,
-        borderRadius: staticTheme.radius.md, justifyContent: 'center', alignItems: 'center',
-        backgroundColor: `rgba(31, 212, 90, 0.1)` // 10% opacity success
+        paddingHorizontal: 16, height: 44,
+        borderRadius: 12, justifyContent: 'center', alignItems: 'center',
+        backgroundColor: `rgba(31, 212, 90, 0.1)`
     },
     actionBtnRestoreText: {
-        fontSize: staticTheme.typography.caption.fontSize,
-        fontWeight: staticTheme.typography.hero.fontWeight,
+        fontSize: 12,
+        fontWeight: '700',
     },
     actionBtnTrash: {
-        width: 44, height: 44, borderRadius: staticTheme.radius.md,
+        width: 44, height: 44, borderRadius: 12,
         justifyContent: 'center', alignItems: 'center',
-        backgroundColor: `rgba(239, 68, 68, 0.08)` // 8% opacity error
+        backgroundColor: `rgba(239, 68, 68, 0.08)`
     },
     moreBtn: {
         padding: 8,
@@ -170,3 +168,5 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     }
 });
+
+

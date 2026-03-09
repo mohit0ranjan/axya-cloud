@@ -45,6 +45,12 @@ export const initSchema = async () => {
             is_starred BOOLEAN DEFAULT false,
             sha256_hash TEXT,
             md5_hash TEXT,
+            tg_media_meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+            tg_duration_sec INT,
+            tg_width INT,
+            tg_height INT,
+            tg_caption TEXT,
+            tg_source_tag TEXT,
             last_accessed_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
@@ -122,6 +128,54 @@ export const initSchema = async () => {
             error_message TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS telegram_pointer_health (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            file_id UUID REFERENCES files(id) ON DELETE CASCADE,
+            share_item_id UUID REFERENCES share_items_v2(id) ON DELETE CASCADE,
+            telegram_chat_id TEXT NOT NULL,
+            telegram_message_id BIGINT NOT NULL,
+            pointer_status TEXT NOT NULL CHECK (pointer_status IN ('healthy', 'stale', 'missing', 'recovered')),
+            failure_count INT NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            last_error_message TEXT,
+            last_session_hash TEXT,
+            last_checked_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            recovered_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            CONSTRAINT telegram_pointer_health_target_xor
+                CHECK ((file_id IS NOT NULL AND share_item_id IS NULL) OR (file_id IS NULL AND share_item_id IS NOT NULL))
+        );
+
+        CREATE TABLE IF NOT EXISTS telegram_request_queue_metrics (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            session_hash TEXT NOT NULL,
+            operation_name TEXT NOT NULL,
+            priority TEXT NOT NULL CHECK (priority IN ('interactive', 'background')),
+            wait_ms INT NOT NULL DEFAULT 0,
+            run_ms INT NOT NULL DEFAULT 0,
+            status TEXT NOT NULL CHECK (status IN ('ok', 'error')),
+            error_code TEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS file_segment_manifests (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            mode TEXT NOT NULL DEFAULT 'single' CHECK (mode IN ('single', 'segmented')),
+            chunk_size_bytes INT NOT NULL DEFAULT 0,
+            segment_count INT NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'disabled' CHECK (status IN ('disabled', 'scheduled', 'building', 'ready', 'failed')),
+            telegram_chat_id TEXT,
+            segments JSONB NOT NULL DEFAULT '[]'::jsonb,
+            last_error TEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            CONSTRAINT file_segment_manifests_file_unique UNIQUE (file_id)
+        );
+
         CREATE TABLE IF NOT EXISTS activity_log (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             user_id UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -157,6 +211,12 @@ export const initSchema = async () => {
     `ALTER TABLE files ADD COLUMN IF NOT EXISTS is_starred BOOLEAN DEFAULT false`,
     `ALTER TABLE files ADD COLUMN IF NOT EXISTS sha256_hash TEXT`,
     `ALTER TABLE files ADD COLUMN IF NOT EXISTS md5_hash TEXT`,
+    `ALTER TABLE files ADD COLUMN IF NOT EXISTS tg_media_meta JSONB NOT NULL DEFAULT '{}'::jsonb`,
+    `ALTER TABLE files ADD COLUMN IF NOT EXISTS tg_duration_sec INT`,
+    `ALTER TABLE files ADD COLUMN IF NOT EXISTS tg_width INT`,
+    `ALTER TABLE files ADD COLUMN IF NOT EXISTS tg_height INT`,
+    `ALTER TABLE files ADD COLUMN IF NOT EXISTS tg_caption TEXT`,
+    `ALTER TABLE files ADD COLUMN IF NOT EXISTS tg_source_tag TEXT`,
     `ALTER TABLE files ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`,
     `ALTER TABLE files ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT DEFAULT 'me'`,
     `ALTER TABLE files ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMP`,
@@ -188,6 +248,15 @@ export const initSchema = async () => {
     `CREATE INDEX IF NOT EXISTS idx_share_events_v2_share_created ON share_events_v2 (share_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_share_zip_jobs_v2_share_requested ON share_zip_jobs_v2 (share_id, requested_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_share_zip_jobs_v2_status ON share_zip_jobs_v2 (status)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_tph_file_unique ON telegram_pointer_health (file_id) WHERE file_id IS NOT NULL`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_tph_share_item_unique ON telegram_pointer_health (share_item_id) WHERE share_item_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_tph_user_status_checked ON telegram_pointer_health (user_id, pointer_status, last_checked_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_queue_metrics_created ON telegram_request_queue_metrics (created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_queue_metrics_session_created ON telegram_request_queue_metrics (session_hash, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_segment_manifest_user_status ON file_segment_manifests (user_id, status, updated_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_files_tg_source_tag ON files (user_id, tg_source_tag)`,
+    `CREATE INDEX IF NOT EXISTS idx_files_tg_duration ON files (user_id, tg_duration_sec)`,
+    `CREATE INDEX IF NOT EXISTS idx_files_tg_size_created ON files (user_id, file_size, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_activity_log_user_created ON activity_log(user_id, created_at DESC)`,
     `UPDATE users u SET
        storage_used_bytes = COALESCE(s.used_bytes, 0),

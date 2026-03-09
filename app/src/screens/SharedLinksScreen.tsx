@@ -1,7 +1,13 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useMemo, useState, useEffect } from 'react';
 import {
-    View, Text, StyleSheet, SafeAreaView, FlatList,
-    TouchableOpacity, ActivityIndicator, Alert
+    View,
+    Text,
+    StyleSheet,
+    SafeAreaView,
+    FlatList,
+    TouchableOpacity,
+    ActivityIndicator,
+    Alert,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { ArrowLeft, Clock, Eye, Download, Link as LinkIcon, Trash2, Folder, File as FileIcon } from 'lucide-react-native';
@@ -12,7 +18,6 @@ import { useToast } from '../context/ToastContext';
 import { ErrorState } from '../ui/ErrorState';
 import { buildExternalShareUrl, normalizeExternalShareUrl } from '../utils/shareUrls';
 
-// Lightweight replacement for date-fns formatDistanceToNow
 function formatDistanceToNow(date: Date, opts?: { addSuffix?: boolean }): string {
     const now = Date.now();
     const diff = Math.abs(now - date.getTime());
@@ -35,8 +40,70 @@ function formatDistanceToNow(date: Date, opts?: { addSuffix?: boolean }): string
     return result;
 }
 
+const createStyles = (theme: any, C: any) =>
+    StyleSheet.create({
+        container: { flex: 1 },
+        header: {
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingHorizontal: 20,
+            paddingVertical: 16,
+        },
+        backBtn: {
+            width: 44,
+            height: 44,
+            borderRadius: 12,
+            justifyContent: 'center',
+            alignItems: 'center',
+            backgroundColor: C.card,
+            borderWidth: 1,
+            borderColor: C.border,
+        },
+        title: { fontSize: 20, fontWeight: '700' },
+        center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+        list: { padding: 20, gap: 16 },
+        card: {
+            borderRadius: 16,
+            padding: 16,
+            borderWidth: 1,
+            borderColor: C.border,
+            ...theme.shadows.elevation1,
+        },
+        cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
+        iconBox: {
+            width: 40,
+            height: 40,
+            borderRadius: 10,
+            backgroundColor: C.primaryLight,
+            justifyContent: 'center',
+            alignItems: 'center',
+        },
+        itemName: { fontSize: 16, fontWeight: '600', marginBottom: 2 },
+        itemDate: { fontSize: 13 },
+        expiredBadge: {
+            backgroundColor: C.danger + '22',
+            paddingHorizontal: 8,
+            paddingVertical: 4,
+            borderRadius: 12,
+        },
+        expiredText: { color: C.danger, fontSize: 11, fontWeight: '600' },
+        statsRow: { flexDirection: 'row', gap: 16, marginBottom: 16, flexWrap: 'wrap' },
+        stat: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+        statText: { fontSize: 13, fontWeight: '500' },
+        actions: { flexDirection: 'row', borderTopWidth: 1, paddingTop: 16 },
+        actionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 44 },
+        actionText: { fontSize: 14, fontWeight: '600' },
+        divider: { width: 1, height: '100%' },
+        empty: { alignItems: 'center', justifyContent: 'center', paddingVertical: 80, gap: 16 },
+        emptyText: { fontSize: 18, fontWeight: '600' },
+        emptySub: { fontSize: 14, textAlign: 'center' },
+    });
+
 export default function SharedLinksScreen({ navigation }: any) {
     const { theme } = useTheme();
+    const C = theme.colors;
+    const styles = useMemo(() => createStyles(theme, C), [theme, C]);
     const { showToast } = useToast();
     const [links, setLinks] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -60,8 +127,12 @@ export default function SharedLinksScreen({ navigation }: any) {
     };
 
     useEffect(() => {
-        fetchLinks();
-    }, []);
+        void fetchLinks();
+        const unsubscribe = navigation.addListener('focus', () => {
+            void fetchLinks();
+        });
+        return unsubscribe;
+    }, [navigation]);
 
     const handleCopy = async (shareUrl: string) => {
         await Clipboard.setStringAsync(shareUrl);
@@ -77,12 +148,12 @@ export default function SharedLinksScreen({ navigation }: any) {
                 onPress: async () => {
                     try {
                         await revokeShareLink(token);
-                        fetchLinks();
+                        void fetchLinks();
                     } catch (e: any) {
                         Alert.alert('Error', e?.response?.data?.error || 'Failed to revoke link.');
                     }
-                }
-            }
+                },
+            },
         ]);
     };
 
@@ -97,14 +168,20 @@ export default function SharedLinksScreen({ navigation }: any) {
         const isExpired = expiresAt ? new Date(expiresAt) < new Date() : false;
 
         return (
-            <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
+            <TouchableOpacity
+                activeOpacity={0.9}
+                style={[styles.card, { backgroundColor: C.card }]}
+                onPress={() => navigation.navigate('SharedLinkDetail', { shareId: item.id, initialShare: item })}
+            >
                 <View style={styles.cardHeader}>
                     <View style={styles.iconBox}>
-                        {isFolder ? <Folder color="#D97706" size={20} /> : <FileIcon color={theme.colors.primary} size={20} />}
+                        {isFolder ? <Folder color={C.accent} size={20} /> : <FileIcon color={C.primary} size={20} />}
                     </View>
                     <View style={{ flex: 1 }}>
-                        <Text style={[styles.itemName, { color: theme.colors.textHeading }]} numberOfLines={1}>{name}</Text>
-                        <Text style={[styles.itemDate, { color: theme.colors.textBody }]}>
+                        <Text style={[styles.itemName, { color: C.textHeading }]} numberOfLines={1}>
+                            {name}
+                        </Text>
+                        <Text style={[styles.itemDate, { color: C.textBody }]}>
                             Created {formatDistanceToNow(new Date(createdAt || Date.now()), { addSuffix: true })}
                         </Text>
                     </View>
@@ -117,60 +194,71 @@ export default function SharedLinksScreen({ navigation }: any) {
 
                 <View style={styles.statsRow}>
                     <View style={styles.stat}>
-                        <Eye color={theme.colors.textBody} size={14} />
-                        <Text style={[styles.statText, { color: theme.colors.textBody }]}>{item.views || 0} views</Text>
+                        <Eye color={C.textBody} size={14} />
+                        <Text style={[styles.statText, { color: C.textBody }]}>{item.views || 0} views</Text>
                     </View>
                     <View style={styles.stat}>
-                        <Download color={theme.colors.textBody} size={14} />
-                        <Text style={[styles.statText, { color: theme.colors.textBody }]}>{item.download_count || 0} dl</Text>
+                        <Download color={C.textBody} size={14} />
+                        <Text style={[styles.statText, { color: C.textBody }]}>{item.download_count || 0} dl</Text>
                     </View>
                     {expiresAt && !isExpired && (
                         <View style={styles.stat}>
-                            <Clock color={theme.colors.textBody} size={14} />
-                            <Text style={[styles.statText, { color: theme.colors.textBody }]}>
-                                {formatDistanceToNow(new Date(expiresAt))} left
-                            </Text>
+                            <Clock color={C.textBody} size={14} />
+                            <Text style={[styles.statText, { color: C.textBody }]}>{formatDistanceToNow(new Date(expiresAt))} left</Text>
+                        </View>
+                    )}
+                    {!!item.fileCount && (
+                        <View style={styles.stat}>
+                            <FileIcon color={C.textBody} size={14} />
+                            <Text style={[styles.statText, { color: C.textBody }]}>{item.fileCount} files</Text>
                         </View>
                     )}
                 </View>
 
-                <View style={[styles.actions, { borderTopColor: theme.colors.border }]}>
-                    <TouchableOpacity style={styles.actionBtn} disabled={!shareUrl} onPress={() => void handleCopy(shareUrl)}>
-                        <LinkIcon color={theme.colors.primary} size={16} />
-                        <Text style={[styles.actionText, { color: shareUrl ? theme.colors.primary : theme.colors.textBody }]}>
-                            {shareUrl ? 'Copy Link' : 'Link unavailable'}
-                        </Text>
+                <View style={[styles.actions, { borderTopColor: C.border }]}>
+                    <TouchableOpacity
+                        style={styles.actionBtn}
+                        disabled={!shareUrl}
+                        onPress={(e: any) => {
+                            e?.stopPropagation?.();
+                            void handleCopy(shareUrl);
+                        }}
+                    >
+                        <LinkIcon color={C.primary} size={16} />
+                        <Text style={[styles.actionText, { color: shareUrl ? C.primary : C.textBody }]}>{shareUrl ? 'Copy Link' : 'Link unavailable'}</Text>
                     </TouchableOpacity>
-                    <View style={[styles.divider, { backgroundColor: theme.colors.border }]} />
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => handleRevoke(item.id)}>
-                        <Trash2 color={theme.colors.danger} size={16} />
-                        <Text style={[styles.actionText, { color: theme.colors.danger }]}>Revoke</Text>
+                    <View style={[styles.divider, { backgroundColor: C.border }]} />
+                    <TouchableOpacity
+                        style={styles.actionBtn}
+                        onPress={(e: any) => {
+                            e?.stopPropagation?.();
+                            handleRevoke(item.id);
+                        }}
+                    >
+                        <Trash2 color={C.danger} size={16} />
+                        <Text style={[styles.actionText, { color: C.danger }]}>Revoke</Text>
                     </TouchableOpacity>
                 </View>
-            </View>
+            </TouchableOpacity>
         );
     };
 
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
             <View style={styles.header}>
                 <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-                    <ArrowLeft color={theme.colors.textHeading} size={24} />
+                    <ArrowLeft color={C.textHeading} size={22} />
                 </TouchableOpacity>
-                <Text style={[styles.title, { color: theme.colors.textHeading }]}>Shared Links</Text>
-                <View style={{ width: 40 }} />
+                <Text style={[styles.title, { color: C.textHeading }]}>Shared Links</Text>
+                <View style={{ width: 44 }} />
             </View>
 
             {isLoading ? (
                 <View style={styles.center}>
-                    <ActivityIndicator size="large" color={theme.colors.primary} />
+                    <ActivityIndicator size="large" color={C.primary} />
                 </View>
             ) : loadError && links.length === 0 ? (
-                <ErrorState
-                    title="Could not load shared links"
-                    message={loadError}
-                    onRetry={() => void fetchLinks()}
-                />
+                <ErrorState title="Could not load shared links" message={loadError} onRetry={() => void fetchLinks()} />
             ) : (
                 <FlatList
                     data={links}
@@ -179,9 +267,9 @@ export default function SharedLinksScreen({ navigation }: any) {
                     contentContainerStyle={styles.list}
                     ListEmptyComponent={
                         <View style={styles.empty}>
-                            <LinkIcon color={theme.colors.textBody} size={48} />
-                            <Text style={[styles.emptyText, { color: theme.colors.textHeading }]}>No Active Links</Text>
-                            <Text style={[styles.emptySub, { color: theme.colors.textBody }]}>Files and folders you share will appear here.</Text>
+                            <LinkIcon color={C.textBody} size={48} />
+                            <Text style={[styles.emptyText, { color: C.textHeading }]}>No Active Links</Text>
+                            <Text style={[styles.emptySub, { color: C.textBody }]}>Files and folders you share will appear here.</Text>
                         </View>
                     }
                 />
@@ -189,29 +277,3 @@ export default function SharedLinksScreen({ navigation }: any) {
         </SafeAreaView>
     );
 }
-
-const styles = StyleSheet.create({
-    container: { flex: 1 },
-    header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 16 },
-    backBtn: { padding: 4 },
-    title: { fontSize: 20, fontWeight: '700' },
-    center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-    list: { padding: 20, gap: 16 },
-    card: { borderRadius: 16, padding: 16, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8 },
-    cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
-    iconBox: { width: 40, height: 40, borderRadius: 10, backgroundColor: '#f1f5f9', justifyContent: 'center', alignItems: 'center' },
-    itemName: { fontSize: 16, fontWeight: '600', marginBottom: 2 },
-    itemDate: { fontSize: 13 },
-    expiredBadge: { backgroundColor: '#FEE2E2', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
-    expiredText: { color: '#EF4444', fontSize: 11, fontWeight: '600' },
-    statsRow: { flexDirection: 'row', gap: 16, marginBottom: 16 },
-    stat: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-    statText: { fontSize: 13, fontWeight: '500' },
-    actions: { flexDirection: 'row', borderTopWidth: 1, paddingTop: 16 },
-    actionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-    actionText: { fontSize: 14, fontWeight: '600' },
-    divider: { width: 1, height: '100%' },
-    empty: { alignItems: 'center', justifyContent: 'center', paddingVertical: 80, gap: 16 },
-    emptyText: { fontSize: 18, fontWeight: '600' },
-    emptySub: { fontSize: 14, textAlign: 'center' }
-});

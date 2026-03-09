@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import {
     ArrowLeft, LogOut, Star,
-    Trash2, ChevronRight, Activity, Shield,
+    Trash2, ChevronRight, Activity,
     Settings, FolderOpen, BarChart2, HardDrive,
 } from 'lucide-react-native';
 import { AuthContext } from '../context/AuthContext';
@@ -14,6 +14,7 @@ import { useTheme } from '../context/ThemeContext';
 import apiClient from '../services/apiClient';
 import { SkeletonBlock } from '../ui/Skeleton';
 import Constants from 'expo-constants';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const ACTION_ICONS: Record<string, string> = {
     upload: 'UP',
@@ -78,6 +79,7 @@ export default function ProfileScreen({ navigation }: any) {
     const authCtx = useContext(AuthContext);
     const { showToast } = useToast();
     const { theme, isDark } = useTheme();
+    const insets = useSafeAreaInsets();
 
     const [loading, setLoading] = useState(true);
     const [isSigningOut, setIsSigningOut] = useState(false);
@@ -163,7 +165,7 @@ export default function ProfileScreen({ navigation }: any) {
 
     return (
         <SafeAreaView style={[st.root, { backgroundColor: C.background }]}>
-            <View style={st.header}>
+            <View style={[st.header, { paddingTop: Math.max(insets.top + 8, 16) }]}>
                 <TouchableOpacity
                     style={[st.headerBtn, { backgroundColor: C.card }]}
                     onPress={handleBack}
@@ -172,7 +174,7 @@ export default function ProfileScreen({ navigation }: any) {
                     <ArrowLeft color={C.textHeading} size={20} />
                 </TouchableOpacity>
                 <Text style={[st.headerTitle, { color: C.textHeading }]}>Profile</Text>
-                <View style={{ width: 40 }} />
+                <View style={{ width: 44 }} />
             </View>
 
             <Animated.ScrollView
@@ -301,16 +303,7 @@ export default function ProfileScreen({ navigation }: any) {
                         icon={<Settings color={C.textBody} size={20} />}
                         iconBg={isDark ? 'rgba(100,116,139,0.12)' : '#F1F5F9'}
                         title="Preferences"
-                        color={C.textHeading}
-                        chevronColor={C.muted}
-                        onPress={() => navigation.navigate('Settings')}
-                    />
-                    <View style={[st.rowDivider, { backgroundColor: C.border }]} />
-                    <MenuItem
-                        icon={<Shield color={C.primary} size={20} />}
-                        iconBg={isDark ? C.primaryLight : '#EEF1FD'}
-                        title="Security"
-                        subtitle="End-to-end encrypted via Telegram"
+                        subtitle="Theme, notifications, and account options"
                         color={C.textHeading}
                         chevronColor={C.muted}
                         onPress={() => navigation.navigate('Settings')}
@@ -451,7 +444,7 @@ const st = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingHorizontal: 20,
-        paddingTop: Platform.OS === 'web' ? 44 : 16,
+        paddingTop: 16,
         paddingBottom: 12,
     },
     headerBtn: {

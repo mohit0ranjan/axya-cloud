@@ -1,13 +1,13 @@
-/**
- * SettingsScreen.tsx — Premium minimal settings
+﻿/**
+ * SettingsScreen.tsx â€” Premium minimal settings
  *
- * ✅ Clean card sections with soft shadows
- * ✅ Consistent row height & spacing
- * ✅ Switch toggles for preferences
- * ✅ Danger zone with isolated red styling
- * ✅ Dark mode compatible
- * ✅ Press-scale micro-interactions
- * ✅ Smooth fade-in on mount
+ * âœ… Clean card sections with soft shadows
+ * âœ… Consistent row height & spacing
+ * âœ… Switch toggles for preferences
+ * âœ… Danger zone with isolated red styling
+ * âœ… Dark mode compatible
+ * âœ… Press-scale micro-interactions
+ * âœ… Smooth fade-in on mount
  */
 
 import React, { useState, useContext, useEffect, useRef, useCallback } from 'react';
@@ -24,8 +24,9 @@ import { AuthContext } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useTheme } from '../context/ThemeContext';
 import apiClient from '../services/apiClient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-// ─── Pressable with scale animation ─────────────────────────────────────────
+// â”€â”€â”€ Pressable with scale animation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function PressRow({
     children, onPress, style, disabled,
@@ -47,12 +48,13 @@ function PressRow({
     );
 }
 
-// ─── Main Screen ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Screen â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export default function SettingsScreen({ navigation }: any) {
     const { logout, user } = useContext(AuthContext);
     const { showToast } = useToast();
     const { theme, isDark, toggleTheme } = useTheme();
+    const insets = useSafeAreaInsets();
     const C = theme.colors;
 
     const [notificationsEnabled, setNotificationsEnabled] = useState(true);
@@ -83,14 +85,10 @@ export default function SettingsScreen({ navigation }: any) {
             try { await logout(); }
             catch { showToast('Sign out failed', 'error'); }
         };
-        if (Platform.OS === 'web') {
-            if (window.confirm('Sign out?')) confirm();
-        } else {
-            Alert.alert('Sign Out', 'Are you sure?', [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Sign Out', style: 'destructive', onPress: confirm },
-            ]);
-        }
+        Alert.alert('Sign Out', 'Are you sure?', [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Sign Out', style: 'destructive', onPress: confirm },
+        ]);
     }, [logout, showToast]);
 
     const deleteAccount = useCallback(async () => {
@@ -113,13 +111,6 @@ export default function SettingsScreen({ navigation }: any) {
 
     const handleDeleteAccount = useCallback(() => {
         const confirmationText = 'This will permanently delete your account and all files. This cannot be undone.';
-        if (Platform.OS === 'web') {
-            if (window.confirm(confirmationText)) {
-                void deleteAccount();
-            }
-            return;
-        }
-
         Alert.alert(
             'Delete Account',
             confirmationText,
@@ -130,7 +121,7 @@ export default function SettingsScreen({ navigation }: any) {
         );
     }, [deleteAccount]);
 
-    // ── Row Component ────────────────────────────────────────────────────────
+    // â”€â”€ Row Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     const Row = ({
         icon, title, subtitle, onPress, right, danger,
@@ -163,8 +154,8 @@ export default function SettingsScreen({ navigation }: any) {
 
     return (
         <SafeAreaView style={[st.root, { backgroundColor: C.background }]}>
-            {/* ── Header ── */}
-            <View style={st.header}>
+            {/* â”€â”€ Header â”€â”€ */}
+            <View style={[st.header, { paddingTop: Math.max(insets.top + 8, 16) }]}>
                 <TouchableOpacity
                     onPress={() => navigation?.goBack()}
                     style={[st.headerBtn, { backgroundColor: C.card }]}
@@ -173,7 +164,7 @@ export default function SettingsScreen({ navigation }: any) {
                     <ArrowLeft color={C.textHeading} size={20} />
                 </TouchableOpacity>
                 <Text style={[st.headerTitle, { color: C.textHeading }]}>Settings</Text>
-                <View style={{ width: 40 }} />
+                <View style={{ width: 44 }} />
             </View>
 
             <Animated.ScrollView
@@ -181,7 +172,7 @@ export default function SettingsScreen({ navigation }: any) {
                 contentContainerStyle={st.scroll}
                 style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
             >
-                {/* ── Account Card ── */}
+                {/* â”€â”€ Account Card â”€â”€ */}
                 <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
                     <View style={st.accountRow}>
                         <View style={[st.accountAvatar, { backgroundColor: C.primary }]}>
@@ -200,13 +191,13 @@ export default function SettingsScreen({ navigation }: any) {
                     </View>
                 </View>
 
-                {/* ── Storage ── */}
+                {/* â”€â”€ Storage â”€â”€ */}
                 <Text style={[st.sectionLabel, { color: C.muted }]}>STORAGE</Text>
                 <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
                     <Row
                         icon={<HardDrive color={C.primary} size={20} />}
                         title="Storage Plan"
-                        subtitle="Free — Unlimited Storage"
+                        subtitle="Free - Unlimited Storage"
                         onPress={() => showToast('Upgrade coming soon!')}
                     />
                     <View style={[st.divider, { backgroundColor: C.border }]} />
@@ -217,7 +208,7 @@ export default function SettingsScreen({ navigation }: any) {
                     />
                 </View>
 
-                {/* ── Preferences ── */}
+                {/* â”€â”€ Preferences â”€â”€ */}
                 <Text style={[st.sectionLabel, { color: C.muted }]}>PREFERENCES</Text>
                 <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
                     <Row
@@ -264,7 +255,7 @@ export default function SettingsScreen({ navigation }: any) {
                     />
                 </View>
 
-                {/* ── Insights & Sharing ── */}
+                {/* â”€â”€ Insights & Sharing â”€â”€ */}
                 <Text style={[st.sectionLabel, { color: C.muted }]}>INSIGHTS & SHARING</Text>
                 <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
                     <Row
@@ -282,7 +273,7 @@ export default function SettingsScreen({ navigation }: any) {
                     />
                 </View>
 
-                {/* ── Security ── */}
+                {/* â”€â”€ Security â”€â”€ */}
                 <Text style={[st.sectionLabel, { color: C.muted }]}>SECURITY</Text>
                 <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
                     <Row
@@ -292,7 +283,7 @@ export default function SettingsScreen({ navigation }: any) {
                     />
                 </View>
 
-                {/* ── About ── */}
+                {/* â”€â”€ About â”€â”€ */}
                 <Text style={[st.sectionLabel, { color: C.muted }]}>ABOUT</Text>
                 <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
                     <Row
@@ -302,7 +293,7 @@ export default function SettingsScreen({ navigation }: any) {
                     />
                 </View>
 
-                {/* ── Danger Zone ── */}
+                {/* â”€â”€ Danger Zone â”€â”€ */}
                 <Text style={[st.sectionLabel, { color: C.muted }]}>ACCOUNT</Text>
                 <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
                     <Row
@@ -327,7 +318,7 @@ export default function SettingsScreen({ navigation }: any) {
     );
 }
 
-// ─── Styles ──────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Styles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const st = StyleSheet.create({
     root: { flex: 1 },
@@ -337,11 +328,11 @@ const st = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingHorizontal: 20,
-        paddingTop: Platform.OS === 'web' ? 44 : 16,
+        paddingTop: 16,
         paddingBottom: 8,
     },
     headerBtn: {
-        width: 40, height: 40, borderRadius: 14,
+        width: 44, height: 44, borderRadius: 14,
         justifyContent: 'center', alignItems: 'center',
         ...Platform.select({
             ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 6 },
@@ -354,7 +345,7 @@ const st = StyleSheet.create({
 
     scroll: { paddingHorizontal: 20, paddingTop: 8 },
 
-    // ── Account ──────────────────────────────────────────────────────────────
+    // â”€â”€ Account â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     accountRow: {
         flexDirection: 'row', alignItems: 'center', gap: 16,
         paddingHorizontal: 20, paddingVertical: 20,
@@ -373,7 +364,7 @@ const st = StyleSheet.create({
         fontSize: 13, fontWeight: '500',
     },
 
-    // ── Card ─────────────────────────────────────────────────────────────────
+    // â”€â”€ Card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     card: {
         borderRadius: 20, overflow: 'hidden', marginBottom: 24,
     },
@@ -384,9 +375,10 @@ const st = StyleSheet.create({
         textTransform: 'uppercase',
     },
 
-    // ── Row ──────────────────────────────────────────────────────────────────
+    // â”€â”€ Row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     row: {
         flexDirection: 'row', alignItems: 'center',
+        minHeight: 44,
         paddingHorizontal: 16, paddingVertical: 14, gap: 14,
     },
     rowIcon: {
@@ -402,3 +394,4 @@ const st = StyleSheet.create({
         marginLeft: 68,
     },
 });
+

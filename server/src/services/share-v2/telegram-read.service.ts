@@ -1,7 +1,9 @@
-import crypto from 'crypto';
 import NodeCache from 'node-cache';
 import pool from '../../config/db';
 import { getDynamicClient } from '../telegram.service';
+import { getPreferredSessionHash, hashSessionForCache, rememberPreferredSession } from './telegram-read-cache.service';
+import { runTelegramQueued } from './telegram-request-queue.service';
+import { upsertPointerHealth } from './telegram-pointer-health.service';
 
 type TelegramReadClassification = 'telegram_timeout' | 'telegram_message_missing' | 'telegram_session_invalid';
 
@@ -15,7 +17,6 @@ export type TelegramReadFailure = {
 const messageClientCache = new NodeCache({ stdTTL: 30 * 60, checkperiod: 120, useClones: false });
 const sessionCircuitBreak = new NodeCache({ stdTTL: 60, checkperiod: 30, useClones: false });
 
-const hashSession = (session: string) => crypto.createHash('sha256').update(session).digest('hex').slice(0, 16);
 const messageCacheKey = (chatId: string, messageId: number) => `${chatId}:${messageId}`;
 
 const classifyTelegramError = (err: unknown): TelegramReadClassification => {
@@ -106,6 +107,11 @@ export const resolveTelegramMessageForShareItem = async (
     ownerUserId: string,
     chatId: string,
     messageId: number,
+    options?: {
+        fileId?: string | null;
+        shareItemId?: string | null;
+        priority?: 'interactive' | 'background';
+    },
 ): Promise<{ client: any; message: any } | { failure: TelegramReadFailure }> => {
     const sessions = await getSessionCandidates(ownerUserId);
     if (!sessions.length) {
@@ -113,9 +119,9 @@ export const resolveTelegramMessageForShareItem = async (
     }
 
     const key = messageCacheKey(chatId, messageId);
-    const preferred = String(messageClientCache.get(key) || '');
+    const preferred = String(messageClientCache.get(key) || getPreferredSessionHash(chatId, messageId) || '');
     if (preferred) {
-        const idx = sessions.findIndex((s) => hashSession(s) === preferred);
+        const idx = sessions.findIndex((s) => hashSessionForCache(s) === preferred);
         if (idx > 0) {
             const [v] = sessions.splice(idx, 1);
             sessions.unshift(v);
@@ -125,20 +131,36 @@ export const resolveTelegramMessageForShareItem = async (
     const seen = new Set<TelegramReadClassification>();
 
     for (const sessionString of sessions) {
-        const sid = hashSession(sessionString);
+        const sid = hashSessionForCache(sessionString);
         if (sessionCircuitBreak.get(sid)) continue;
 
         try {
             const client = await getDynamicClient(sessionString);
-            const messages = await withRetryOnce(() => client.getMessages(chatId, { ids: messageId }));
+            const messages = await runTelegramQueued({
+                sessionHash: sid,
+                operation: 'getMessages',
+                priority: options?.priority || 'interactive',
+                task: () => withRetryOnce(() => client.getMessages(chatId, { ids: messageId })),
+            });
             if (messages && messages.length > 0 && messages[0]) {
                 messageClientCache.set(key, sid);
+                rememberPreferredSession(chatId, messageId, sid, 'ok');
+                await upsertPointerHealth({
+                    userId: ownerUserId,
+                    fileId: options?.fileId || null,
+                    shareItemId: options?.shareItemId || null,
+                    telegramChatId: chatId,
+                    telegramMessageId: messageId,
+                    status: 'healthy',
+                    lastSessionHash: sid,
+                });
                 return { client, message: messages[0] };
             }
             seen.add('telegram_message_missing');
         } catch (err) {
             const code = classifyTelegramError(err);
             seen.add(code);
+            rememberPreferredSession(chatId, messageId, sid, 'error');
 
             if (code === 'telegram_session_invalid') {
                 sessionCircuitBreak.set(sid, true);
@@ -152,7 +174,22 @@ export const resolveTelegramMessageForShareItem = async (
         }
     }
 
-    if (seen.has('telegram_message_missing')) return { failure: toFailure('telegram_message_missing') };
-    if (seen.has('telegram_session_invalid')) return { failure: toFailure('telegram_session_invalid') };
-    return { failure: toFailure('telegram_timeout') };
+    const failure = seen.has('telegram_message_missing')
+        ? toFailure('telegram_message_missing')
+        : seen.has('telegram_session_invalid')
+            ? toFailure('telegram_session_invalid')
+            : toFailure('telegram_timeout');
+
+    await upsertPointerHealth({
+        userId: ownerUserId,
+        fileId: options?.fileId || null,
+        shareItemId: options?.shareItemId || null,
+        telegramChatId: chatId,
+        telegramMessageId: messageId,
+        status: failure.code === 'telegram_message_missing' ? 'missing' : 'stale',
+        lastErrorCode: failure.code,
+        lastErrorMessage: failure.message,
+    });
+
+    return { failure };
 };

@@ -860,7 +860,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                                     <CheckCircle color="#fff" size={18} />
                                     <Text style={styles.copyBtnText}>Copy Link</Text>
                                 </TouchableOpacity>
-                                <Text style={styles.linkSub}>Link expires in 72 hours � Anyone with the link can view</Text>
+                                <Text style={styles.linkSub}>Link expires in 72 hours · Anyone with the link can view</Text>
                             </>
                         ) : (
                             <View style={{ paddingVertical: 12 }}>

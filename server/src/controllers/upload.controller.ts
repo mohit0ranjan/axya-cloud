@@ -215,10 +215,39 @@ const formatFileRow = (row: any) => ({
     created_at: row.created_at,
     updated_at: row.updated_at,
     blurhash: row.blurhash || null,
+    pointer_health: row.pointer_health || null,
+    cache_state: row.cache_state || 'miss',
+    segment_mode_enabled: Boolean(row.segment_mode_enabled),
     thumbnail_url: row.mime_type?.startsWith('image/') || row.mime_type?.startsWith('video/')
         ? `${process.env.SERVER_BASE_URL || ''}/api/files/${row.id}/thumbnail`
         : null,
 });
+
+const extractTelegramNativeMeta = (uploadedMessage: any) => {
+    const media = uploadedMessage?.document || uploadedMessage?.photo || null;
+    const attrs = Array.isArray(uploadedMessage?.document?.attributes) ? uploadedMessage.document.attributes : [];
+    const videoAttr = attrs.find((a: any) => a?.className === 'DocumentAttributeVideo' || a?.duration || a?.w || a?.h) || null;
+    const audioAttr = attrs.find((a: any) => a?.className === 'DocumentAttributeAudio' || a?.duration || a?.title || a?.performer) || null;
+    const imageAttr = attrs.find((a: any) => a?.className === 'DocumentAttributeImageSize' || a?.w || a?.h) || null;
+
+    const width = Number(videoAttr?.w || imageAttr?.w || 0) || null;
+    const height = Number(videoAttr?.h || imageAttr?.h || 0) || null;
+    const durationSec = Number(videoAttr?.duration || audioAttr?.duration || 0) || null;
+    const caption = String(uploadedMessage?.message || '').trim() || null;
+
+    return {
+        mediaMeta: {
+            dc_id: media?.dcId || null,
+            mime_type: uploadedMessage?.document?.mimeType || null,
+            has_photo: Boolean(uploadedMessage?.photo),
+            has_document: Boolean(uploadedMessage?.document),
+        },
+        durationSec,
+        width,
+        height,
+        caption,
+    };
+};
 
 const classifyUploadFailure = (err: unknown) => {
     const raw = String((err as any)?.message || '');
@@ -248,7 +277,7 @@ const classifyUploadFailure = (err: unknown) => {
 export const initUpload = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
-    const { originalname, size, mimetype, folder_id, telegram_chat_id, hash } = req.body;
+    const { originalname, size, mimetype, folder_id, telegram_chat_id, hash, source_tag } = req.body;
 
     if (!originalname || size === undefined || size === null) {
         return res.status(400).json({ success: false, error: 'Missing file info (originalname, size required)' });
@@ -299,8 +328,8 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
                 if (effectiveFolderId && effectiveFolderId !== existingFile.folder_id) {
                     // Insert a new DB row that reuses the same telegram_file_id
                     const newFileRes = await pool.query(
-                        `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash, blurhash)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+                        `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash, blurhash, tg_media_meta, tg_duration_sec, tg_width, tg_height, tg_caption, tg_source_tag)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17) RETURNING *`,
                         [
                             req.user.id,
                             effectiveFolderId,
@@ -312,6 +341,13 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
                             existingFile.mime_type,
                             existingFile.sha256_hash,
                             existingFile.md5_hash,
+                            existingFile.blurhash || null,
+                            JSON.stringify(existingFile.tg_media_meta || {}),
+                            existingFile.tg_duration_sec || null,
+                            existingFile.tg_width || null,
+                            existingFile.tg_height || null,
+                            existingFile.tg_caption || null,
+                            existingFile.tg_source_tag || null,
                         ]
                     );
                     console.log(`[Upload] Duplicate detected → inserted reference in folder ${effectiveFolderId}`);
@@ -390,6 +426,7 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
         mimeType: mimetype || 'application/octet-stream',
         folderId: folder_id || null,
         chatId: uploadTransport!.chatId,
+        sourceTag: String(source_tag || '').trim().toLowerCase() || null,
         totalBytes: fileSize,
         receivedBytes: 0,
         nextExpectedChunk: 0, // ✅ Fix 4: chunk ordering guard
@@ -554,6 +591,7 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                 : uploadedMessage.photo
                     ? uploadedMessage.photo.id.toString()
                     : '';
+            const nativeMeta = extractTelegramNativeMeta(uploadedMessage);
 
             // ── Insert with ON CONFLICT + 23505 catch ───────────────────────
             // ── Pre-generate Thumbnail & BlurHash ──────────────────
@@ -594,8 +632,8 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
             let fileResult: any = null;
             try {
                 const result = await pool.query(
-                    `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash, blurhash)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash, blurhash, tg_media_meta, tg_duration_sec, tg_width, tg_height, tg_caption, tg_source_tag)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17)
          ON CONFLICT (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL AND is_trashed = false
          DO NOTHING
          RETURNING *`,
@@ -611,6 +649,12 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
                         serverHash,
                         serverMd5,
                         finalBlurhash,
+                        JSON.stringify(nativeMeta.mediaMeta || {}),
+                        nativeMeta.durationSec,
+                        nativeMeta.width,
+                        nativeMeta.height,
+                        nativeMeta.caption,
+                        state.sourceTag,
                     ]
                 );
 

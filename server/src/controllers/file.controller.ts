@@ -11,6 +11,7 @@ import sharp from 'sharp';
 import { logger } from '../utils/logger';
 import { sendApiError } from '../utils/apiError';
 import { mapTelegramError } from '../utils/telegramErrors';
+import { getMessageCacheState } from '../services/share-v2/telegram-read-cache.service';
 
 // ── Allowed MIME types ─────────────────────────────────────────────────────
 const ALLOWED_TYPES = [
@@ -154,10 +155,34 @@ const formatFileRow = (row: any) => ({
     created_at: row.created_at,
     updated_at: row.updated_at,
     blurhash: row.blurhash || null,
+    pointer_health: row.pointer_health || null,
+    cache_state: row.cache_state || getMessageCacheState(String(row.telegram_chat_id || ''), Number(row.telegram_message_id || 0)),
+    segment_mode_enabled: Boolean(row.segment_mode_enabled),
     thumbnail_url: row.mime_type?.startsWith('image/') || row.mime_type?.startsWith('video/')
         ? `${process.env.SERVER_BASE_URL || ''}/api/files/${row.id}/thumbnail`
         : null,
 });
+
+const extractTelegramNativeMeta = (uploadedMessage: any) => {
+    const media = uploadedMessage?.document || uploadedMessage?.photo || null;
+    const attrs = Array.isArray(uploadedMessage?.document?.attributes) ? uploadedMessage.document.attributes : [];
+    const videoAttr = attrs.find((a: any) => a?.className === 'DocumentAttributeVideo' || a?.duration || a?.w || a?.h) || null;
+    const audioAttr = attrs.find((a: any) => a?.className === 'DocumentAttributeAudio' || a?.duration || a?.title || a?.performer) || null;
+    const imageAttr = attrs.find((a: any) => a?.className === 'DocumentAttributeImageSize' || a?.w || a?.h) || null;
+
+    return {
+        mediaMeta: {
+            dc_id: media?.dcId || null,
+            mime_type: uploadedMessage?.document?.mimeType || null,
+            has_photo: Boolean(uploadedMessage?.photo),
+            has_document: Boolean(uploadedMessage?.document),
+        },
+        durationSec: Number(videoAttr?.duration || audioAttr?.duration || 0) || null,
+        width: Number(videoAttr?.w || imageAttr?.w || 0) || null,
+        height: Number(videoAttr?.h || imageAttr?.h || 0) || null,
+        caption: String(uploadedMessage?.message || '').trim() || null,
+    };
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UPLOAD
@@ -169,7 +194,7 @@ export const uploadFile = async (req: AuthRequest, res: Response) => {
     }
 
     const { originalname, path: filePath, mimetype, size } = req.file;
-    let { folder_id, telegram_chat_id } = req.body;
+    let { folder_id, telegram_chat_id, source_tag } = req.body;
     folder_id = folder_id || null;
     telegram_chat_id = telegram_chat_id || 'me';
 
@@ -192,11 +217,27 @@ export const uploadFile = async (req: AuthRequest, res: Response) => {
             : uploadedMessage.photo
                 ? uploadedMessage.photo.id.toString()
                 : '';
+        const nativeMeta = extractTelegramNativeMeta(uploadedMessage);
 
         const result = await pool.query(
-            `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-            [req.user.id, folder_id, originalname, size, fileId, messageId, telegram_chat_id, mimetype]
+            `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, tg_media_meta, tg_duration_sec, tg_width, tg_height, tg_caption, tg_source_tag)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14) RETURNING *`,
+            [
+                req.user.id,
+                folder_id,
+                originalname,
+                size,
+                fileId,
+                messageId,
+                telegram_chat_id,
+                mimetype,
+                JSON.stringify(nativeMeta.mediaMeta || {}),
+                nativeMeta.durationSec,
+                nativeMeta.width,
+                nativeMeta.height,
+                nativeMeta.caption,
+                String(source_tag || '').trim().toLowerCase() || null,
+            ]
         );
 
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
@@ -224,17 +265,24 @@ export const fetchFiles = async (req: AuthRequest, res: Response) => {
     const sortCol = validSorts.includes(sort as string) ? sort : 'created_at';
     const sortOrder = order === 'ASC' ? 'ASC' : 'DESC';
 
-    let query = `SELECT * FROM files WHERE user_id = $1 AND is_trashed = false`;
+    let query = `SELECT
+        f.*,
+        tph.pointer_status AS pointer_health,
+        CASE WHEN fsm.mode = 'segmented' AND fsm.status IN ('scheduled', 'building', 'ready') THEN true ELSE false END AS segment_mode_enabled
+      FROM files f
+      LEFT JOIN telegram_pointer_health tph ON tph.file_id = f.id
+      LEFT JOIN file_segment_manifests fsm ON fsm.file_id = f.id
+      WHERE f.user_id = $1 AND f.is_trashed = false`;
     const params: any[] = [req.user.id];
 
     if (folder_id === 'root' || folder_id === 'null') {
-        query += ` AND folder_id IS NULL`;
+        query += ` AND f.folder_id IS NULL`;
     } else if (folder_id !== undefined) {
         params.push(folder_id);
-        query += ` AND folder_id = $${params.length}`;
+        query += ` AND f.folder_id = $${params.length}`;
     }
 
-    query += ` ORDER BY ${sortCol} ${sortOrder}`;
+    query += ` ORDER BY f.${sortCol} ${sortOrder}`;
     params.push(limit);
     query += ` LIMIT $${params.length}`;
     params.push(offset);
@@ -262,7 +310,14 @@ export const searchFiles = async (req: AuthRequest, res: Response) => {
 
     try {
         let filesQuery = `
-            SELECT f.*, 'file' as result_type FROM files f
+            SELECT
+                f.*,
+                tph.pointer_status AS pointer_health,
+                CASE WHEN fsm.mode = 'segmented' AND fsm.status IN ('scheduled', 'building', 'ready') THEN true ELSE false END AS segment_mode_enabled,
+                'file' as result_type
+            FROM files f
+            LEFT JOIN telegram_pointer_health tph ON tph.file_id = f.id
+            LEFT JOIN file_segment_manifests fsm ON fsm.file_id = f.id
             WHERE f.user_id = $1 AND f.is_trashed = false AND f.file_name ILIKE $2
         `;
         const params: any[] = [req.user.id, `%${q}%`];
@@ -275,6 +330,34 @@ export const searchFiles = async (req: AuthRequest, res: Response) => {
         if (type) {
             params.push(type as string);
             filesQuery += ` AND f.mime_type ILIKE $${params.length}`;
+        }
+        if (req.query.owner_tag) {
+            params.push(String(req.query.owner_tag).trim().toLowerCase());
+            filesQuery += ` AND COALESCE(f.tg_source_tag, '') = $${params.length}`;
+        }
+        if (req.query.min_duration) {
+            params.push(Number.parseInt(String(req.query.min_duration), 10) || 0);
+            filesQuery += ` AND COALESCE(f.tg_duration_sec, 0) >= $${params.length}`;
+        }
+        if (req.query.max_duration) {
+            params.push(Number.parseInt(String(req.query.max_duration), 10) || 0);
+            filesQuery += ` AND COALESCE(f.tg_duration_sec, 0) <= $${params.length}`;
+        }
+        if (req.query.min_size) {
+            params.push(Number.parseInt(String(req.query.min_size), 10) || 0);
+            filesQuery += ` AND COALESCE(f.file_size, 0) >= $${params.length}`;
+        }
+        if (req.query.max_size) {
+            params.push(Number.parseInt(String(req.query.max_size), 10) || 0);
+            filesQuery += ` AND COALESCE(f.file_size, 0) <= $${params.length}`;
+        }
+        if (req.query.from_date) {
+            params.push(String(req.query.from_date));
+            filesQuery += ` AND f.created_at >= $${params.length}`;
+        }
+        if (req.query.to_date) {
+            params.push(String(req.query.to_date));
+            filesQuery += ` AND f.created_at <= $${params.length}`;
         }
 
         params.push(limit);
@@ -1317,7 +1400,19 @@ export const getFileDetails = async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     try {
         const [fileRes, tagsRes, shareRes] = await Promise.all([
-            pool.query(`SELECT f.*, fo.name as folder_name FROM files f LEFT JOIN folders fo ON fo.id = f.folder_id WHERE f.id = $1 AND f.user_id = $2`, [id, req.user.id]),
+            pool.query(
+                `SELECT
+                    f.*,
+                    fo.name as folder_name,
+                    tph.pointer_status AS pointer_health,
+                    CASE WHEN fsm.mode = 'segmented' AND fsm.status IN ('scheduled', 'building', 'ready') THEN true ELSE false END AS segment_mode_enabled
+                 FROM files f
+                 LEFT JOIN folders fo ON fo.id = f.folder_id
+                 LEFT JOIN telegram_pointer_health tph ON tph.file_id = f.id
+                 LEFT JOIN file_segment_manifests fsm ON fsm.file_id = f.id
+                 WHERE f.id = $1 AND f.user_id = $2`,
+                [id, req.user.id]
+            ),
             pool.query(`SELECT tag FROM file_tags WHERE file_id = $1 AND user_id = $2 ORDER BY tag`, [id, req.user.id]),
             pool.query(
                 `SELECT id, slug, expires_at, allow_download, allow_preview

@@ -21,8 +21,8 @@ import { useApiCacheStore } from '../context/ApiCacheStore';
 import { useToast } from '../context/ToastContext';
 import { FileCardSkeleton, SkeletonBlock } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
-import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 
 import AxyaLogo from '../components/AxyaLogo';
@@ -30,6 +30,7 @@ import FileListItem from '../components/FileListItem';
 import { useServerKeepAlive } from '../hooks/useServerKeepAlive';
 import AppButton from '../components/AppButton';
 import IconButton from '../components/IconButton';
+import { formatFolderMeta } from '../utils/folderMeta';
 
 const { width } = Dimensions.get('window');
 const HOME_RECENT_FILES_PREVIEW_LIMIT = 3;
@@ -66,7 +67,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     header: {
         flexDirection: 'row', alignItems: 'center',
         paddingHorizontal: 20,
-        paddingTop: Platform.OS === 'web' ? 44 : 26,
+        paddingTop: 16,
         paddingBottom: 16,
         backgroundColor: C.bg,
     },
@@ -169,7 +170,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     },
     folderAddIcon: {
         width: 48, height: 48, borderRadius: 14,
-        backgroundColor: '#EEF1FD', justifyContent: 'center', alignItems: 'center',
+        backgroundColor: C.primarySoft, justifyContent: 'center', alignItems: 'center',
         marginBottom: 10,
     },
 
@@ -260,7 +261,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     modalTitle: { fontSize: 20, fontWeight: '600', color: C.text, marginBottom: 16 },
     filePill: {
         flexDirection: 'row', alignItems: 'center', gap: 10,
-        backgroundColor: '#EEF1FD', borderRadius: 12, paddingHorizontal: 14,
+        backgroundColor: C.primarySoft, borderRadius: 12, paddingHorizontal: 14,
         paddingVertical: 10, marginBottom: 20,
     },
     filePillText: { flex: 1, fontSize: 14, fontWeight: '600', color: C.primary },
@@ -280,7 +281,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
         marginRight: 10,
     },
     folderChipSelected: {
-        backgroundColor: '#EEF1FD',
+        backgroundColor: C.primarySoft,
         borderColor: C.primary,
     },
     folderChipText: {
@@ -332,7 +333,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 12,
-        backgroundColor: '#fff',
+        backgroundColor: C.card,
         padding: 12,
         borderRadius: 16,
         shadowColor: 'rgba(0,0,0,0.05)',
@@ -351,6 +352,7 @@ export default function HomeScreen({ navigation, route }: any) {
     const { logout, user, token } = useContext(AuthContext);
     const { showToast } = useToast();
     const { theme, isDark } = useTheme();
+    const insets = useSafeAreaInsets();
     useServerKeepAlive(); // ? keeps Render from sleeping every 10 minutes
 
     // Dynamic color tokens — react to dark/light mode (memoized to prevent style recalculation)
@@ -369,6 +371,13 @@ export default function HomeScreen({ navigation, route }: any) {
         storageGrad1: theme.colors.primary,
         storageGrad2: isDark ? '#4B6EF5' : '#2B4FD8',
         inputBg: theme.colors.inputBg,
+        primarySoft: isDark ? 'rgba(88,117,255,0.16)' : '#EEF1FD',
+        warningSoft: isDark ? 'rgba(245,158,11,0.16)' : '#FEF3C7',
+        warning: '#D97706',
+        dangerSoft: isDark ? 'rgba(239,68,68,0.16)' : '#FEE2E2',
+        tealSoft: isDark ? 'rgba(13,148,136,0.16)' : '#CCFBF1',
+        purpleSoft: isDark ? 'rgba(147,51,234,0.16)' : '#F3E8FF',
+        successSoft: isDark ? 'rgba(22,163,74,0.16)' : '#DCFCE7',
     }), [theme.colors, isDark]);
 
     // Memoized styles that react to theme changes
@@ -732,7 +741,7 @@ export default function HomeScreen({ navigation, route }: any) {
         <SafeAreaView style={[s.root, { backgroundColor: C.bg }]}>
 
             {/* -- HEADER ----------------------------------------------------- */}
-            <View style={[s.header, { backgroundColor: C.bg }]}>
+            <View style={[s.header, { backgroundColor: C.bg, paddingTop: Math.max(insets.top + 8, 16) }]}>
                 {showSearch ? (
                     <View style={[s.searchBar, { backgroundColor: C.card }]}>
                         <Search color={C.muted} size={18} />
@@ -788,18 +797,18 @@ export default function HomeScreen({ navigation, route }: any) {
                     STORAGE CARD
                 ----------------------------------------------------------- */}
                 {!searchQuery && (
-                    <View style={{ marginBottom: staticTheme.spacing.lg }}>
+                    <View style={{ marginBottom: 16 }}>
                         <View style={s.storageCard}>
                             <View style={s.meshBlob1} />
                             <View style={s.meshBlob2} />
 
                             <View style={s.storageTop}>
                                 <View style={s.storageIconBox}>
-                                    <View style={{ backgroundColor: 'rgba(255,255,255,0.25)', padding: 10, borderRadius: staticTheme.radius.card }}>
+                                    <View style={{ backgroundColor: 'rgba(255,255,255,0.25)', padding: 10, borderRadius: 16 }}>
                                         <HardDrive color="#fff" size={24} />
                                     </View>
                                 </View>
-                                <View style={{ flex: 1, marginLeft: staticTheme.spacing.lg }}>
+                                <View style={{ flex: 1, marginLeft: 16 }}>
                                     <Text style={s.storageTitle}>Axya Space</Text>
                                     <Text style={s.storageSubtitle}>Personal Cloud Storage</Text>
                                 </View>
@@ -864,7 +873,7 @@ export default function HomeScreen({ navigation, route }: any) {
                         ) : (
                             <View style={s.folderGrid}>
                                 <TouchableOpacity
-                                    style={[s.folderGridCard, { backgroundColor: '#EEF1FD' }]}
+                                    style={[s.folderGridCard, { backgroundColor: C.primarySoft }]}
                                     onPress={() => navigation.navigate('Files')}
                                 >
                                     <View style={[s.fileIcon, { backgroundColor: 'rgba(75, 110, 245, 0.1)' }]}>
@@ -878,12 +887,12 @@ export default function HomeScreen({ navigation, route }: any) {
                                 {folders.map((folder, idx) => {
                                     // Cycle through pastel color pairs
                                     const palettes = [
-                                        { bg: '#EEF1FD', icon: '#4B6EF5' },
-                                        { bg: '#FEF3C7', icon: '#D97706' },
-                                        { bg: '#FEE2E2', icon: '#EF4444' },
-                                        { bg: '#CCFBF1', icon: '#0D9488' },
-                                        { bg: '#F3E8FF', icon: '#9333EA' },
-                                        { bg: '#DCFCE7', icon: '#16A34A' },
+                                        { bg: C.primarySoft, icon: C.primary },
+                                        { bg: C.warningSoft, icon: C.warning },
+                                        { bg: C.dangerSoft, icon: C.danger },
+                                        { bg: C.tealSoft, icon: '#0D9488' },
+                                        { bg: C.purpleSoft, icon: '#9333EA' },
+                                        { bg: C.successSoft, icon: C.success },
                                     ];
                                     const pal = palettes[idx % palettes.length];
                                     return (
@@ -947,7 +956,7 @@ export default function HomeScreen({ navigation, route }: any) {
                                                 {folder.name}
                                             </Text>
                                             <Text style={s.folderGridMeta}>
-                                                {folder.total_file_count ?? (folder.file_count || 0)} files
+                                                {formatFolderMeta(folder)}
                                             </Text>
                                         </TouchableOpacity>
                                     );
@@ -969,7 +978,7 @@ export default function HomeScreen({ navigation, route }: any) {
                         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 20, gap: 12 }}>
                             {recentlyAccessed.slice(0, 6).map(f => {
                                 const isMedia = f.mime_type?.includes('image') || f.mime_type?.includes('video');
-                                const iconBg = isMedia ? '#FEF3C7' : '#EEF1FD';
+                                const iconBg = isMedia ? C.warningSoft : C.primarySoft;
                                 return (
                                     <TouchableOpacity
                                         key={f.id}
@@ -1076,7 +1085,7 @@ export default function HomeScreen({ navigation, route }: any) {
                         <Text style={[s.sheetTitle, { color: C.text }]}>Create New</Text>
 
                         <TouchableOpacity style={s.sheetRow} onPress={handlePickFile} activeOpacity={0.7}>
-                            <View style={[s.sheetRowIcon, { backgroundColor: '#EEF1FD' }]}>
+                            <View style={[s.sheetRowIcon, { backgroundColor: C.primarySoft }]}>
                                 <Upload color={C.primary} size={22} />
                             </View>
                             <View style={{ flex: 1 }}>
@@ -1088,8 +1097,8 @@ export default function HomeScreen({ navigation, route }: any) {
 
                         <TouchableOpacity style={s.sheetRow}
                             onPress={() => { setFabOpen(false); setFolderModal(true); }} activeOpacity={0.7}>
-                            <View style={[s.sheetRowIcon, { backgroundColor: '#FEF3C7' }]}>
-                                <Folder color="#D97706" size={22} />
+                            <View style={[s.sheetRowIcon, { backgroundColor: C.warningSoft }]}>
+                                <Folder color={C.warning} size={22} />
                             </View>
                             <View style={{ flex: 1 }}>
                                 <Text style={s.sheetRowTitle}>New Folder</Text>

@@ -36,6 +36,9 @@ import pool from '../config/db';
 import { logger } from '../utils/logger';
 import { sendApiError } from '../utils/apiError';
 import { mapTelegramError } from '../utils/telegramErrors';
+import { hashSessionForCache, rememberPreferredSession } from '../services/share-v2/telegram-read-cache.service';
+import { runTelegramQueued } from '../services/share-v2/telegram-request-queue.service';
+import { upsertPointerHealth } from '../services/share-v2/telegram-pointer-health.service';
 
 // ─── Disk Cache Config ───────────────────────────────────────────────────────
 
@@ -181,6 +184,7 @@ setInterval(() => {
 
 async function ensureCached(
     fileId: string,
+    userId: string,
     sessionString: string,
     telegramMessageId: string,
     telegramChatId: string,
@@ -213,24 +217,46 @@ async function ensureCached(
 
     const downloadPromise = (async () => {
         try {
+            const sessionHash = hashSessionForCache(sessionString);
             const client = await getDynamicClient(sessionString);
-            const messages = await client.getMessages(telegramChatId, {
-                ids: parseInt(telegramMessageId, 10),
+            const messageId = parseInt(telegramMessageId, 10);
+            const messages = await runTelegramQueued({
+                sessionHash,
+                operation: 'owner.getMessages',
+                priority: 'interactive',
+                task: () => client.getMessages(telegramChatId, { ids: messageId }),
             });
 
             if (!messages || messages.length === 0) {
+                await upsertPointerHealth({
+                    userId,
+                    fileId,
+                    telegramChatId,
+                    telegramMessageId: messageId,
+                    status: 'missing',
+                    lastErrorCode: 'telegram_message_missing',
+                    lastErrorMessage: 'File no longer exists in Telegram',
+                    lastSessionHash: sessionHash,
+                });
                 throw new Error('File no longer exists in Telegram');
             }
 
-            const result = await client.downloadMedia(messages[0] as any, {
-                outputFile: partialPath,
-                progressCallback: (progress: number) => {
-                    const prog = downloadProgress.get(fileId);
-                    if (prog) {
-                        prog.downloadedBytes = Math.round(progress * prog.totalSize);
-                    }
-                },
-            } as any);
+            rememberPreferredSession(telegramChatId, messageId, sessionHash, 'ok');
+
+            const result = await runTelegramQueued({
+                sessionHash,
+                operation: 'owner.downloadMedia',
+                priority: 'interactive',
+                task: () => client.downloadMedia(messages[0] as any, {
+                    outputFile: partialPath,
+                    progressCallback: (progress: number) => {
+                        const prog = downloadProgress.get(fileId);
+                        if (prog) {
+                            prog.downloadedBytes = Math.round(progress * prog.totalSize);
+                        }
+                    },
+                } as any),
+            });
 
             const diskPath = typeof result === 'string' ? result : partialPath;
 
@@ -248,12 +274,31 @@ async function ensureCached(
                 prog.downloadedBytes = prog.totalSize;
                 prog.complete = true;
             }
+            await upsertPointerHealth({
+                userId,
+                fileId,
+                telegramChatId,
+                telegramMessageId: messageId,
+                status: 'healthy',
+                lastSessionHash: sessionHash,
+            });
 
             return cachePath;
         } catch (err: any) {
             const prog = downloadProgress.get(fileId);
             if (prog) prog.error = err.message;
             try { if (fs.existsSync(partialPath)) fs.unlinkSync(partialPath); } catch { }
+            await upsertPointerHealth({
+                userId,
+                fileId,
+                telegramChatId,
+                telegramMessageId: parseInt(telegramMessageId, 10),
+                status: /MESSAGE|MEDIA|CHAT|CHANNEL|PEER/i.test(String(err?.message || '')) ? 'missing' : 'stale',
+                lastErrorCode: /MESSAGE|MEDIA|CHAT|CHANNEL|PEER/i.test(String(err?.message || ''))
+                    ? 'telegram_message_missing'
+                    : 'telegram_timeout',
+                lastErrorMessage: String(err?.message || 'unknown telegram read error'),
+            });
             throw err;
         } finally {
             downloadLocks.delete(fileId);
@@ -341,6 +386,7 @@ export const streamMedia = async (req: AuthRequest, res: Response) => {
         try {
             cacheInfo = await ensureCached(
                 String(fileId),
+                req.user.id,
                 req.user.sessionString,
                 String(telegram_message_id),
                 String(telegram_chat_id),

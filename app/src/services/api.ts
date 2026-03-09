@@ -9,6 +9,14 @@ export interface ShareOptions {
     password?: string;
 }
 
+export interface SharePatchOptions {
+    allow_download?: boolean;
+    allow_preview?: boolean;
+    password?: string;
+    expires_at?: string | null;
+    revoke?: boolean;
+}
+
 export const createShareLink = async (options: ShareOptions) => {
     const fileId = String(options.file_id || '').trim();
     const folderId = String(options.folder_id || '').trim();
@@ -37,5 +45,15 @@ export const createShareLink = async (options: ShareOptions) => {
 
 export const revokeShareLink = async (id: string) => {
     const { data } = await apiClient.delete(`/api/v2/shares/${id}`);
+    return data;
+};
+
+export const fetchShareDetails = async (id: string) => {
+    const { data } = await apiClient.get(`/api/v2/shares/${id}`);
+    return data;
+};
+
+export const updateShareLink = async (id: string, updates: SharePatchOptions) => {
+    const { data } = await apiClient.patch(`/api/v2/shares/${id}`, updates);
     return data;
 };

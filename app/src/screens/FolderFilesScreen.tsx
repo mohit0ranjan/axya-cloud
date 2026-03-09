@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useContext, useCallback, useRef } from 'react';
+﻿import React, { useState, useEffect, useContext, useCallback, useRef, useMemo } from 'react';
 import {
     View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView,
     Alert, Platform, Modal, TextInput, KeyboardAvoidingView,
@@ -16,7 +16,7 @@ import apiClient from '../services/apiClient';
 import { AuthContext } from '../context/AuthContext';
 import { useUpload } from '../context/UploadContext';
 import { useToast } from '../context/ToastContext';
-import { theme as staticTheme } from '../ui/theme';
+
 import { useTheme } from '../context/ThemeContext';
 import { EmptyState } from '../ui/EmptyState';
 import { ErrorState } from '../ui/ErrorState';
@@ -24,6 +24,7 @@ import { FileCardSkeleton } from '../ui/Skeleton';
 import ShareFolderModal from '../components/ShareFolderModal';
 import { FileIcon } from '../components/FileIcon';
 import { normalizeExternalShareUrl } from '../utils/shareUrls';
+import { formatFolderMeta } from '../utils/folderMeta';
 
 
 const { width } = Dimensions.get('window');
@@ -58,6 +59,7 @@ function formatSize(bytes: number) {
 
 // ? Fix: React.memo wrapper prevents unchanged files from re-rendering when selectedIds updates
 const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode, theme, token, onAction }: any) => {
+    const styles = useMemo(() => createStyles(theme), [theme]);
     const isFolder = item.result_type === 'folder' || item.mime_type === 'inode/directory';
 
     return (
@@ -74,7 +76,7 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
                         <FileIcon item={item} size={GRID_SIZE * 0.75} token={token} apiBase={apiClient.defaults.baseURL} themeColors={theme.colors} style={{ borderRadius: 0, width: '100%', height: '100%' }} />
                     </View>
                     <View style={styles.gridLabel}>
-                        <Text style={styles.gridName} numberOfLines={1}>{item.name || item.file_name}</Text>
+                        <Text style={[styles.gridName, { color: theme.colors.textHeading }]} numberOfLines={1}>{item.name || item.file_name}</Text>
                     </View>
                     {selectMode && (
                         <View style={styles.gridCheckbox}>
@@ -86,10 +88,10 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
                 <>
                     <FileIcon item={item} size={46} token={token} apiBase={apiClient.defaults.baseURL} themeColors={theme.colors} style={{ marginRight: 14 }} />
                     <View style={styles.fileDetails}>
-                        <Text style={styles.fileName} numberOfLines={1}>{item.name || item.file_name}</Text>
-                        <Text style={styles.fileMeta}>
+                        <Text style={[styles.fileName, { color: theme.colors.textHeading }]} numberOfLines={1}>{item.name || item.file_name}</Text>
+                        <Text style={[styles.fileMeta, { color: theme.colors.textBody }]}>
                             {isFolder
-                                ? `Folder${item.file_count != null ? ` · ${item.file_count} items` : ''}`
+                                ? formatFolderMeta(item)
                                 : `${formatSize(item.size)} · ${new Date(item.created_at).toLocaleDateString()}`
                             }
                         </Text>
@@ -125,6 +127,7 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
 export default function FolderFilesScreen({ route, navigation }: any) {
     const { folderId, folderName, breadcrumb = [] } = route.params;
     const { theme } = useTheme();
+    const styles = useMemo(() => createStyles(theme), [theme]);
     const { showToast } = useToast();
     const { token } = useContext(AuthContext);
 
@@ -506,14 +509,14 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             </View>
 
             {breadcrumb.length > 0 && (
-                <View style={styles.breadcrumbBar}>
+                <View style={[styles.breadcrumbBar, { backgroundColor: theme.colors.card, borderBottomColor: theme.colors.border }]}>
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 20 }}>
-                        <TouchableOpacity onPress={() => navigation.navigate('MainTabs', { screen: 'Home' })}><Text style={styles.crumbLink}>Home</Text></TouchableOpacity>
+                        <TouchableOpacity onPress={() => navigation.navigate('MainTabs', { screen: 'Home' })}><Text style={[styles.crumbLink, { color: theme.colors.primary }]}>Home</Text></TouchableOpacity>
                         {breadcrumb.map((b, i) => (
                             <React.Fragment key={b.id}>
-                                <Text style={styles.crumbSep}> › </Text>
+                                <Text style={[styles.crumbSep, { color: theme.colors.textBody }]}> › </Text>
                                 <TouchableOpacity onPress={() => navigation.push('FolderFiles', { folderId: b.id, folderName: b.name, breadcrumb: breadcrumb.slice(0, i) })}>
-                                    <Text style={styles.crumbLink}>{b.name}</Text>
+                                    <Text style={[styles.crumbLink, { color: theme.colors.primary }]}>{b.name}</Text>
                                 </TouchableOpacity>
                             </React.Fragment>
                         ))}
@@ -521,23 +524,37 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 </View>
             )}
 
-            <View style={{ backgroundColor: '#fff', paddingBottom: 10 }}>
+            <View style={{ backgroundColor: theme.colors.card, paddingBottom: 10 }}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={{ gap: 8, paddingHorizontal: 20, alignItems: 'center' }}>
                     {FILTER_TABS.map(t => (
-                        <TouchableOpacity key={t.key} style={[styles.tab, filterTab === t.key && styles.tabActive]} onPress={() => setFilterTab(t.key)}>
+                        <TouchableOpacity
+                            key={t.key}
+                            style={[
+                                styles.tab,
+                                { backgroundColor: filterTab === t.key ? theme.colors.primary : theme.colors.background },
+                                filterTab === t.key && styles.tabActive,
+                            ]}
+                            onPress={() => setFilterTab(t.key)}
+                        >
                             <View style={styles.tabInner}>
                                 {t.Icon ? (
-                                    <t.Icon color={filterTab === t.key ? '#fff' : staticTheme.colors.textBody} size={14} />
+                                    <t.Icon color={filterTab === t.key ? '#fff' : theme.colors.textBody} size={14} />
                                 ) : null}
-                                <Text style={[styles.tabText, filterTab === t.key && styles.tabTextActive]}>{t.label}</Text>
+                                <Text style={[styles.tabText, { color: filterTab === t.key ? '#fff' : theme.colors.textBody }, filterTab === t.key && styles.tabTextActive]}>{t.label}</Text>
                             </View>
                         </TouchableOpacity>
                     ))}
                 </ScrollView>
                 <View style={{ paddingHorizontal: 20 }}>
-                    <View style={styles.searchContainer}>
+                    <View style={[styles.searchContainer, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}>
                         <Search color={theme.colors.textBody} size={18} />
-                        <TextInput style={styles.searchInput} placeholder={`Search in ${folderName}...`} value={searchQuery} onChangeText={setSearchQuery} />
+                        <TextInput
+                            style={[styles.searchInput, { color: theme.colors.textHeading }]}
+                            placeholder={`Search in ${folderName}...`}
+                            placeholderTextColor={theme.colors.textBody}
+                            value={searchQuery}
+                            onChangeText={setSearchQuery}
+                        />
                         {searchQuery ? <TouchableOpacity onPress={() => setSearchQuery('')}><X color={theme.colors.textBody} size={18} /></TouchableOpacity> : null}
                     </View>
                 </View>
@@ -572,8 +589,8 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 ListFooterComponent={
                     !isLoading && filteredFiles.length > displayLimit ? (
                         <View style={{ paddingVertical: 20, alignItems: 'center' }}>
-                            <ActivityIndicator size="small" color={staticTheme.colors.primary} />
-                            <Text style={{ fontSize: 12, color: staticTheme.colors.textBody, marginTop: 8 }}>
+                            <ActivityIndicator size="small" color={theme.colors.primary} />
+                            <Text style={{ fontSize: 12, color: theme.colors.textBody, marginTop: 8 }}>
                                 Showing {Math.min(displayLimit, filteredFiles.length)} of {filteredFiles.length}
                             </Text>
                         </View>
@@ -603,7 +620,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             />
 
             {!selectMode && (
-                <TouchableOpacity style={styles.fab} onPress={handleUploadInit}>
+                <TouchableOpacity style={[styles.fab, { backgroundColor: theme.colors.primary }]} onPress={handleUploadInit}>
                     <Plus color="#fff" size={32} />
                 </TouchableOpacity>
             )}
@@ -611,11 +628,18 @@ export default function FolderFilesScreen({ route, navigation }: any) {
 
             <Modal visible={isCreateModalVisible} transparent animationType="fade">
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.centeredModal}>
-                    <View style={styles.modalCard}>
-                        <Text style={styles.modalTitle}>New Folder</Text>
-                        <TextInput style={styles.modalInput} placeholder="Folder name" value={newFolderName} onChangeText={setNewFolderName} autoFocus />
+                    <View style={[styles.modalCard, { backgroundColor: theme.colors.card }]}>
+                        <Text style={[styles.modalTitle, { color: theme.colors.textHeading }]}>New Folder</Text>
+                        <TextInput
+                            style={[styles.modalInput, { borderColor: theme.colors.border, color: theme.colors.textHeading, backgroundColor: theme.colors.background }]}
+                            placeholder="Folder name"
+                            placeholderTextColor={theme.colors.textBody}
+                            value={newFolderName}
+                            onChangeText={setNewFolderName}
+                            autoFocus
+                        />
                         <View style={styles.modalActions}>
-                            <TouchableOpacity style={styles.modalBtn} onPress={() => setCreateModalVisible(false)}><Text style={styles.modalBtnText}>Cancel</Text></TouchableOpacity>
+                            <TouchableOpacity style={[styles.modalBtn, { backgroundColor: theme.colors.background }]} onPress={() => setCreateModalVisible(false)}><Text style={[styles.modalBtnText, { color: theme.colors.textHeading }]}>Cancel</Text></TouchableOpacity>
                             <TouchableOpacity style={[styles.modalBtn, { backgroundColor: theme.colors.primary }]} onPress={handleCreateFolder}><Text style={[styles.modalBtnText, { color: '#fff' }]}>Create</Text></TouchableOpacity>
                         </View>
                     </View>
@@ -629,14 +653,14 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     activeOpacity={1}
                     onPress={() => { setMoveModalVisible(false); setMoveTarget(null); setSelectMode(false); setSelectedIds(new Set()); }}
                 >
-                    <View style={[styles.modalCard, { borderRadius: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40 }]}>
+                    <View style={[styles.modalCard, { backgroundColor: theme.colors.card, borderRadius: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40 }]}>
                         <View style={{ width: 40, height: 4, backgroundColor: theme.colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: 20 }} />
-                        <Text style={[styles.modalTitle, { marginBottom: 4 }]}>Move {moveTarget?.ids?.length || 0} file(s) to...</Text>
-                        <Text style={[styles.modalSub, { marginBottom: 20 }]}>Choose a destination folder</Text>
+                        <Text style={[styles.modalTitle, { color: theme.colors.textHeading, marginBottom: 4 }]}>Move {moveTarget?.ids?.length || 0} file(s) to...</Text>
+                        <Text style={[styles.modalSub, { color: theme.colors.textBody, marginBottom: 20 }]}>Choose a destination folder</Text>
 
                         {/* Root option */}
                         <TouchableOpacity
-                            style={[styles.modalBtn, { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10, paddingHorizontal: 16, width: '100%' }]}
+                            style={[styles.modalBtn, { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10, paddingHorizontal: 16, width: '100%', backgroundColor: theme.colors.background }]}
                             onPress={() => handleBulkMove(null)}
                         >
                             <Folder color={theme.colors.primary} size={20} />
@@ -646,7 +670,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                         {allFolders.filter(f => f.id !== folderId).map(f => (
                             <TouchableOpacity
                                 key={f.id}
-                                style={[styles.modalBtn, { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10, paddingHorizontal: 16, width: '100%' }]}
+                                style={[styles.modalBtn, { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10, paddingHorizontal: 16, width: '100%', backgroundColor: theme.colors.background }]}
                                 onPress={() => handleBulkMove(f.id)}
                             >
                                 <Folder color="#D97706" size={20} />
@@ -660,21 +684,22 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             {/* -- Rename Modal -------------------------------------- */}
             <Modal visible={isRenameModalVisible} transparent animationType="fade">
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.centeredModal}>
-                    <View style={styles.modalCard}>
-                        <Text style={styles.modalTitle}>Rename</Text>
+                    <View style={[styles.modalCard, { backgroundColor: theme.colors.card }]}>
+                        <Text style={[styles.modalTitle, { color: theme.colors.textHeading }]}>Rename</Text>
                         <TextInput
-                            style={styles.modalInput}
+                            style={[styles.modalInput, { borderColor: theme.colors.border, color: theme.colors.textHeading, backgroundColor: theme.colors.background }]}
                             placeholder="New name"
+                            placeholderTextColor={theme.colors.textBody}
                             value={renameValue}
                             onChangeText={setRenameValue}
                             autoFocus
                             onSubmitEditing={handleRename}
                         />
                         <View style={styles.modalActions}>
-                            <TouchableOpacity style={styles.modalBtn} onPress={() => { setRenameModalVisible(false); setRenameTarget(null); }}>
-                                <Text style={styles.modalBtnText}>Cancel</Text>
+                            <TouchableOpacity style={[styles.modalBtn, { backgroundColor: theme.colors.background }]} onPress={() => { setRenameModalVisible(false); setRenameTarget(null); }}>
+                                <Text style={[styles.modalBtnText, { color: theme.colors.textHeading }]}>Cancel</Text>
                             </TouchableOpacity>
-                            <TouchableOpacity style={[styles.modalBtn, { backgroundColor: staticTheme.colors.primary }]} onPress={handleRename}>
+                            <TouchableOpacity style={[styles.modalBtn, { backgroundColor: theme.colors.primary }]} onPress={handleRename}>
                                 <Text style={[styles.modalBtnText, { color: '#fff' }]}>Rename</Text>
                             </TouchableOpacity>
                         </View>
@@ -689,9 +714,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     activeOpacity={1}
                     onPress={() => setShowSortModal(false)}
                 >
-                    <View style={[styles.modalCard, { borderRadius: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40 }]}>
-                        <View style={{ width: 36, height: 4, backgroundColor: staticTheme.colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: 16 }} />
-                        <Text style={[styles.modalTitle, { marginBottom: 12 }]}>Sort by</Text>
+                    <View style={[styles.modalCard, { backgroundColor: theme.colors.card, borderRadius: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40 }]}>
+                        <View style={{ width: 36, height: 4, backgroundColor: theme.colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: 16 }} />
+                        <Text style={[styles.modalTitle, { color: theme.colors.textHeading, marginBottom: 12 }]}>Sort by</Text>
                         {SORT_OPTIONS.map(opt => (
                             <TouchableOpacity
                                 key={opt.key}
@@ -699,19 +724,19 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                                     flexDirection: 'row', alignItems: 'center', gap: 12,
                                     paddingVertical: 14, paddingHorizontal: 12,
                                     borderRadius: 12, marginBottom: 4,
-                                    backgroundColor: sortKey === opt.key ? staticTheme.colors.primary + '18' : 'transparent',
+                                    backgroundColor: sortKey === opt.key ? theme.colors.primary + '18' : 'transparent',
                                 }}
                                 onPress={() => { setSortKey(opt.key); setShowSortModal(false); }}
                             >
                                 <Text style={{
                                     flex: 1, fontSize: 15,
-                                    color: sortKey === opt.key ? staticTheme.colors.primary : staticTheme.colors.textHeading,
+                                    color: sortKey === opt.key ? theme.colors.primary : theme.colors.textHeading,
                                     fontWeight: sortKey === opt.key ? '700' : '400',
                                 }}>
                                     {opt.label}
                                 </Text>
                                 {sortKey === opt.key && (
-                                    <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: staticTheme.colors.primary, justifyContent: 'center', alignItems: 'center' }}>
+                                    <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: theme.colors.primary, justifyContent: 'center', alignItems: 'center' }}>
                                         <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>?</Text>
                                     </View>
                                 )}
@@ -728,29 +753,29 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     activeOpacity={1}
                     onPress={() => setOptionsTarget(null)}
                 >
-                    <View style={[styles.modalCard, { borderRadius: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40 }]}>
-                        <View style={{ width: 36, height: 4, backgroundColor: staticTheme.colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: 16 }} />
-                        <Text style={[styles.modalTitle, { marginBottom: 12 }]}>{optionsTarget?.name || optionsTarget?.file_name}</Text>
+                    <View style={[styles.modalCard, { backgroundColor: theme.colors.card, borderRadius: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40 }]}>
+                        <View style={{ width: 36, height: 4, backgroundColor: theme.colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: 16 }} />
+                        <Text style={[styles.modalTitle, { color: theme.colors.textHeading, marginBottom: 12 }]}>{optionsTarget?.name || optionsTarget?.file_name}</Text>
 
                         <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('shareLink', optionsTarget); }}>
                             <Share2 color={theme.colors.primary} size={20} />
-                            <Text style={styles.optionText}>Share Link</Text>
+                            <Text style={[styles.optionText, { color: theme.colors.textHeading }]}>Share Link</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('rename', optionsTarget); }}>
                             <Tag color={theme.colors.accent} size={20} />
-                            <Text style={styles.optionText}>Rename</Text>
+                            <Text style={[styles.optionText, { color: theme.colors.textHeading }]}>Rename</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('info', optionsTarget); }}>
                             <Info color={theme.colors.primary} size={20} />
-                            <Text style={styles.optionText}>Info & Tags</Text>
+                            <Text style={[styles.optionText, { color: theme.colors.textHeading }]}>Info & Tags</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('star', optionsTarget); }}>
                             <Star color={optionsTarget?.is_starred ? theme.colors.accent : theme.colors.textBody} size={20} />
-                            <Text style={styles.optionText}>{optionsTarget?.is_starred ? 'Unstar' : 'Star'}</Text>
+                            <Text style={[styles.optionText, { color: theme.colors.textHeading }]}>{optionsTarget?.is_starred ? 'Unstar' : 'Star'}</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('move', optionsTarget); }}>
                             <Move color={theme.colors.primary} size={20} />
-                            <Text style={styles.optionText}>Move to Folder</Text>
+                            <Text style={[styles.optionText, { color: theme.colors.textHeading }]}>Move to Folder</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={[styles.optionItem, { backgroundColor: '#fee2e2' }]} onPress={() => { setOptionsTarget(null); handleCardAction('trash', optionsTarget); }}>
                             <Trash2 color={theme.colors.danger} size={20} />
@@ -773,53 +798,53 @@ export default function FolderFilesScreen({ route, navigation }: any) {
 
 
 const GRID_SIZE = (width - 48 - 12) / 2;
-const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: staticTheme.colors.background },
+const createStyles = (theme: any) => StyleSheet.create({
+    container: { flex: 1, backgroundColor: theme.colors.background },
     header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 12, gap: 8 },
     headerCenter: { flex: 1, alignItems: 'center' },
-    headerTitle: { fontSize: 18, fontWeight: '700', color: staticTheme.colors.textHeading },
+    headerTitle: { fontSize: 18, fontWeight: '700', color: theme.colors.textHeading },
     headerActions: { flexDirection: 'row', gap: 4 },
-    iconBtn: { padding: 8 },
-    breadcrumbBar: { backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: staticTheme.colors.border, height: 40, justifyContent: 'center' },
-    crumbLink: { fontSize: 12, color: staticTheme.colors.primary, fontWeight: '600' },
-    crumbSep: { fontSize: 12, color: staticTheme.colors.textBody },
+    iconBtn: { width: 44, height: 44, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+    breadcrumbBar: { backgroundColor: theme.colors.card, borderBottomWidth: 1, borderBottomColor: theme.colors.border, height: 40, justifyContent: 'center' },
+    crumbLink: { fontSize: 12, color: theme.colors.primary, fontWeight: '600' },
+    crumbSep: { fontSize: 12, color: theme.colors.textBody },
     tabBar: { height: 48 },
-    tab: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: staticTheme.colors.background },
-    tabActive: { backgroundColor: staticTheme.colors.primary },
+    tab: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: theme.colors.background },
+    tabActive: { backgroundColor: theme.colors.primary },
     tabInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-    tabText: { fontSize: 12, color: staticTheme.colors.textBody, fontWeight: '600' },
+    tabText: { fontSize: 12, color: theme.colors.textBody, fontWeight: '600' },
     tabTextActive: { color: '#fff' },
     scrollArea: { flex: 1, paddingHorizontal: 20 },
     emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
-    emptyText: { color: staticTheme.colors.textBody, fontSize: 15, marginTop: 16 },
+    emptyText: { color: theme.colors.textBody, fontSize: 15, marginTop: 16 },
     fileCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'transparent', paddingVertical: 12, paddingHorizontal: 0, marginBottom: 4 },
     fileCardSelected: { backgroundColor: 'rgba(75, 110, 245, 0.1)', borderRadius: 16, paddingHorizontal: 16 },
     fileDetails: { flex: 1 },
-    fileName: { fontSize: 16, color: staticTheme.colors.textHeading, fontWeight: '600', marginBottom: 3 },
-    fileMeta: { fontSize: 13, color: staticTheme.colors.textBody },
+    fileName: { fontSize: 16, color: theme.colors.textHeading, fontWeight: '600', marginBottom: 3 },
+    fileMeta: { fontSize: 13, color: theme.colors.textBody },
     moreBtn: { padding: 8, justifyContent: 'center', alignItems: 'center' },
     gridContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 12 },
-    gridCard: { width: GRID_SIZE, borderRadius: 16, backgroundColor: '#fff', overflow: 'hidden', ...staticTheme.shadows.card },
+    gridCard: { width: GRID_SIZE, borderRadius: 16, backgroundColor: theme.colors.card, overflow: 'hidden', ...theme.shadows.card },
     gridIcon: { width: '100%', height: GRID_SIZE * 0.75, justifyContent: 'center', alignItems: 'center' },
     gridLabel: { padding: 8 },
-    gridName: { fontSize: 12, fontWeight: '600', color: staticTheme.colors.textHeading },
+    gridName: { fontSize: 12, fontWeight: '600', color: theme.colors.textHeading },
     gridCheckbox: { position: 'absolute', top: 8, right: 8, width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#fff', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.3)' },
-    fab: { position: 'absolute', bottom: 40, right: 24, width: 64, height: 64, borderRadius: 32, backgroundColor: staticTheme.colors.primary, justifyContent: 'center', alignItems: 'center', ...staticTheme.shadows.soft, elevation: 10, zIndex: 10 },
+    fab: { position: 'absolute', bottom: 40, right: 24, width: 64, height: 64, borderRadius: 32, backgroundColor: theme.colors.primary, justifyContent: 'center', alignItems: 'center', ...theme.shadows.soft, elevation: 10, zIndex: 10 },
     centeredModal: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
-    modalCard: { width: '100%', backgroundColor: '#fff', borderRadius: 24, padding: 24, ...staticTheme.shadows.card },
-    modalTitle: { fontSize: 20, fontWeight: '700', color: staticTheme.colors.textHeading, marginBottom: 16 },
-    modalSub: { fontSize: 14, color: staticTheme.colors.textBody, marginBottom: 20 },
-    modalInput: { width: '100%', height: 50, borderWidth: 1.5, borderColor: staticTheme.colors.border, borderRadius: 12, paddingHorizontal: 16, fontSize: 16, marginBottom: 20, color: staticTheme.colors.textHeading },
+    modalCard: { width: '100%', backgroundColor: theme.colors.card, borderRadius: 24, padding: 24, ...theme.shadows.card },
+    modalTitle: { fontSize: 20, fontWeight: '700', color: theme.colors.textHeading, marginBottom: 16 },
+    modalSub: { fontSize: 14, color: theme.colors.textBody, marginBottom: 20 },
+    modalInput: { width: '100%', height: 50, borderWidth: 1.5, borderColor: theme.colors.border, borderRadius: 12, paddingHorizontal: 16, fontSize: 16, marginBottom: 20, color: theme.colors.textHeading },
     modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12 },
-    modalBtn: { paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12, backgroundColor: '#f1f5f9' },
-    modalBtnText: { color: staticTheme.colors.textHeading, fontWeight: '600', fontSize: 14 },
-    searchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f8fafc', borderRadius: 12, paddingHorizontal: 12, height: 44, borderWidth: 1, borderColor: '#e2e8f0' },
-    searchInput: { flex: 1, marginLeft: 10, fontSize: 15, color: staticTheme.colors.textHeading },
+    modalBtn: { paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12, backgroundColor: theme.colors.background },
+    modalBtnText: { color: theme.colors.textHeading, fontWeight: '600', fontSize: 14 },
+    searchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: theme.colors.background, borderRadius: 12, paddingHorizontal: 12, height: 44, borderWidth: 1, borderColor: theme.colors.border },
+    searchInput: { flex: 1, marginLeft: 10, fontSize: 15, color: theme.colors.textHeading },
     optionItem: {
         flexDirection: 'row', alignItems: 'center', gap: 16,
         paddingVertical: 14, paddingHorizontal: 16,
-        borderRadius: 16, backgroundColor: '#f8fafc', marginBottom: 8
+        borderRadius: 16, backgroundColor: theme.colors.background, marginBottom: 8
     },
-    optionText: { fontSize: 16, fontWeight: '600', color: staticTheme.colors.textHeading },
+    optionText: { fontSize: 16, fontWeight: '600', color: theme.colors.textHeading },
 });
 

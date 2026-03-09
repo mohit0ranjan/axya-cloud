@@ -31,6 +31,9 @@ export interface ShareItemV2Row {
     telegram_message_id: string | number;
     telegram_file_id: string | null;
     position_index: number;
+    pointer_health?: 'healthy' | 'stale' | 'missing' | 'recovered' | null;
+    cache_state?: 'hot' | 'warm' | 'miss';
+    segment_mode_enabled?: boolean;
     created_at: string | Date;
 }
 

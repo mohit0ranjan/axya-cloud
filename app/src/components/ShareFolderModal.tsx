@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
     View, Text, StyleSheet, Modal, TouchableOpacity,
-    KeyboardAvoidingView, Platform, Switch, ActivityIndicator, Alert, TextInput
+    KeyboardAvoidingView, Platform, Switch, ActivityIndicator, Alert, TextInput, Keyboard
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { X, Copy, Link as LinkIcon } from 'lucide-react-native';
-import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
 import { createShareLink } from '../services/api';
 import { normalizeExternalShareUrl } from '../utils/shareUrls';
@@ -46,34 +45,38 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
     const [password, setPassword] = useState('');
     const wasVisibleRef = useRef(false);
 
-    // Keep a stable target while the modal is open to avoid flicker from parent re-renders.
+    // Reset and snapshot target only on visibility transitions to avoid churn/flicker.
     useEffect(() => {
-        if (visible && targetItem) {
+        const justOpened = visible && !wasVisibleRef.current;
+        const justClosed = !visible && wasVisibleRef.current;
+        wasVisibleRef.current = visible;
+
+        if (justOpened) {
+            setActiveTarget(targetItem || null);
+            setIsLoading(false);
+            setGeneratedLink('');
+            setAllowDownload(true);
+            setExpiryHours(null);
+            setEnablePassword(false);
+            setPassword('');
+            return;
+        }
+
+        // In case the modal opens before target arrives, hydrate once without resetting state.
+        if (visible && !activeTarget && targetItem) {
             setActiveTarget(targetItem);
             return;
         }
-        if (!visible) {
+
+        if (justClosed) {
             const t = setTimeout(() => setActiveTarget(null), 220);
             return () => clearTimeout(t);
         }
-    }, [targetItem, visible]);
-
-    // Reset only on closed -> open transition to avoid state churn on parent re-renders.
-    useEffect(() => {
-        const justOpened = visible && !wasVisibleRef.current;
-        wasVisibleRef.current = visible;
-        if (!justOpened) return;
-
-        setIsLoading(false);
-        setGeneratedLink('');
-        setAllowDownload(true);
-        setExpiryHours(null);
-        setEnablePassword(false);
-        setPassword('');
-    }, [visible]);
+    }, [visible, targetItem, activeTarget]);
 
     const handleGenerate = async () => {
         if (!activeTarget) return;
+        Keyboard.dismiss();
         setIsLoading(true);
         try {
             const isFolder = isFolderTarget(activeTarget);
@@ -131,15 +134,15 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
             animationType="slide"
             onRequestClose={onClose}
             statusBarTranslucent
-            hardwareAccelerated
+            presentationStyle="overFullScreen"
         >
             <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
                 style={styles.overlay}
             >
                 <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={onClose} />
 
-                <View style={[styles.sheet, { backgroundColor: theme.colors.card }]}>
+                <View style={[styles.sheet, { backgroundColor: theme.colors.card }, theme.shadows.card]}>
                     <View style={styles.dragHandle} />
 
                     <View style={styles.header}>
@@ -151,7 +154,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
                         </TouchableOpacity>
                     </View>
 
-                    <Text style={styles.description}>
+                    <Text style={[styles.description, { color: theme.colors.textBody }]}>
                         Create a secure public link to share this {activeTarget.type === 'folder' || activeTarget.result_type === 'folder' || activeTarget.mime_type === 'inode/directory' ? 'folder' : 'file'}.
                     </Text>
 
@@ -175,7 +178,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
                             <View style={styles.settingRow}>
                                 <View style={styles.settingText}>
                                     <Text style={[styles.settingTitle, { color: theme.colors.textHeading }]}>Allow Downloads</Text>
-                                    <Text style={styles.settingSub}>Visitors can download contents</Text>
+                                    <Text style={[styles.settingSub, { color: theme.colors.textBody }]}>Visitors can download contents</Text>
                                 </View>
                                 <Switch
                                     value={allowDownload}
@@ -188,7 +191,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
                             <View style={[styles.settingRow, { marginTop: 16 }]}>
                                 <View style={styles.settingText}>
                                     <Text style={[styles.settingTitle, { color: theme.colors.textHeading }]}>Link Expiry</Text>
-                                    <Text style={styles.settingSub}>Automatically revoke access</Text>
+                                    <Text style={[styles.settingSub, { color: theme.colors.textBody }]}>Automatically revoke access</Text>
                                 </View>
                             </View>
                             <View style={styles.pillContainer}>
@@ -221,7 +224,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
                             <View style={[styles.settingRow, { marginTop: 16 }]}>
                                 <View style={styles.settingText}>
                                     <Text style={[styles.settingTitle, { color: theme.colors.textHeading }]}>Password Protect</Text>
-                                    <Text style={styles.settingSub}>Require password before opening link</Text>
+                                    <Text style={[styles.settingSub, { color: theme.colors.textBody }]}>Require password before opening link</Text>
                                 </View>
                                 <Switch
                                     value={enablePassword}
@@ -287,7 +290,6 @@ const styles = StyleSheet.create({
         borderTopRightRadius: 24,
         padding: 24,
         paddingBottom: Platform.OS === 'ios' ? 40 : 24,
-        ...staticTheme.shadows.card,
     },
     dragHandle: {
         width: 40,
@@ -384,7 +386,6 @@ const styles = StyleSheet.create({
         fontWeight: '500',
     },
     copyBtn: {
-        backgroundColor: staticTheme.colors.primary,
         padding: 10,
         borderRadius: 10,
     }

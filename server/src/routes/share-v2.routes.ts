@@ -5,6 +5,7 @@ import {
     createShareV2,
     deleteShareV2,
     downloadAllShareZipV2,
+    getShareDetailsV2,
     getShareZipJobV2,
     getPublicShareMetaV2,
     listPublicShareItemsV2,
@@ -13,14 +14,23 @@ import {
     patchShareV2,
     streamShareItemV2,
 } from '../controllers/share-v2.controller';
+import {
+    enableFileSegmentMirror,
+    getTelegramHealth,
+    healTelegramPointers,
+} from '../controllers/maintenance.controller';
 
 const router = express.Router();
 
 // Owner APIs (authenticated)
 router.post('/shares', requireAuth, createShareV2);
 router.get('/shares', requireAuth, listSharesV2);
+router.get('/shares/:id', requireAuth, getShareDetailsV2);
 router.patch('/shares/:id', requireAuth, patchShareV2);
 router.delete('/shares/:id', requireAuth, deleteShareV2);
+router.post('/maintenance/heal-pointers', requireAuth, healTelegramPointers);
+router.get('/maintenance/telegram-health', requireAuth, getTelegramHealth);
+router.post('/files/:id/segment-mirror', requireAuth, enableFileSegmentMirror);
 
 // Public APIs
 router.post('/public/shares/:slug/open', openPublicShareV2);

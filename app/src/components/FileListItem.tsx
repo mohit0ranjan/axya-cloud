@@ -1,11 +1,11 @@
-import React, { memo } from 'react';
+﻿import React, { memo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image as RNImage } from 'react-native';
-import { Folder, Star, FileText, Image as ImageIcon, Film, Music, Archive, LucideIcon } from 'lucide-react-native';
+import { Folder, Star, FileText, Image as ImageIcon, Film, Music, Archive } from 'lucide-react-native';
 import { lightTheme } from '../context/ThemeContext';
+import { formatFolderMeta } from '../utils/folderMeta';
 
 type Theme = typeof lightTheme;
 
-// ── Types ──────────────────────────────────────────────────────────────────────
 export interface FileItem {
     id: string;
     name?: string;
@@ -15,7 +15,6 @@ export interface FileItem {
     created_at?: string;
     is_starred?: boolean;
     result_type?: string;
-    // Folder metadata fields
     file_count?: number;
     total_file_count?: number;
     folder_count?: number;
@@ -30,43 +29,37 @@ interface FileListItemProps {
     onPress: (item: FileItem, isFolder: boolean) => void;
 }
 
-// ── Helper: file icon config ──────────────────────────────────────────────────
-const getIconConfig = (mime: string, primary: string, purple: string, success: string) => {
-    // Helper to get icon config based on mime type
-    
-    if (!mime) return { Icon: FileText, color: primary, bg: '#EEF1FD' };
-    if (mime.includes('image')) return { Icon: ImageIcon, color: '#F59E0B', bg: '#FEF3C7' };
-    if (mime.includes('video')) return { Icon: Film, color: purple, bg: '#F3E8FF' };
-    if (mime.includes('audio')) return { Icon: Music, color: success, bg: '#DCFCE7' };
-    if (mime.includes('pdf')) return { Icon: FileText, color: '#EF4444', bg: '#FEE2E2' };
-    if (mime.includes('zip') || mime.includes('compress')) return { Icon: Archive, color: '#F97316', bg: '#FFEDD5' };
-    return { Icon: FileText, color: primary, bg: '#EEF1FD' };
+const getIconConfig = (mime: string, C: {
+    primary: string;
+    warning: string;
+    purple: string;
+    success: string;
+    danger: string;
+    orange: string;
+    softPrimary: string;
+    softWarning: string;
+    softPurple: string;
+    softSuccess: string;
+    softDanger: string;
+    softOrange: string;
+}) => {
+    if (!mime) return { Icon: FileText, color: C.primary, bg: C.softPrimary };
+    if (mime.includes('image')) return { Icon: ImageIcon, color: C.warning, bg: C.softWarning };
+    if (mime.includes('video')) return { Icon: Film, color: C.purple, bg: C.softPurple };
+    if (mime.includes('audio')) return { Icon: Music, color: C.success, bg: C.softSuccess };
+    if (mime.includes('pdf')) return { Icon: FileText, color: C.danger, bg: C.softDanger };
+    if (mime.includes('zip') || mime.includes('compress')) return { Icon: Archive, color: C.orange, bg: C.softOrange };
+    return { Icon: FileText, color: C.primary, bg: C.softPrimary };
 };
 
-// ── Helper: format size ───────────────────────────────────────────────────────
 const formatSize = (bytes?: number) => {
     if (!bytes) return '0 B';
-    const k = 1024, s = ['B', 'KB', 'MB', 'GB'];
+    const k = 1024;
+    const s = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + s[i];
 };
 
-// ── Helper: format folder info ───────────────────────────────────────────────
-const formatFolderInfo = (item: FileItem) => {
-    const totalFiles = item.total_file_count ?? item.file_count ?? 0;
-    const subfolders = item.folder_count ?? 0;
-    
-    if (subfolders > 0 && totalFiles > 0) {
-        return `${totalFiles} files · ${subfolders} subfolders`;
-    } else if (subfolders > 0) {
-        return `${subfolders} subfolder${subfolders > 1 ? 's' : ''}`;
-    } else if (totalFiles > 0) {
-        return `${totalFiles} file${totalFiles > 1 ? 's' : ''}`;
-    }
-    return 'Empty folder';
-};
-
-// ── Helper: format date ───────────────────────────────────────────────────────
 const formatDate = (d?: string) => {
     if (!d) return '';
     const date = new Date(d);
@@ -78,7 +71,6 @@ const formatDate = (d?: string) => {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
-// ── Styles ────────────────────────────────────────────────────────────────────
 const createStyles = (theme: Theme) => StyleSheet.create({
     fileRow: {
         flexDirection: 'row',
@@ -109,7 +101,6 @@ const createStyles = (theme: Theme) => StyleSheet.create({
     },
 });
 
-// ── Component ──────────────────────────────────────────────────────────────────
 const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress }: FileListItemProps) => {
     const styles = React.useMemo(() => createStyles(theme), [theme]);
     const C = {
@@ -120,12 +111,21 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress }: FileL
         accent: theme.colors.accent,
         purple: isDark ? '#A855F7' : '#9B59B6',
         success: theme.colors.success,
+        warning: '#F59E0B',
+        danger: theme.colors.danger,
+        orange: '#F97316',
+        softPrimary: isDark ? 'rgba(88,117,255,0.18)' : '#EEF1FD',
+        softWarning: isDark ? 'rgba(245,158,11,0.18)' : '#FEF3C7',
+        softPurple: isDark ? 'rgba(168,85,247,0.18)' : '#F3E8FF',
+        softSuccess: isDark ? 'rgba(16,185,129,0.18)' : '#DCFCE7',
+        softDanger: isDark ? 'rgba(239,68,68,0.18)' : '#FEE2E2',
+        softOrange: isDark ? 'rgba(249,115,22,0.18)' : '#FFEDD5',
     };
 
     const isFolder = item.mime_type === 'inode/directory' || item.result_type === 'folder';
     const cfg = isFolder
-        ? { Icon: Folder, color: C.primary, bg: '#EEF1FD' }
-        : getIconConfig(item.mime_type || '', C.primary, C.purple, C.success);
+        ? { Icon: Folder, color: C.primary, bg: C.softPrimary }
+        : getIconConfig(item.mime_type || '', C);
     const { Icon, color, bg } = cfg;
 
     const handlePress = () => {
@@ -157,10 +157,9 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress }: FileL
                     {item.name || item.file_name}
                 </Text>
                 <Text style={[styles.fileMeta, { color: C.muted }]}>
-                    {isFolder ? formatFolderInfo(item) : [
-                        formatSize(item.size),
-                        formatDate(item.created_at),
-                    ].filter(Boolean).join(' · ')}
+                    {isFolder
+                        ? formatFolderMeta(item)
+                        : [formatSize(item.size), formatDate(item.created_at)].filter(Boolean).join(' · ')}
                 </Text>
             </View>
             {item.is_starred && (
@@ -170,8 +169,6 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress }: FileL
     );
 };
 
-// ── Custom comparison for React.memo ───────────────────────────────────────────
-// Only re-render if item data actually changed
 function arePropsEqual(prev: FileListItemProps, next: FileListItemProps): boolean {
     return (
         prev.item.id === next.item.id &&
@@ -180,6 +177,9 @@ function arePropsEqual(prev: FileListItemProps, next: FileListItemProps): boolea
         prev.item.file_name === next.item.file_name &&
         prev.item.size === next.item.size &&
         prev.item.mime_type === next.item.mime_type &&
+        prev.item.file_count === next.item.file_count &&
+        prev.item.total_file_count === next.item.total_file_count &&
+        prev.item.folder_count === next.item.folder_count &&
         prev.theme === next.theme &&
         prev.isDark === next.isDark &&
         prev.token === next.token
@@ -187,3 +187,4 @@ function arePropsEqual(prev: FileListItemProps, next: FileListItemProps): boolea
 }
 
 export default memo(FileListItem, arePropsEqual);
+

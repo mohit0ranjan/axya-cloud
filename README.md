@@ -100,48 +100,14 @@ Telegram acts as the **actual storage engine**, while ANYX manages structure and
 
 ---
 
+
+
 # 🌟 Features
 
-## 📂 File Management
+| 📂 File Management | 🎥 Media Preview | ⬆️ Upload Engine | 📊 User Dashboard | 🎨 Modern UX |
+|--------------------|------------------|------------------|------------------|--------------|
+| • Create/manage folders <br> • Rename, move, delete files <br> • Sort by name, size, date <br> • Breadcrumb navigation | • Image gallery with zoom <br> • Built-in video player <br> • Progressive media loading | • Background uploads <br> • Pause/resume support <br> • Auto retry on failure <br> • Upload speed & stats | • Storage usage overview <br> • File statistics <br> • Account settings | • Smooth animations (Reanimated) <br> • Dark mode support <br> • Mobile optimized layout <br> • Responsive UI |
 
-• Create and manage folders
-• Rename, move, and delete files
-• Sort files by name, size, or date
-• Breadcrumb navigation
-
----
-
-## 🎥 Media Preview
-
-• Image gallery with zoom support
-• Built-in video player
-• Progressive media loading
-
----
-
-## ⬆️ Upload Engine
-
-• Background uploads
-• Pause and resume support
-• Auto retry on connection failure
-• Upload speed and progress stats
-
----
-
-## 📊 User Dashboard
-
-• Storage usage overview
-• File statistics
-• Account settings
-
----
-
-## 🎨 Modern UX
-
-• Smooth animations using Reanimated
-• Dark mode support
-• Mobile optimized layout
-• Responsive UI
 
 ---
 
@@ -196,15 +162,14 @@ Example backend endpoints.
 
 ### Authentication
 
-```
 POST /auth/register
 POST /auth/login
 GET /auth/me
-```
+
 
 ### Files
 
-```
+
 GET /files
 POST /files/upload
 DELETE /files/:id

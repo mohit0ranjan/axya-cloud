@@ -1,14 +1,15 @@
-﻿import { Fragment, useState, useEffect, useContext, useCallback, useRef, useMemo } from 'react';
+import { Fragment, useState, useEffect, useContext, useCallback, useRef, useMemo } from 'react';
 import {
     View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet,
     SafeAreaView, RefreshControl, Platform, Modal, KeyboardAvoidingView,
     Dimensions, Animated, Easing, Image as RNImage,
 } from 'react-native';
 import {
-    Search, Folder, Upload, HardDrive, Star,
-    Trash2, User, X, FileText,
-    MoreHorizontal, ChevronRight, Activity,
+    Search, Folder, Upload, HardDrive,
+    User, X, FileText,
+    MoreHorizontal
 } from 'lucide-react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { showActionSheet, showDestructiveConfirm } from '../utils/alert';
 
 
@@ -25,7 +26,6 @@ import { useTheme } from '../context/ThemeContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 
-import AxyaLogo from '../components/AxyaLogo';
 import FileListItem from '../components/FileListItem';
 import { useServerKeepAlive } from '../hooks/useServerKeepAlive';
 import AppButton from '../components/AppButton';
@@ -34,7 +34,6 @@ import { formatFolderMeta } from '../utils/folderMeta';
 
 const { width } = Dimensions.get('window');
 const HOME_RECENT_FILES_PREVIEW_LIMIT = 3;
-const HOME_ACTIVITY_PREVIEW_LIMIT = 3;
 const HOME_TOTAL_FOLDER_CARDS_LIMIT = 4; // includes "All Files" card
 const HOME_USER_FOLDER_PREVIEW_LIMIT = Math.max(0, HOME_TOTAL_FOLDER_CARDS_LIMIT - 1);
 const HOME_PINNED_FOLDERS_KEY = '@home_pinned_folder_ids_v1';
@@ -59,7 +58,6 @@ const formatDate = (d: string) => {
 
 const asArray = <T,>(value: any): T[] => (Array.isArray(value) ? value : []);
 
-// -- Styles factory (receives theme for dynamic colors) -------------------------
 const createStyles = (C: Record<string, string>) => StyleSheet.create({
     root: { flex: 1, backgroundColor: C.bg },
 
@@ -68,72 +66,88 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
         flexDirection: 'row', alignItems: 'center',
         paddingHorizontal: 20,
         paddingTop: 16,
-        paddingBottom: 16,
+        paddingBottom: 20,
         backgroundColor: C.bg,
     },
-    avatar: {
-        width: 46, height: 46, borderRadius: 23, backgroundColor: C.primary,
-        justifyContent: 'center', alignItems: 'center',
-        shadowColor: C.primary, shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3, shadowRadius: 8, elevation: 6,
+    cloudIconContainer: {
+        width: 44, height: 44, borderRadius: 12, backgroundColor: C.primarySoft,
+        justifyContent: 'center', alignItems: 'center', marginRight: 12,
+        shadowColor: C.primary, shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.15, shadowRadius: 6, elevation: 4,
     },
-    greeting: { fontSize: 18, fontWeight: '600', color: C.text },
-    subGreeting: { fontSize: 13, color: C.muted, marginTop: 2 },
+    greeting: { fontSize: 20, fontWeight: '700', color: C.text, letterSpacing: -0.5 },
+    subGreeting: { fontSize: 13, color: C.muted, marginTop: 2, fontWeight: '500' },
     headerIconBtn: {
-        width: 46, height: 46, borderRadius: 23, backgroundColor: C.card,
+        width: 44, height: 44, borderRadius: 22, backgroundColor: C.card,
         justifyContent: 'center', alignItems: 'center',
-        shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.07, shadowRadius: 8, elevation: 3,
+        shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.05, shadowRadius: 10, elevation: 4,
+    },
+    avatar: {
+        width: 44, height: 44, borderRadius: 22, backgroundColor: '#5B7CFF',
+        justifyContent: 'center', alignItems: 'center',
+        shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.05, shadowRadius: 10, elevation: 4,
     },
     searchBar: {
         flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10,
-        backgroundColor: C.card, borderRadius: 23, paddingHorizontal: 16, height: 48,
+        backgroundColor: C.card, borderRadius: 24, paddingHorizontal: 16, height: 48,
         shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.07, shadowRadius: 8, elevation: 3,
+        shadowOpacity: 0.03, shadowRadius: 6, elevation: 2,
     },
     searchInput: { flex: 1, fontSize: 15, color: C.text },
 
     scrollContent: { paddingTop: 4, paddingBottom: 20 },
 
-    /* Storage Card */
-    storageCard: {
+    /* Storage Card (Premium Gradient Hero) */
+    storageCardContainer: {
         marginHorizontal: 20,
-        borderRadius: 24,
-        backgroundColor: C.primary,
-        padding: 22,
+        borderRadius: 32,
         marginTop: 4,
-        overflow: 'hidden',
-        marginBottom: 20,
-        shadowColor: C.primary,
+        marginBottom: 24,
+        shadowColor: '#6366F1',
         shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 0.4,
+        shadowOpacity: 0.25,
         shadowRadius: 20,
-        elevation: 12,
+        elevation: 14,
+    },
+    storageCard: {
+        borderRadius: 32,
+        paddingTop: 28,
+        paddingBottom: 28,
+        paddingHorizontal: 28,
+        overflow: 'hidden',
     },
     meshBlob1: {
-        position: 'absolute', top: -50, right: -40, width: 160, height: 160,
-        borderRadius: 80, backgroundColor: 'rgba(255,255,255,0.15)',
+        position: 'absolute', top: -30, right: -30, width: 140, height: 140,
+        borderRadius: 70, backgroundColor: 'rgba(255,255,255,0.1)',
     },
     meshBlob2: {
-        position: 'absolute', bottom: -60, left: -30, width: 180, height: 180,
-        borderRadius: 90, backgroundColor: 'rgba(255,255,255,0.08)',
+        position: 'absolute', bottom: -50, left: -50, width: 220, height: 220,
+        borderRadius: 110, backgroundColor: 'rgba(255,255,255,0.05)',
     },
-    storageTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 24 },
-    storageIconBox: {},
-    storageTitle: { fontSize: 18, fontWeight: '600', color: '#fff' },
-    storageSubtitle: { color: '#fff', fontSize: 13, opacity: 0.7, marginTop: 2 },
-    storageSizeRow: { flexDirection: 'row', alignItems: 'baseline', marginTop: 14, gap: 4, marginBottom: 14 },
-    storageGBLabel: { color: '#fff', fontSize: 13, fontWeight: '600', marginLeft: 2, marginRight: 8, opacity: 0.8 },
-    storageBig: { fontSize: 34, fontWeight: '700', color: '#fff', letterSpacing: -0.5 },
-    storageOf: { fontSize: 28, color: 'rgba(255,255,255,0.6)', marginLeft: 6, fontWeight: '500' },
+    storageTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 },
+    storageTitle: { fontSize: 16, fontWeight: '600', color: '#fff' },
+    storageSubtitle: { color: 'rgba(255,255,255,0.8)', fontSize: 12, marginTop: 4, fontWeight: '300' },
+    storageIconWrapper: {
+        width: 44, height: 44, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.2)',
+        justifyContent: 'center', alignItems: 'center',
+    },
+    storageSizeRow: { flexDirection: 'row', alignItems: 'baseline', marginBottom: 20 },
+    storageBig: { fontSize: 36, fontWeight: '700', color: '#fff', letterSpacing: -1 },
+    storageGBLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 16, fontWeight: '600', marginLeft: 6 },
+    storageOf: { color: '#fff', fontSize: 32, fontWeight: '400', marginLeft: 8 },
     progressTrack: {
-        height: 6, backgroundColor: 'rgba(255,255,255,0.25)', borderRadius: 3, marginBottom: 16,
+        height: 6, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 3, marginBottom: 24,
     },
-    progressFill: { height: 6, backgroundColor: C.accent, borderRadius: 3 },
-    storageStats: { flexDirection: 'row', gap: 20 },
-    storageStat: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-    statDot: { width: 8, height: 8, borderRadius: 4 },
-    statStatText: { color: 'rgba(255,255,255,0.85)', fontSize: 13, fontWeight: '500' },
+    progressFillWrap: { height: 6, borderRadius: 3, overflow: 'hidden' },
+    progressFill: { flex: 1, backgroundColor: '#4ADE80' },
+    storagePillsRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
+    storagePill: {
+        flexDirection: 'row', alignItems: 'center', gap: 6,
+    },
+    storagePillDot: { width: 8, height: 8, borderRadius: 4 },
+    storagePillText: { color: 'rgba(255,255,255,0.9)', fontSize: 11, fontWeight: '600', textTransform: 'uppercase' },
 
     /* Section headers */
     sectionRow: {
@@ -141,62 +155,55 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
         paddingHorizontal: 20,
         marginBottom: 16,
     },
-    sectionLabel: { fontSize: 12, fontWeight: '600', color: C.muted, letterSpacing: 1.2 },
-    seeAllBtn: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-    seeAllText: { fontSize: 13, fontWeight: '600', color: C.primary },
+    sectionLabel: { fontSize: 12, fontWeight: '700', color: C.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
+    seeAllBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+    seeAllText: { fontSize: 12, fontWeight: '600', color: C.muted },
 
-    /* Folders - 2 column GRID */
+    /* Folders - Modern Glass Cards */
     folderGrid: {
-        flexDirection: 'row', flexWrap: 'wrap', gap: 14,
-        paddingHorizontal: 20, marginBottom: 28,
+        flexDirection: 'row', flexWrap: 'wrap', gap: 16,
+        paddingHorizontal: 20, marginBottom: 32,
     },
     folderGridCard: {
-        width: '47%', borderRadius: 16, padding: 18,
-        minHeight: 138,
+        width: '47%', borderRadius: 24, padding: 20,
+        minHeight: 140,
         justifyContent: 'space-between',
-        shadowColor: '#96A0B5', shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.09, shadowRadius: 12, elevation: 3,
+        backgroundColor: C.card,
+        shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.05, shadowRadius: 10, elevation: 2,
     },
     folderGridTop: {
-        flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start',
-        marginBottom: 'auto' as any,
+        flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     },
-    folderGridName: { fontSize: 14, fontWeight: '600', marginBottom: 4, marginTop: 12 },
-    folderGridMeta: { fontSize: 12, color: C.muted, fontWeight: '500' },
-    folderAddCard: {
-        backgroundColor: C.card, borderWidth: 1.5, borderColor: C.border,
-        borderStyle: 'dashed', elevation: 0, shadowOpacity: 0,
-        alignItems: 'center', justifyContent: 'center',
+    folderIconBox: {
+        width: 44, height: 44, borderRadius: 14,
+        justifyContent: 'center', alignItems: 'center', backgroundColor: C.bg,
     },
-    folderAddIcon: {
-        width: 48, height: 48, borderRadius: 14,
-        backgroundColor: C.primarySoft, justifyContent: 'center', alignItems: 'center',
-        marginBottom: 10,
-    },
-
+    folderGridName: { fontSize: 16, fontWeight: '600', marginBottom: 4, marginTop: 16, color: C.text, letterSpacing: -0.2 },
+    folderGridMeta: { fontSize: 12, color: C.muted, fontWeight: '300' },
+    
     emptyFolder: {
-        marginHorizontal: 20, height: 64, backgroundColor: C.card, borderRadius: 16,
+        marginHorizontal: 20, height: 80, backgroundColor: C.card, borderRadius: 24,
         flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
-        borderWidth: 1.5, borderColor: C.border, borderStyle: 'dashed', marginBottom: 8,
+        borderWidth: 1.5, borderColor: C.border, borderStyle: 'dashed', marginBottom: 20,
     },
     emptyFolderText: { fontSize: 14, fontWeight: '600', color: C.primary },
 
     /* File list */
-    fileList: { paddingHorizontal: 20, gap: 4 },
+    fileList: { paddingHorizontal: 0, gap: 8, paddingBottom: 48 },
     fileRow: {
         flexDirection: 'row', alignItems: 'center', backgroundColor: C.card,
-        paddingVertical: 14, paddingHorizontal: 16, borderRadius: 18,
-        marginBottom: 10,
-        shadowColor: '#96A0B5', shadowOffset: { width: 0, height: 3 },
-        shadowOpacity: 0.08, shadowRadius: 10, elevation: 2,
+        paddingVertical: 14, paddingHorizontal: 16, borderRadius: 20,
+        shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.04, shadowRadius: 10, elevation: 2,
     },
     fileIcon: {
-        width: 46, height: 46, borderRadius: 14,
+        width: 44, height: 44, borderRadius: 14,
         justifyContent: 'center', alignItems: 'center',
     },
     fileInfo: { flex: 1, marginHorizontal: 14 },
     fileName: { fontSize: 14, fontWeight: '600', color: C.text, marginBottom: 4 },
-    fileMeta: { fontSize: 12, color: C.muted, fontWeight: '500' },
+    fileMeta: { fontSize: 12, color: C.muted, fontWeight: '300' },
 
     /* Empty state */
     emptyFiles: { alignItems: 'center', paddingTop: 40, paddingBottom: 32 },
@@ -204,7 +211,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
         width: 76, height: 76, borderRadius: 24,
         backgroundColor: C.card, justifyContent: 'center', alignItems: 'center',
         marginBottom: 18,
-        shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 12, elevation: 3,
+        shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 10, elevation: 2,
     },
     emptyTitle: { fontSize: 17, fontWeight: '600', color: C.text, marginBottom: 8 },
     emptyBody: { fontSize: 14, color: C.muted, textAlign: 'center', lineHeight: 20 },
@@ -213,26 +220,26 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     navBar: {
         position: 'absolute', bottom: 0, left: 0, right: 0,
         height: 86,
-        backgroundColor: C.card,
+        backgroundColor: '#FFFFFF',
         flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around',
         paddingBottom: 14,
         paddingHorizontal: 8,
-        borderTopWidth: 1, borderTopColor: C.border,
+        borderTopWidth: 1, borderTopColor: '#F1F5F9',
         shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
-        shadowOpacity: 0.06, shadowRadius: 12, elevation: 12,
+        shadowOpacity: 0.04, shadowRadius: 16, elevation: 12,
     },
     navItem: { alignItems: 'center', gap: 5, flex: 1 },
-    navLabel: { fontSize: 11, fontWeight: '600', color: C.muted },
+    navLabel: { fontSize: 11, fontWeight: '600', color: '#64748B' },
     fab: {
-        width: 60, height: 60, borderRadius: 30, backgroundColor: C.primary,
+        width: 56, height: 56, borderRadius: 28, backgroundColor: '#5B7CFF',
         justifyContent: 'center', alignItems: 'center',
-        shadowColor: C.primary, shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.45, shadowRadius: 14, elevation: 10,
+        shadowColor: '#5B7CFF', shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.4, shadowRadius: 12, elevation: 10,
         marginTop: -20,
     },
 
     /* Modals / Sheets */
-    overlay: { flex: 1, backgroundColor: 'rgba(10,10,30,0.45)', justifyContent: 'flex-end' },
+    overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
     sheet: {
         backgroundColor: C.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
         padding: 28, paddingBottom: 48,
@@ -241,40 +248,40 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
         width: 40, height: 4, backgroundColor: C.border,
         borderRadius: 2, alignSelf: 'center', marginBottom: 24,
     },
-    sheetTitle: { fontSize: 20, fontWeight: '600', color: C.text, marginBottom: 24 },
+    sheetTitle: { fontSize: 20, fontWeight: '700', color: C.text, marginBottom: 24 },
     sheetRow: {
         flexDirection: 'row', alignItems: 'center', gap: 16,
         paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: C.border,
     },
-    sheetRowIcon: { width: 48, height: 48, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
+    sheetRowIcon: { width: 48, height: 48, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
     sheetRowTitle: { fontSize: 16, fontWeight: '600', color: C.text, marginBottom: 2 },
-    sheetRowSub: { fontSize: 12, color: C.muted },
+    sheetRowSub: { fontSize: 13, color: C.muted },
 
     centeredOverlay: {
-        flex: 1, backgroundColor: 'rgba(10,10,30,0.45)',
+        flex: 1, backgroundColor: 'rgba(0,0,0,0.4)',
         justifyContent: 'center', alignItems: 'center', padding: 24,
     },
     modalCard: {
-        width: '100%', backgroundColor: C.card, borderRadius: 24, padding: 24,
+        width: '100%', backgroundColor: C.card, borderRadius: 28, padding: 24,
         shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 24, elevation: 16,
     },
-    modalTitle: { fontSize: 20, fontWeight: '600', color: C.text, marginBottom: 16 },
+    modalTitle: { fontSize: 20, fontWeight: '700', color: C.text, marginBottom: 16 },
     filePill: {
         flexDirection: 'row', alignItems: 'center', gap: 10,
-        backgroundColor: C.primarySoft, borderRadius: 12, paddingHorizontal: 14,
-        paddingVertical: 10, marginBottom: 20,
+        backgroundColor: C.primarySoft, borderRadius: 16, paddingHorizontal: 16,
+        paddingVertical: 12, marginBottom: 20,
     },
     filePillText: { flex: 1, fontSize: 14, fontWeight: '600', color: C.primary },
-    modalLabel: { fontSize: 12, fontWeight: '600', color: C.muted, marginBottom: 8, letterSpacing: 0.5 },
+    modalLabel: { fontSize: 13, fontWeight: '600', color: C.muted, marginBottom: 8 },
     modalInput: {
-        borderWidth: 1.5, borderColor: C.border, borderRadius: 14,
+        borderWidth: 1.5, borderColor: C.border, borderRadius: 16,
         paddingHorizontal: 16, height: 50, fontSize: 15, color: C.text, marginBottom: 24,
-        backgroundColor: C.bg,
+        backgroundColor: C.inputBg,
     },
     folderChip: {
         paddingHorizontal: 16,
         paddingVertical: 10,
-        backgroundColor: C.bg,
+        backgroundColor: C.inputBg,
         borderWidth: 1.5,
         borderColor: C.border,
         borderRadius: 20,
@@ -294,7 +301,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     },
     modalBtns: { flexDirection: 'row', gap: 12, justifyContent: 'flex-end' },
     btnCancel: {
-        paddingHorizontal: 20, paddingVertical: 13, borderRadius: 12, backgroundColor: C.bg,
+        paddingHorizontal: 20, paddingVertical: 13, borderRadius: 12, backgroundColor: C.border,
     },
     btnCancelTxt: { fontWeight: '600', color: C.text, fontSize: 14 },
     btnConfirm: {
@@ -302,49 +309,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
         shadowColor: C.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
     },
     btnConfirmTxt: { fontWeight: '600', color: '#fff', fontSize: 14 },
-    // Recent Files strip
-    recentStripWrap: { marginTop: 4 },
-    recentStripList: { paddingHorizontal: 20, gap: 12 },
-    recentStripEmpty: {
-        marginHorizontal: 20,
-        backgroundColor: C.card,
-        borderRadius: 14,
-        paddingVertical: 14,
-        alignItems: 'center',
-    },
-    recentStripEmptyText: { fontSize: 13, fontWeight: '600', color: C.muted },
-    // Recent chips
-    recentChip: {
-        width: 88, alignItems: 'center', marginBottom: 4,
-    },
-    recentChipImage: {
-        width: 72, height: 72, borderRadius: 18, marginBottom: 6,
-    },
-    recentChipIcon: {
-        width: 72, height: 72, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginBottom: 6,
-    },
-    recentChipName: {
-        fontSize: 11, fontWeight: '600', color: C.text, textAlign: 'center',
-    },
-
-    // ACTIVITY LIST
-    activityList: { marginTop: 12, gap: 12 },
-    activityItem: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 12,
-        backgroundColor: C.card,
-        padding: 12,
-        borderRadius: 16,
-        shadowColor: 'rgba(0,0,0,0.05)',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 1,
-        shadowRadius: 10,
-        elevation: 1,
-    },
-    activityIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(75,110,245,0.08)', justifyContent: 'center', alignItems: 'center' },
-    activityText: { fontSize: 13, color: C.text },
-    activityTime: { fontSize: 11, color: C.muted, marginTop: 2 },
+    
 });
 
 // ------------------------------------------------------------------------------
@@ -368,8 +333,12 @@ export default function HomeScreen({ navigation, route }: any) {
         text: theme.colors.textHeading,
         muted: theme.colors.textBody,
         border: theme.colors.border,
-        storageGrad1: theme.colors.primary,
-        storageGrad2: isDark ? '#4B6EF5' : '#2B4FD8',
+        storageGrad1: theme.colors.gradientStart,
+        storageGrad2: theme.colors.gradientMid,
+        storageGrad3: theme.colors.gradientEnd,
+        storageImages: theme.colors.storageImages,
+        storageVideos: theme.colors.storageVideos,
+        storageFiles: theme.colors.storageFiles,
         inputBg: theme.colors.inputBg,
         primarySoft: isDark ? 'rgba(88,117,255,0.16)' : '#EEF1FD',
         warningSoft: isDark ? 'rgba(245,158,11,0.16)' : '#FEF3C7',
@@ -388,8 +357,6 @@ export default function HomeScreen({ navigation, route }: any) {
     const [stats, setStats] = useState<any>({});
     const [recentFiles, setRecentFiles] = useState<any[]>([]);
     const [folders, setFolders] = useState<any[]>([]);
-    const [recentlyAccessed, setRecentlyAccessed] = useState<any[]>([]);
-    const [activity, setActivity] = useState<any[]>([]);
     const [pinnedFolderIds, setPinnedFolderIds] = useState<string[]>([]);
     const [allFolders, setAllFolders] = useState<any[]>([]);
     const [uploadFolderId, setUploadFolderId] = useState<string | null>(null);
@@ -461,8 +428,6 @@ export default function HomeScreen({ navigation, route }: any) {
             setStats(homeData.stats);
             setRecentFiles(asArray(homeData.files));
             setAllFolders(asArray(homeData.folders));
-            setRecentlyAccessed(asArray(homeData.recent));
-            setActivity(asArray(homeData.activity));
             setLoading(false);
         }
         void hydratePinnedFolderIds();
@@ -492,16 +457,14 @@ export default function HomeScreen({ navigation, route }: any) {
             // ? Fix #14: stagger requests on cold start to avoid bursting Render
             // When cache exists user already sees data, so fire all in parallel (fast refresh)
             // When cache is empty (first load), stagger by 150ms each to not wake server with 5 simultaneous hits
-            let statsRes, filesRes, foldersRes, recentAccessedRes, activityRes;
+            let statsRes, filesRes, foldersRes;
 
             if (homeData) {
                 // Cache warm — parallel is fine, user already sees content
-                [statsRes, filesRes, foldersRes, recentAccessedRes, activityRes] = await Promise.all([
+                [statsRes, filesRes, foldersRes] = await Promise.all([
                     apiClient.get('/files/stats'),
                     apiClient.get('/files?limit=10&sort=created_at&order=DESC'),
                     apiClient.get('/files/folders'),
-                    apiClient.get('/files/recent-accessed').catch(() => ({ data: { files: [] } })),
-                    apiClient.get(`/files/activity?limit=${HOME_ACTIVITY_PREVIEW_LIMIT}`).catch(() => ({ data: { success: true, activity: [] } })),
                 ]);
             } else {
                 // Cold start — stagger to avoid 5-request burst hitting Render wake-up
@@ -511,26 +474,17 @@ export default function HomeScreen({ navigation, route }: any) {
                 filesRes = await apiClient.get('/files?limit=10&sort=created_at&order=DESC');
                 await delay(150);
                 foldersRes = await apiClient.get('/files/folders');
-                // These two are non-critical, fire together after core data
-                [recentAccessedRes, activityRes] = await Promise.all([
-                    apiClient.get('/files/recent-accessed').catch(() => ({ data: { files: [] } })),
-                    apiClient.get(`/files/activity?limit=${HOME_ACTIVITY_PREVIEW_LIMIT}`).catch(() => ({ data: { success: true, activity: [] } })),
-                ]);
             }
 
             const newStats = statsRes.data.success ? statsRes.data : {};
             const newFiles = filesRes.data.success ? asArray(filesRes.data.files) : [];
             const newFolders = foldersRes.data.success ? asArray(foldersRes.data.folders) : [];
-            const newRecent = asArray(recentAccessedRes.data.files);
-            const newActivity = activityRes.data.success ? asArray(activityRes.data.activity) : [];
 
             if (!mountedRef.current) return;
-            setHomeData({ stats: newStats, files: newFiles, folders: newFolders, recent: newRecent, activity: newActivity });
+            setHomeData({ stats: newStats, files: newFiles, folders: newFolders, recent: [], activity: [] });
             setStats(newStats);
             setRecentFiles(newFiles);
             setAllFolders(newFolders);
-            setRecentlyAccessed(newRecent);
-            setActivity(newActivity);
 
         } catch (e) {
             if (mountedRef.current && !homeData) showToast('Could not load dashboard', 'error');
@@ -703,6 +657,7 @@ export default function HomeScreen({ navigation, route }: any) {
         return C.danger;
     };
     const usageColor = getUsageColor(usedGBNum);
+    const usageLevel = Math.min(92, Math.max(12, 12 + Math.log10(usedGBNum + 1) * 30));
 
     // Animated CountUp for GB
     const [animatedGB, setAnimatedGB] = useState('0.00');
@@ -741,14 +696,14 @@ export default function HomeScreen({ navigation, route }: any) {
         <SafeAreaView style={[s.root, { backgroundColor: C.bg }]}>
 
             {/* -- HEADER ----------------------------------------------------- */}
-            <View style={[s.header, { backgroundColor: C.bg, paddingTop: Math.max(insets.top + 8, 16) }]}>
+            <View style={[s.header, { paddingTop: Math.max(insets.top + 8, 16) }]}>
                 {showSearch ? (
-                    <View style={[s.searchBar, { backgroundColor: C.card }]}>
-                        <Search color={C.muted} size={18} />
+                    <View style={s.searchBar}>
+                        <Search color="#64748B" size={18} />
                         <TextInput
-                            style={[s.searchInput, { color: C.text }]}
+                            style={s.searchInput}
                             placeholder="Search files & folders…"
-                            placeholderTextColor={C.muted}
+                            placeholderTextColor="#64748B"
                             value={searchQuery}
                             onChangeText={setSearchQuery}
                             autoFocus
@@ -756,13 +711,19 @@ export default function HomeScreen({ navigation, route }: any) {
                         <IconButton
                             variant="ghost"
                             onPress={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}
-                            icon={<X color={C.muted} size={20} />}
+                            icon={<X color="#64748B" size={20} />}
                         />
                     </View>
                 ) : (
                     <>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                            <AxyaLogo size={32} showText={false} />
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+                            <View style={s.cloudIconContainer}>
+                                <RNImage
+                                    source={require('../../assets/icon.png')}
+                                    style={{ width: 28, height: 28, borderRadius: 7 }}
+                                    resizeMode="contain"
+                                />
+                            </View>
                             <View>
                                 <Text style={s.greeting}>Hello, {user?.name?.split(' ')[0] || user?.username || 'User'}</Text>
                                 <Text style={s.subGreeting}>Welcome to Axya</Text>
@@ -772,8 +733,9 @@ export default function HomeScreen({ navigation, route }: any) {
                             variant="surface"
                             style={s.headerIconBtn}
                             onPress={() => setShowSearch(true)}
-                            icon={<Search color={C.text} size={22} />}
+                            icon={<Search color="#111827" size={20} />}
                         />
+                        <View style={{ width: 12 }} />
                         <IconButton
                             variant="primary"
                             style={s.avatar}
@@ -788,29 +750,31 @@ export default function HomeScreen({ navigation, route }: any) {
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={s.scrollContent}
                 refreshControl={
-                    <RefreshControl refreshing={refreshing} tintColor={C.primary}
+                    <RefreshControl refreshing={refreshing} tintColor="#5B7CFF"
                         onRefresh={() => { setRefreshing(true); load(true); }} />
                 }
             >
 
                 {/* -----------------------------------------------------------
-                    STORAGE CARD
+                    STORAGE DASHBOARD CARD
                 ----------------------------------------------------------- */}
                 {!searchQuery && (
-                    <View style={{ marginBottom: 16 }}>
-                        <View style={s.storageCard}>
+                    <View style={s.storageCardContainer}>
+                        <LinearGradient
+                            colors={[C.storageGrad1, C.storageGrad2, C.storageGrad3]}
+                            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                            style={s.storageCard}
+                        >
                             <View style={s.meshBlob1} />
                             <View style={s.meshBlob2} />
 
                             <View style={s.storageTop}>
-                                <View style={s.storageIconBox}>
-                                    <View style={{ backgroundColor: 'rgba(255,255,255,0.25)', padding: 10, borderRadius: 16 }}>
-                                        <HardDrive color="#fff" size={24} />
-                                    </View>
-                                </View>
-                                <View style={{ flex: 1, marginLeft: 16 }}>
+                                <View>
                                     <Text style={s.storageTitle}>Axya Space</Text>
                                     <Text style={s.storageSubtitle}>Personal Cloud Storage</Text>
+                                </View>
+                                <View style={s.storageIconWrapper}>
+                                    <HardDrive color="#fff" size={20} />
                                 </View>
                             </View>
 
@@ -821,25 +785,29 @@ export default function HomeScreen({ navigation, route }: any) {
                             </View>
 
                             <View style={s.progressTrack}>
-                                <View style={[s.progressFill, { width: `${Math.min(usedGBNum * 2, 100)}%` as any, backgroundColor: usageColor }]} />
-                            </View>
-                            <View style={s.storageStats}>
-                                <View style={s.storageStat}>
-                                    <View style={[s.statDot, { backgroundColor: C.accent }]} />
-                                    <Text style={s.statStatText}>{stats.image_count || 0} Images</Text>
-                                </View>
-                                <View style={s.storageStat}>
-                                    <View style={[s.statDot, { backgroundColor: C.purple }]} />
-                                    <Text style={s.statStatText}>{stats.video_count || 0} Videos</Text>
-                                </View>
-                                <View style={s.storageStat}>
-                                    <View style={[s.statDot, { backgroundColor: 'rgba(255,255,255,0.6)' }]} />
-                                    <Text style={s.statStatText}>{stats.totalFiles || 0} Files</Text>
+                                <View style={[s.progressFillWrap, { width: `${usageLevel}%` as any }]}>
+                                    <View style={[s.progressFill, { backgroundColor: usageColor }]} />
                                 </View>
                             </View>
-                        </View>
+
+                            <View style={s.storagePillsRow}>
+                                <View style={s.storagePill}>
+                                    <View style={[s.storagePillDot, { backgroundColor: C.storageImages }]} />
+                                    <Text style={s.storagePillText}>{stats.image_count || 0} IMAGES</Text>
+                                </View>
+                                <View style={s.storagePill}>
+                                    <View style={[s.storagePillDot, { backgroundColor: C.storageVideos }]} />
+                                    <Text style={s.storagePillText}>{stats.video_count || 0} VIDEOS</Text>
+                                </View>
+                                <View style={s.storagePill}>
+                                    <View style={[s.storagePillDot, { backgroundColor: C.storageFiles }]} />
+                                    <Text style={s.storagePillText}>{stats.totalFiles || 0} FILES</Text>
+                                </View>
+                            </View>
+                        </LinearGradient>
                     </View>
                 )}
+
                 {/* -----------------------------------------------------------
                     FOLDERS SECTION
                 ----------------------------------------------------------- */}
@@ -847,10 +815,9 @@ export default function HomeScreen({ navigation, route }: any) {
                     <>
                         <View style={s.sectionRow}>
                             <Text style={s.sectionLabel}>FOLDERS</Text>
-                            <TouchableOpacity style={s.seeAllBtn}
-                                onPress={() => navigation.navigate('Folders')}>
+                            <TouchableOpacity style={s.seeAllBtn} onPress={() => navigation.navigate('Folders')}>
                                 <Text style={s.seeAllText}>See all</Text>
-                                <ChevronRight color={C.primary} size={16} />
+                                <MoreHorizontal color="#64748B" size={14} />
                             </TouchableOpacity>
                         </View>
 
@@ -865,49 +832,51 @@ export default function HomeScreen({ navigation, route }: any) {
                                 ))}
                             </View>
                         ) : folders.length === 0 ? (
-                            <TouchableOpacity style={s.emptyFolder}
-                                onPress={() => { setFabOpen(false); setFolderModal(true); }}>
+                            <TouchableOpacity style={s.emptyFolder} onPress={() => { setFabOpen(false); setFolderModal(true); }}>
                                 <Folder color={C.primary} size={22} />
                                 <Text style={s.emptyFolderText}>Create your first folder</Text>
                             </TouchableOpacity>
                         ) : (
                             <View style={s.folderGrid}>
-                                <TouchableOpacity
-                                    style={[s.folderGridCard, { backgroundColor: C.primarySoft }]}
-                                    onPress={() => navigation.navigate('Files')}
-                                >
-                                    <View style={[s.fileIcon, { backgroundColor: 'rgba(75, 110, 245, 0.1)' }]}>
-                                        <HardDrive color={C.primary} size={24} />
+                                <TouchableOpacity style={s.folderGridCard} onPress={() => navigation.navigate('AllFiles')}>
+                                    <View style={s.folderGridTop}>
+                                        <View style={[s.folderIconBox, { backgroundColor: C.bg }]}>
+                                            <Folder color="#2563EB" size={24} fill="#2563EB" />
+                                        </View>
+                                        <IconButton
+                                            variant="ghost"
+                                            size={36}
+                                            style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: 'transparent' }}
+                                            onPress={() => {}}
+                                            icon={<MoreHorizontal color="#94A3B8" size={18} />}
+                                        />
                                     </View>
                                     <View>
-                                        <Text style={[s.folderGridName, { color: C.primary }]} numberOfLines={1}>All Files</Text>
-                                        <Text style={s.folderGridMeta}>{stats.totalFiles || 0} items</Text>
+                                        <Text style={s.folderGridName} numberOfLines={1}>All Files</Text>
+                                        <Text style={s.folderGridMeta}>Folder</Text>
                                     </View>
                                 </TouchableOpacity>
                                 {folders.map((folder, idx) => {
-                                    // Cycle through pastel color pairs
-                                    const palettes = [
-                                        { bg: C.primarySoft, icon: C.primary },
-                                        { bg: C.warningSoft, icon: C.warning },
-                                        { bg: C.dangerSoft, icon: C.danger },
-                                        { bg: C.tealSoft, icon: '#0D9488' },
-                                        { bg: C.purpleSoft, icon: '#9333EA' },
-                                        { bg: C.successSoft, icon: C.success },
-                                    ];
-                                    const pal = palettes[idx % palettes.length];
+                                    // Soft pastel colors matching the design image theme
+                                    const FOLDER_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#F43F5E', '#8B5CF6'];
+                                    const rawColor = FOLDER_COLORS[idx % FOLDER_COLORS.length];
+                                    const iconBg = `${rawColor}15`;
+
                                     return (
                                         <TouchableOpacity
                                             key={folder.id}
-                                            style={[s.folderGridCard, { backgroundColor: pal.bg }]}
+                                            style={s.folderGridCard}
                                             activeOpacity={0.75}
-                                            onPress={() => navigation.navigate('FolderFiles',
-                                                { folderId: folder.id, folderName: folder.name })}
+                                            onPress={() => navigation.navigate('FolderFiles', { folderId: folder.id, folderName: folder.name })}
                                         >
                                             <View style={s.folderGridTop}>
-                                                <Folder color={pal.icon} size={28} fill={pal.icon} />
+                                                <View style={[s.folderIconBox, { backgroundColor: iconBg }]}>
+                                                    <Folder color={rawColor} size={24} fill={rawColor} />
+                                                </View>
                                                 <IconButton
                                                     variant="ghost"
                                                     size={36}
+                                                    style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: 'transparent' }}
                                                     onPress={() => {
                                                         if (Platform.OS === 'web') {
                                                             setOptionsTarget(folder);
@@ -949,59 +918,22 @@ export default function HomeScreen({ navigation, route }: any) {
                                                             );
                                                         }
                                                     }}
-                                                    icon={<MoreHorizontal color={pal.icon} size={16} opacity={0.6} />}
+                                                    icon={<MoreHorizontal color="#94A3B8" size={18} opacity={1} />}
                                                 />
                                             </View>
-                                            <Text style={[s.folderGridName, { color: pal.icon }]} numberOfLines={1}>
-                                                {folder.name}
-                                            </Text>
-                                            <Text style={s.folderGridMeta}>
-                                                {formatFolderMeta(folder)}
-                                            </Text>
+                                            <View>
+                                                <Text style={s.folderGridName} numberOfLines={1}>
+                                                    {folder.name}
+                                                </Text>
+                                                <Text style={s.folderGridMeta}>
+                                                    {formatFolderMeta(folder)} files
+                                                </Text>
+                                            </View>
                                         </TouchableOpacity>
                                     );
                                 })}
-                                {/* Keep Home folder area fixed at 4 cards total; create remains available via FAB */}
                             </View>
                         )}
-                    </>
-                )}
-
-                {/* -----------------------------------------------------------
-                    RECENTLY OPENED SECTION
-                ----------------------------------------------------------- */}
-                {!searchQuery && recentlyAccessed.length > 0 && (
-                    <>
-                        <View style={[s.sectionRow, { marginTop: 8 }]}>
-                            <Text style={s.sectionLabel}>RECENTLY OPENED</Text>
-                        </View>
-                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 20, gap: 12 }}>
-                            {recentlyAccessed.slice(0, 6).map(f => {
-                                const isMedia = f.mime_type?.includes('image') || f.mime_type?.includes('video');
-                                const iconBg = isMedia ? C.warningSoft : C.primarySoft;
-                                return (
-                                    <TouchableOpacity
-                                        key={f.id}
-                                        style={s.recentChip}
-                                        activeOpacity={0.75}
-                                        onPress={() => navigation.navigate('FilePreview', { files: [f], initialIndex: 0 })}
-                                    >
-                                        {isMedia && token ? (
-                                            <RNImage
-                                                source={{ uri: `${apiClient.defaults.baseURL}/files/${f.id}/thumbnail`, headers: { Authorization: `Bearer ${token}` } }}
-                                                style={s.recentChipImage}
-                                                resizeMode="cover"
-                                            />
-                                        ) : (
-                                            <View style={[s.recentChipIcon, { backgroundColor: iconBg }]}>
-                                                <FileText color={C.primary} size={16} />
-                                            </View>
-                                        )}
-                                        <Text style={s.recentChipName} numberOfLines={1}>{f.name}</Text>
-                                    </TouchableOpacity>
-                                );
-                            })}
-                        </ScrollView>
                     </>
                 )}
 
@@ -1013,9 +945,9 @@ export default function HomeScreen({ navigation, route }: any) {
                         {searchQuery ? `RESULTS FOR "${searchQuery.toUpperCase()}"` : 'RECENT FILES'}
                     </Text>
                     {!searchQuery && (
-                        <TouchableOpacity style={s.seeAllBtn} onPress={() => navigation.navigate('Files')}>
+                        <TouchableOpacity style={s.seeAllBtn} onPress={() => navigation.navigate('AllFiles')}>
                             <Text style={s.seeAllText}>See all</Text>
-                            <ChevronRight color={C.primary} size={16} />
+                            <MoreHorizontal color="#64748B" size={14} />
                         </TouchableOpacity>
                     )}
                 </View>
@@ -1037,6 +969,7 @@ export default function HomeScreen({ navigation, route }: any) {
                             <FileListItem
                                 key={item.id}
                                 item={item}
+                                variant="card"
                                 token={token}
                                 apiBaseUrl={apiClient.defaults.baseURL || ''}
                                 theme={theme}
@@ -1044,30 +977,6 @@ export default function HomeScreen({ navigation, route }: any) {
                                 onPress={handleFileItemPress}
                             />
                         ))}
-                    </View>
-                )}
-
-                {/* -----------------------------------------------------------
-                    RECENT ACTIVITY
-                ----------------------------------------------------------- */}
-                {!searchQuery && activity.length > 0 && (
-                    <View style={{ marginTop: 32, paddingHorizontal: 20 }}>
-                        <Text style={s.sectionLabel}>RECENT ACTIVITY</Text>
-                        <View style={s.activityList}>
-                            {activity.slice(0, HOME_ACTIVITY_PREVIEW_LIMIT).map((act, i) => (
-                                <View key={`activity-${act.id || i}`} style={[s.activityItem, { backgroundColor: C.card }]}>
-                                    <View style={s.activityIcon}>
-                                        <Activity color={C.primary} size={14} />
-                                    </View>
-                                    <View style={{ flex: 1 }}>
-                                        <Text style={[s.activityText, { color: C.text }]} numberOfLines={1}>
-                                            <Text style={{ fontWeight: '600' }}>{user?.username || 'You'}</Text> {act.action.replace(/_/g, ' ')} {act.file_name || ''}
-                                        </Text>
-                                        <Text style={s.activityTime}>{formatDate(act.created_at)}</Text>
-                                    </View>
-                                </View>
-                            ))}
-                        </View>
                     </View>
                 )}
 
@@ -1092,7 +1001,7 @@ export default function HomeScreen({ navigation, route }: any) {
                                 <Text style={s.sheetRowTitle}>Upload File</Text>
                                 <Text style={s.sheetRowSub}>Pick any file from your device</Text>
                             </View>
-                            <ChevronRight color={C.muted} size={18} />
+                            <MoreHorizontal color={C.muted} size={18} />
                         </TouchableOpacity>
 
                         <TouchableOpacity style={s.sheetRow}
@@ -1104,7 +1013,7 @@ export default function HomeScreen({ navigation, route }: any) {
                                 <Text style={s.sheetRowTitle}>New Folder</Text>
                                 <Text style={s.sheetRowSub}>Organise your files</Text>
                             </View>
-                            <ChevronRight color={C.muted} size={18} />
+                            <MoreHorizontal color={C.muted} size={18} />
                         </TouchableOpacity>
                     </View>
                 </TouchableOpacity>

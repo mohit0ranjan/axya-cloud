@@ -1,7 +1,8 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Platform } from 'react-native';
+import React, { useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Platform, Animated as RNAnimated } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { HardDrive, Folder, Upload, Star, User } from 'lucide-react-native';
+import { HardDrive, Folder, Star, User, Plus } from 'lucide-react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '../context/ThemeContext';
 
 import HomeScreen from '../screens/HomeScreen';
@@ -13,11 +14,44 @@ const Tab = createBottomTabNavigator();
 
 const CustomTabBar = ({ state, descriptors, navigation }: any) => {
     const { theme } = useTheme();
+    const isDark = theme.mode === 'dark';
+    const fabScale = useRef(new RNAnimated.Value(1)).current;
+
+    const onFabPressIn = () => {
+        RNAnimated.spring(fabScale, {
+            toValue: 0.85,
+            useNativeDriver: true,
+            tension: 300,
+            friction: 15,
+        }).start();
+    };
+
+    const onFabPressOut = () => {
+        RNAnimated.spring(fabScale, {
+            toValue: 1,
+            useNativeDriver: true,
+            tension: 300,
+            friction: 15,
+        }).start();
+    };
 
     return (
-        <View style={[styles.navBar, { backgroundColor: theme.colors.card, borderTopColor: theme.colors.border }]}>
+        <View style={[
+            styles.navBar,
+            {
+                backgroundColor: isDark ? 'rgba(18,20,32,0.88)' : 'rgba(255,255,255,0.92)',
+                borderColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+                shadowColor: isDark ? '#000' : '#64748B',
+            },
+        ]}>
             {state.routes.map((route: any, index: number) => {
                 const { options } = descriptors[route.key];
+                
+                // Hide tab bar buttons for specific screens
+                if (options.tabBarButton === (() => null) || options.tabBarStyle?.display === 'none' || route.name === 'StorageAnalytics' || route.name === 'Trash') {
+                    return null;
+                }
+                
                 const label = options.tabBarLabel !== undefined ? options.tabBarLabel : options.title !== undefined ? options.title : route.name;
                 const isFocused = state.index === index;
 
@@ -32,7 +66,9 @@ const CustomTabBar = ({ state, descriptors, navigation }: any) => {
                     navigation.emit({ type: 'tabLongPress', target: route.key });
                 };
 
-                const color = isFocused ? theme.colors.primary : theme.colors.textBody;
+                const activeColor = theme.colors.primary;
+                const inactiveColor = isDark ? 'rgba(255,255,255,0.4)' : '#94A3B8';
+                const color = isFocused ? activeColor : inactiveColor;
 
                 let IconComponent;
                 if (route.name === 'Home') IconComponent = <HardDrive color={color} size={22} />;
@@ -44,11 +80,22 @@ const CustomTabBar = ({ state, descriptors, navigation }: any) => {
                     return (
                         <TouchableOpacity
                             key={index}
-                            style={[styles.fab, { backgroundColor: theme.colors.primary }]}
+                            style={styles.fabTouch}
                             onPress={() => navigation.navigate('Home', { openFabAt: Date.now() })}
-                            activeOpacity={0.85}
+                            onPressIn={onFabPressIn}
+                            onPressOut={onFabPressOut}
+                            activeOpacity={1}
                         >
-                            <Upload color="#fff" size={24} strokeWidth={2.5} />
+                            <RNAnimated.View style={{ transform: [{ scale: fabScale }] }}>
+                                <LinearGradient
+                                    colors={[theme.colors.fabGradientStart, theme.colors.fabGradientEnd]}
+                                    start={{ x: 0, y: 0 }}
+                                    end={{ x: 1, y: 1 }}
+                                    style={styles.fab}
+                                >
+                                    <Plus color="#fff" size={28} strokeWidth={2.5} />
+                                </LinearGradient>
+                            </RNAnimated.View>
                         </TouchableOpacity>
                     );
                 }
@@ -64,8 +111,21 @@ const CustomTabBar = ({ state, descriptors, navigation }: any) => {
                         onLongPress={onLongPress}
                         style={styles.navItem}
                     >
-                        {IconComponent}
-                        <Text style={[styles.navLabel, { color }]}>{label}</Text>
+                        <View
+                            style={[
+                                styles.navItemInner,
+                                isFocused && {
+                                    backgroundColor: isDark ? 'rgba(59,130,246,0.15)' : 'rgba(59,130,246,0.08)',
+                                },
+                            ]}
+                        >
+                            {IconComponent}
+                            <Text style={[
+                                styles.navLabel,
+                                { color },
+                                isFocused && styles.navLabelActive
+                            ]}>{label}</Text>
+                        </View>
                     </TouchableOpacity>
                 );
             })}
@@ -94,17 +154,20 @@ const DummyScreen = () => null;
 
 const styles = StyleSheet.create({
     navBar: {
+        position: 'absolute',
+        bottom: 0, left: 0, right: 0,
         flexDirection: 'row',
         justifyContent: 'space-around',
         alignItems: 'center',
         height: Platform.OS === 'ios' ? 88 : 70,
         paddingBottom: Platform.OS === 'ios' ? 20 : 0,
-        borderTopWidth: 1,
-        elevation: 10,
-        shadowColor: '#000',
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
         shadowOffset: { width: 0, height: -4 },
-        shadowOpacity: 0.05,
-        shadowRadius: 10,
+        shadowOpacity: 0.08,
+        shadowRadius: 16,
+        elevation: 12,
+        borderTopWidth: 1,
     },
     navItem: {
         alignItems: 'center',
@@ -112,22 +175,34 @@ const styles = StyleSheet.create({
         flex: 1,
         height: '100%',
     },
+    navItemInner: {
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 8,
+        paddingHorizontal: 16,
+        borderRadius: 20,
+    },
     navLabel: {
         fontSize: 10,
         fontWeight: '600',
-        marginTop: 4,
+        marginTop: 3,
+    },
+    navLabelActive: {
+        fontWeight: '700',
+    },
+    fabTouch: {
+        marginTop: -34,
     },
     fab: {
-        width: 56,
-        height: 56,
-        borderRadius: 28,
+        width: 64,
+        height: 64,
+        borderRadius: 32,
         justifyContent: 'center',
         alignItems: 'center',
-        marginTop: -30,
-        shadowColor: '#4B6EF5',
+        shadowColor: '#4F46E5',
         shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.3,
-        shadowRadius: 16,
-        elevation: 8,
+        shadowOpacity: 0.38,
+        shadowRadius: 20,
+        elevation: 10,
     },
 });

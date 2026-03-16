@@ -740,10 +740,11 @@ try { fs.mkdirSync(THUMB_CACHE_DIR, { recursive: true }); } catch { }
 export const getThumbnail = async (req: AuthRequest, res: Response) => {
     if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
+    const requestedWidth = clampInt(req.query.w, 1080, 240, 2048);
 
     try {
         // ✅ Check disk cache first — avoid Telegram download on repeated requests
-        const cacheFile = path.join(THUMB_CACHE_DIR, `${id}.webp`);
+        const cacheFile = path.join(THUMB_CACHE_DIR, `${id}_${requestedWidth}.webp`);
         if (fs.existsSync(cacheFile)) {
             const stat = fs.statSync(cacheFile);
             const age = Date.now() - stat.mtimeMs;
@@ -822,12 +823,15 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
         // 3. Compress with Sharp
         try {
             const optimizedBuffer = await sharp(buffer, { failOnError: false })
-                .resize(1080, 1080, { fit: 'inside', withoutEnlargement: true })
+                .resize(requestedWidth, requestedWidth, { fit: 'inside', withoutEnlargement: true })
                 .toFormat('webp', { quality: 85, effort: 3 })
                 .toBuffer();
 
             // ✅ Save to disk cache for next request
             fs.writeFileSync(cacheFile, optimizedBuffer);
+
+            // Successful render should clear prior failure counts.
+            pool.query('UPDATE files SET thumbnail_failed_count = 0 WHERE id = $1', [id]).catch(() => { });
 
             res.setHeader('Content-Type', 'image/webp');
             return res.send(optimizedBuffer);
@@ -1376,6 +1380,11 @@ export const markAccessed = async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     try {
         await pool.query(`UPDATE files SET last_accessed_at = NOW() WHERE id = $1 AND user_id = $2`, [id, req.user.id]);
+        await pool.query(
+            `INSERT INTO file_access_log (file_id, user_id, accessed_at)
+             SELECT id, user_id, NOW() FROM files WHERE id = $1 AND user_id = $2`,
+            [id, req.user.id]
+        );
         res.json({ success: true });
     } catch (err: any) { res.status(500).json({ success: false, error: err.message }); }
 };
@@ -1390,6 +1399,33 @@ export const getRecentlyAccessed = async (req: AuthRequest, res: Response) => {
         );
         res.json({ success: true, files: result.rows.map(formatFileRow) });
     } catch (err: any) { res.status(500).json({ success: false, error: err.message }); }
+};
+
+export const getFileHistory = async (req: AuthRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    const { id } = req.params;
+    try {
+        const exists = await pool.query(
+            `SELECT id FROM files WHERE id = $1 AND user_id = $2`,
+            [id, req.user.id]
+        );
+        if (exists.rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'File not found' });
+        }
+
+        const result = await pool.query(
+            `SELECT accessed_at
+             FROM file_access_log
+             WHERE file_id = $1 AND user_id = $2
+             ORDER BY accessed_at DESC
+             LIMIT 30`,
+            [id, req.user.id]
+        );
+
+        res.json({ success: true, history: result.rows });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

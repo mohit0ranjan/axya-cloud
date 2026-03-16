@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import {
     ArrowLeft, Shield, HardDrive, Bell, Moon, Info,
-    LogOut, Trash2, ChevronRight, CheckCircle, BarChart2, Link as LinkIcon
+    LogOut, Trash2, MoreHorizontal, CheckCircle, BarChart2, Link as LinkIcon
 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthContext } from '../context/AuthContext';
@@ -148,7 +148,7 @@ export default function SettingsScreen({ navigation }: any) {
                     <Text style={[st.rowSub, { color: C.muted }]}>{subtitle}</Text>
                 )}
             </View>
-            {right ?? (onPress && <ChevronRight color={C.muted} size={18} />)}
+            {right ?? (onPress && <MoreHorizontal color={C.muted} size={18} />)}
         </PressRow>
     );
 

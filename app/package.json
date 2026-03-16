@@ -10,6 +10,7 @@
     "typecheck": "node --stack_size=10000 ./node_modules/typescript/lib/tsc.js -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@expo-google-fonts/inter": "^0.4.2",
     "@gorhom/bottom-sheet": "^5.2.8",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.15.2",

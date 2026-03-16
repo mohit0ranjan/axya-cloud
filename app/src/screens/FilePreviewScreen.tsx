@@ -9,7 +9,7 @@ import { Paths } from 'expo-file-system';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as Sharing from 'expo-sharing';
-import { ArrowLeft, Download, Trash2, FileText, FolderInput, Star, Link, CheckCircle, X } from 'lucide-react-native';
+import { ArrowLeft, Download, Trash2, FileText, FolderInput, Star, Link, CheckCircle, X, MoreHorizontal, Share2, Pencil, Move, Shield, Clock3, Lock, ChevronUp } from 'lucide-react-native';
 
 import { Image } from '../components/AppImage';
 import VideoPlayer from '../components/VideoPlayer';
@@ -27,6 +27,7 @@ import Animated2, {
     useSharedValue,
     useAnimatedStyle,
     withSpring,
+    withTiming,
     runOnJS,
 } from 'react-native-reanimated';
 
@@ -40,9 +41,11 @@ const { width, height } = Dimensions.get('window');
 // Module-level constants (safe to capture inside worklets)
 // ─────────────────────────────────────────────────────────────
 const MIN_SCALE = 1;
-const MAX_SCALE = 5;
+const MAX_SCALE = 4;
 const IMG_H = height * 0.65;   // module-level — worklets can safely reference this
 const SPRING_CFG = { damping: 20, stiffness: 200 };
+const SHEET_COLLAPSED_OFFSET = 250;
+const SHEET_HANDLE_HEIGHT = 88;
 
 // ─────────────────────────────────────────────────────────────
 // ImagePreviewItem — pinch-zoom, pan, double-tap reset
@@ -57,7 +60,8 @@ function ImagePreviewItem({
     jwt,
     isZoomed,
     onZoomChange,
-}: { item: any; jwt: string; isZoomed: boolean; onZoomChange?: (zoomed: boolean) => void }) {
+    onSingleTap,
+}: { item: any; jwt: string; isZoomed: boolean; onZoomChange?: (zoomed: boolean) => void; onSingleTap?: () => void }) {
     const { theme } = useTheme();
     const [loading, setLoading] = useState(true);
     const [useFallback, setUseFallback] = useState(false);
@@ -148,12 +152,32 @@ function ImagePreviewItem({
             savedTransY.value = translateY.value;
         });
 
-    // ── Double-tap to reset ──────────────────────────────────────────
+    // ── Double-tap to zoom in/out ───────────────────────────────────
     const doubleTap = Gesture.Tap()
         .numberOfTaps(2)
         .maxDelay(250)               // maxDelay not maxDuration (RNGH v2 API)
-        .onEnd(() => {
+        .onEnd(e => {
             'worklet';
+            if (scale.value <= 1.02) {
+                // Zoom in to 2x and bias translation toward tap point.
+                const targetScale = 2;
+                const maxX = (width * (targetScale - 1)) / 2;
+                const maxY = (IMG_H * (targetScale - 1)) / 2;
+                const dx = (e.x - width / 2) * -0.35;
+                const dy = (e.y - IMG_H / 2) * -0.35;
+                const tx = Math.max(-maxX, Math.min(maxX, dx));
+                const ty = Math.max(-maxY, Math.min(maxY, dy));
+                scale.value = withSpring(targetScale, SPRING_CFG);
+                translateX.value = withSpring(tx, SPRING_CFG);
+                translateY.value = withSpring(ty, SPRING_CFG);
+                savedScale.value = targetScale;
+                savedTransX.value = tx;
+                savedTransY.value = ty;
+                if (onZoomChange) runOnJS(onZoomChange)(true);
+                return;
+            }
+
+            // Reset back to 1x.
             scale.value = withSpring(1, SPRING_CFG);
             translateX.value = withSpring(0, SPRING_CFG);
             translateY.value = withSpring(0, SPRING_CFG);
@@ -165,8 +189,17 @@ function ImagePreviewItem({
             }
         });
 
-    // Pinch + pan run simultaneously; double-tap is parallel
-    const composed = Gesture.Simultaneous(pinch, pan, doubleTap);
+    const singleTap = Gesture.Tap()
+        .numberOfTaps(1)
+        .maxDuration(220)
+        .onEnd(() => {
+            'worklet';
+            if (onSingleTap) runOnJS(onSingleTap)();
+        });
+
+    // Single-tap toggles chrome; double-tap handles zoom.
+    const taps = Gesture.Exclusive(doubleTap, singleTap);
+    const composed = Gesture.Simultaneous(pinch, pan, taps);
 
     const animStyle = useAnimatedStyle(() => ({
         transform: [
@@ -395,6 +428,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
     const [currentIndex, setCurrentIndex] = useState(initialIndex);
     const [isZoomed, setIsZoomed] = useState(false); // ✅ track zoom to toggle FlatList scroll
+    const [uiVisible, setUiVisible] = useState(true);
+    const [sheetExpanded, setSheetExpanded] = useState(false);
+    const [activeTab, setActiveTab] = useState<'details' | 'actions' | 'activity' | 'permissions'>('details');
     const file = useMemo(
         () => previewData[currentIndex] || previewData[0] || null,
         [currentIndex, previewData]
@@ -463,6 +499,10 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const [renameModalVisible, setRenameModalVisible] = useState(false);
     const [newName, setNewName] = useState('');
 
+    const controlsOpacity = useSharedValue(1);
+    const sheetTranslateY = useSharedValue(SHEET_COLLAPSED_OFFSET);
+    const sheetStartY = useSharedValue(SHEET_COLLAPSED_OFFSET);
+
     useEffect(() => {
         let active = true;
 
@@ -500,6 +540,19 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         setIsStarred(!!file?.is_starred);
         setNewName(file?.name || file?.file_name || '');
     }, [file?.id, file?.is_starred, file?.name, file?.file_name]);
+
+    useEffect(() => {
+        controlsOpacity.value = withTiming(uiVisible ? 1 : 0, { duration: 180 });
+    }, [controlsOpacity, uiVisible]);
+
+    const setSheetState = useCallback((expanded: boolean) => {
+        setSheetExpanded(expanded);
+        sheetTranslateY.value = withSpring(expanded ? 0 : SHEET_COLLAPSED_OFFSET, SPRING_CFG);
+    }, [sheetTranslateY]);
+
+    const toggleChrome = useCallback(() => {
+        setUiVisible(prev => !prev);
+    }, []);
 
     const handleStar = useCallback(async () => {
         if (!file?.id) return;
@@ -585,6 +638,188 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         } catch { showToast('Rename failed', 'error'); }
     };
 
+    const styles = React.useMemo(() => StyleSheet.create({
+        container: { flex: 1, backgroundColor: '#0a0a0f' },
+        header: {
+            position: 'absolute',
+            top: Platform.OS === 'ios' ? 8 : 12,
+            left: 14,
+            right: 14,
+            flexDirection: 'row',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            zIndex: 20,
+        },
+        headerActions: { flexDirection: 'row', gap: theme.spacing.sm },
+        glassBtn: {
+            width: 44,
+            height: 44,
+            borderRadius: theme.radius.full,
+            backgroundColor: 'rgba(10, 15, 24, 0.52)',
+            borderWidth: 1,
+            borderColor: 'rgba(255,255,255,0.22)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            ...staticTheme.shadows.elevation1,
+        },
+        previewContainer: { flex: 1, backgroundColor: '#0a0a0f' },
+        topOffsetSpacer: { height: Platform.OS === 'ios' ? 54 : 48 },
+
+        previewImage: { width: '100%', height: '100%' },
+        genericPreview: { alignItems: 'center', justifyContent: 'center', padding: theme.spacing['2xl'], flex: 1, backgroundColor: '#0a0a0f' },
+        genericLabel: { color: '#fff', fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight as any, marginTop: theme.spacing.xl, textAlign: 'center' },
+        genericSub: { color: 'rgba(255,255,255,0.6)', fontSize: theme.typography.caption.fontSize, marginTop: theme.spacing.sm },
+
+        dotRow: {
+            position: 'absolute',
+            alignSelf: 'center',
+            bottom: SHEET_HANDLE_HEIGHT + 8,
+            flexDirection: 'row',
+            justifyContent: 'center',
+            alignItems: 'center',
+            gap: 6,
+            paddingVertical: theme.spacing.sm,
+            zIndex: 12,
+        },
+        dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.3)' },
+        dotActive: { width: 18, backgroundColor: '#FFFFFF' },
+
+        fabDownload: {
+            position: 'absolute',
+            right: 18,
+            bottom: SHEET_HANDLE_HEIGHT + 24,
+            width: 58,
+            height: 58,
+            borderRadius: 29,
+            backgroundColor: theme.colors.primary,
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 21,
+            shadowColor: theme.colors.primary,
+            shadowOffset: { width: 0, height: 8 },
+            shadowOpacity: 0.34,
+            shadowRadius: 14,
+            elevation: 7,
+        },
+
+        detailSheetFloating: {
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: -SHEET_COLLAPSED_OFFSET,
+            height: Math.min(height * 0.62, 470) + SHEET_COLLAPSED_OFFSET,
+            backgroundColor: theme.mode === 'dark' ? 'rgba(26,30,46,0.97)' : 'rgba(248,250,252,0.97)',
+            borderTopLeftRadius: 26,
+            borderTopRightRadius: 26,
+            borderTopWidth: 1,
+            borderColor: theme.mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.7)',
+            paddingHorizontal: 16,
+            paddingTop: 10,
+            zIndex: 18,
+        },
+        detailSheetHandleArea: {
+            minHeight: SHEET_HANDLE_HEIGHT,
+            justifyContent: 'center',
+        },
+        detailSheetHandle: {
+            width: 40,
+            height: 4,
+            borderRadius: 3,
+            backgroundColor: theme.colors.border,
+            alignSelf: 'center',
+            marginBottom: 10,
+        },
+        tabRow: {
+            flexDirection: 'row',
+            gap: 8,
+            marginBottom: 4,
+        },
+        tabBtn: {
+            flex: 1,
+            borderRadius: 14,
+            paddingVertical: 10,
+            backgroundColor: theme.mode === 'dark' ? theme.colors.neutral[200] : '#E2E8F0',
+            alignItems: 'center',
+        },
+        tabBtnActive: {
+            backgroundColor: theme.colors.primary,
+        },
+        tabBtnText: {
+            fontSize: 12,
+            fontWeight: '700',
+            color: theme.colors.textBody,
+        },
+        tabBtnTextActive: {
+            color: '#fff',
+        },
+
+        sheetContent: {
+            paddingTop: 12,
+            paddingBottom: 24,
+        },
+        fileName: { fontSize: 20, fontWeight: '800', color: theme.colors.textHeading, marginBottom: 6 },
+        fileMeta: { fontSize: 13, color: theme.colors.textBody, marginBottom: 16 },
+        actionRow: { flexDirection: 'row', gap: theme.spacing.md },
+        primaryBtn: { flex: 1, flexDirection: 'row', backgroundColor: theme.colors.primary, height: 52, borderRadius: 14, justifyContent: 'center', alignItems: 'center', gap: theme.spacing.sm, ...staticTheme.shadows.elevation1 },
+        primaryBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+        secondaryBtn: { width: 52, height: 52, backgroundColor: theme.mode === 'dark' ? theme.colors.neutral[200] : '#E2E8F0', borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
+
+        quickActionsGrid: {
+            flexDirection: 'row',
+            flexWrap: 'wrap',
+            rowGap: 12,
+            marginTop: 2,
+        },
+        quickActionItem: {
+            width: '25%',
+            alignItems: 'center',
+            gap: 8,
+        },
+        quickActionIcon: {
+            width: 50,
+            height: 50,
+            borderRadius: 14,
+            backgroundColor: theme.mode === 'dark' ? theme.colors.neutral[200] : '#E2E8F0',
+            justifyContent: 'center',
+            alignItems: 'center',
+        },
+        quickActionText: {
+            fontSize: 11,
+            color: theme.colors.textBody,
+            fontWeight: '600',
+        },
+
+        infoCard: {
+            backgroundColor: theme.mode === 'dark' ? 'rgba(59,130,246,0.1)' : '#EFF6FF',
+            borderRadius: 14,
+            padding: 14,
+            gap: 8,
+        },
+        infoLine: {
+            color: theme.colors.textHeading,
+            fontSize: 13,
+            fontWeight: '600',
+        },
+
+        overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+        bottomSheet: { backgroundColor: theme.colors.card, borderTopLeftRadius: theme.radius.modal, borderTopRightRadius: theme.radius.modal, padding: theme.spacing.xl, paddingBottom: theme.spacing['4xl'] },
+        sheetHandle: { width: 40, height: 4, backgroundColor: theme.colors.border, borderRadius: theme.radius.full, alignSelf: 'center', marginBottom: theme.spacing.xl },
+        sheetTitle: { fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight as any, color: theme.colors.textHeading, marginBottom: theme.spacing.lg },
+
+        linkBox: { backgroundColor: theme.colors.inputBg, borderRadius: theme.radius.md, padding: theme.spacing.lg, marginBottom: theme.spacing.lg },
+        linkText: { fontSize: theme.typography.caption.fontSize, color: theme.colors.textBody, lineHeight: 20 },
+        copyBtn: { backgroundColor: theme.colors.primary, borderRadius: theme.radius.md, height: 50, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: theme.spacing.sm },
+        copyBtnText: { color: '#fff', fontWeight: theme.typography.hero.fontWeight as any, fontSize: theme.typography.body.fontSize },
+        linkSub: { fontSize: theme.typography.metadata.fontSize, color: theme.colors.textBody, textAlign: 'center', marginTop: theme.spacing.md },
+
+        moveRow: { paddingVertical: theme.spacing.lg, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
+        moveLabel: { fontSize: theme.typography.body.fontSize, fontWeight: theme.typography.subtitle.fontWeight as any, color: theme.colors.textHeading },
+
+        centeredOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: theme.spacing.xl },
+        modalCard: { width: '100%', backgroundColor: theme.colors.card, borderRadius: theme.radius.modal, padding: theme.spacing.xl, ...staticTheme.shadows.elevation2 },
+        renameInput: { borderWidth: 1.5, borderColor: theme.colors.border, borderRadius: theme.radius.md, paddingHorizontal: theme.spacing.lg, height: 50, fontSize: theme.typography.body.fontSize, marginBottom: theme.spacing.lg, color: theme.colors.textHeading },
+    }), [theme]);
+
     // Render each slide
     const renderItem = useCallback(({ item }: { item: any }) => {
         const mime = String(item.mime_type || '').toLowerCase();
@@ -605,20 +840,25 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     jwt={jwt}
                     isZoomed={isZoomed}
                     onZoomChange={setIsZoomed}
+                    onSingleTap={toggleChrome}
                 />
             );
         }
         if (isVideo) {
             return (
-                <View style={{ width, flex: 1, justifyContent: 'center', backgroundColor: '#0a0a0f' }}>
+                <TouchableOpacity activeOpacity={1} onPress={toggleChrome} style={{ width, flex: 1, justifyContent: 'center', backgroundColor: '#0a0a0f' }}>
                     <VideoPlayer url={streamUrl} token={jwt} width={width} fileId={item.id} onError={() => {
                         showToast('Video stream failed. Try downloading instead.', 'error');
                     }} />
-                </View>
+                </TouchableOpacity>
             );
         }
         if (isPdf && jwt) {
-            return <PdfOpenButton url={pdfInlineUrl} jwt={jwt} fileName={item.name || item.file_name || 'document.pdf'} />;
+            return (
+                <TouchableOpacity activeOpacity={1} onPress={toggleChrome} style={{ width, flex: 1 }}>
+                    <PdfOpenButton url={pdfInlineUrl} jwt={jwt} fileName={item.name || item.file_name || 'document.pdf'} />
+                </TouchableOpacity>
+            );
         }
         if (isOfficeDoc && jwt) {
             return (
@@ -655,20 +895,21 @@ export default function FilePreviewScreen({ route, navigation }: any) {
             );
         }
         return (
-            <View style={[styles.genericPreview, { width }]}>
+            <TouchableOpacity activeOpacity={1} onPress={toggleChrome} style={[styles.genericPreview, { width }]}> 
                 <FileText color="rgba(255,255,255,0.4)" size={80} strokeWidth={1} />
                 <Text style={styles.genericLabel}>{item.name || item.file_name}</Text>
                 <Text style={styles.genericSub}>{item.mime_type || 'Unknown type'}</Text>
                 <Text style={styles.genericSub}>Use Download to open this file</Text>
-            </View>
+            </TouchableOpacity>
         );
-    }, [jwt, isZoomed, showToast]);
+    }, [jwt, isZoomed, showToast, toggleChrome, styles.genericLabel, styles.genericPreview, styles.genericSub]);
 
     const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
         if (viewableItems.length > 0) {
             const idx = viewableItems[0].index ?? 0;
             setCurrentIndex(idx);
             setIsZoomed(false);
+            setUiVisible(true);
         }
     }, []);
 
@@ -681,75 +922,65 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + s[i];
     };
 
-    const styles = React.useMemo(() => StyleSheet.create({
-        container: { flex: 1, backgroundColor: theme.colors.background },
-        header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: theme.spacing.lg, zIndex: 10 },
-        headerActions: { flexDirection: 'row', gap: theme.spacing.sm },
-        glassBtn: {
-            width: 44,
-            height: 44,
-            borderRadius: theme.radius.full,
-            backgroundColor: theme.colors.card,
-            borderWidth: 1,
-            borderColor: theme.colors.border,
-            justifyContent: 'center',
-            alignItems: 'center',
-            ...staticTheme.shadows.elevation1,
-        },
+    const controlsAnimStyle = useAnimatedStyle(() => ({
+        opacity: controlsOpacity.value,
+        transform: [{ translateY: (1 - controlsOpacity.value) * -14 }],
+        pointerEvents: controlsOpacity.value < 0.05 ? 'none' as any : 'auto' as any,
+    }));
 
-        previewContainer: { flex: 1 },
-        previewImage: { width: '100%', height: '100%' },
-        genericPreview: { alignItems: 'center', justifyContent: 'center', padding: theme.spacing['2xl'], flex: 1 },
-        genericLabel: { color: theme.colors.textHeading, fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight as any, marginTop: theme.spacing.xl, textAlign: 'center' },
-        genericSub: { color: theme.colors.textBody, fontSize: theme.typography.caption.fontSize, marginTop: theme.spacing.sm },
+    const fabAnimStyle = useAnimatedStyle(() => ({
+        opacity: controlsOpacity.value,
+        transform: [{ translateY: (1 - controlsOpacity.value) * 26 }],
+        pointerEvents: controlsOpacity.value < 0.05 ? 'none' as any : 'auto' as any,
+    }));
 
-        dotRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, paddingVertical: theme.spacing.sm },
-        dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.border },
-        dotActive: { width: 18, backgroundColor: theme.colors.primary },
+    const sheetAnimStyle = useAnimatedStyle(() => ({
+        transform: [{ translateY: sheetTranslateY.value }],
+    }));
 
-        detailSheet: { backgroundColor: theme.colors.card, borderTopLeftRadius: theme.radius.modal, borderTopRightRadius: theme.radius.modal, padding: theme.spacing.xl, paddingBottom: theme.spacing['3xl'] },
-        fileName: { fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight as any, color: theme.colors.textHeading, marginBottom: 6 },
-        fileMeta: { fontSize: theme.typography.caption.fontSize, color: theme.colors.textBody, marginBottom: theme.spacing.xl },
-        actionRow: { flexDirection: 'row', gap: theme.spacing.md },
-        primaryBtn: { flex: 1, flexDirection: 'row', backgroundColor: theme.colors.primary, height: 54, borderRadius: theme.radius.card, justifyContent: 'center', alignItems: 'center', gap: theme.spacing.sm, ...staticTheme.shadows.elevation1 },
-        primaryBtnText: { color: '#fff', fontSize: theme.typography.body.fontSize, fontWeight: theme.typography.hero.fontWeight as any },
-        secondaryBtn: { width: 54, height: 54, backgroundColor: theme.colors.inputBg, borderRadius: theme.radius.card, justifyContent: 'center', alignItems: 'center' },
+    const sheetPan = Gesture.Pan()
+        .onBegin(() => {
+            'worklet';
+            sheetStartY.value = sheetTranslateY.value;
+        })
+        .onUpdate(e => {
+            'worklet';
+            const next = sheetStartY.value + e.translationY;
+            sheetTranslateY.value = Math.max(0, Math.min(SHEET_COLLAPSED_OFFSET, next));
+        })
+        .onEnd(() => {
+            'worklet';
+            const shouldExpand = sheetTranslateY.value < SHEET_COLLAPSED_OFFSET * 0.5;
+            sheetTranslateY.value = withSpring(shouldExpand ? 0 : SHEET_COLLAPSED_OFFSET, SPRING_CFG);
+            runOnJS(setSheetExpanded)(shouldExpand);
+        });
 
-        overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
-        bottomSheet: { backgroundColor: theme.colors.card, borderTopLeftRadius: theme.radius.modal, borderTopRightRadius: theme.radius.modal, padding: theme.spacing.xl, paddingBottom: theme.spacing['4xl'] },
-        sheetHandle: { width: 40, height: 4, backgroundColor: theme.colors.border, borderRadius: theme.radius.full, alignSelf: 'center', marginBottom: theme.spacing.xl },
-        sheetTitle: { fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight as any, color: theme.colors.textHeading, marginBottom: theme.spacing.lg },
+    const quickActions = [
+        { key: 'share', label: 'Share', icon: Share2, onPress: () => { setShareToken(''); setShareError(''); setShareModalVisible(true); void handleCreateShare(); } },
+        { key: 'rename', label: 'Rename', icon: Pencil, onPress: () => setRenameModalVisible(true) },
+        { key: 'move', label: 'Move', icon: Move, onPress: () => void openMoveModal() },
+        { key: 'delete', label: 'Delete', icon: Trash2, onPress: handleTrash },
+        { key: 'copy', label: 'Copy Link', icon: Link, onPress: async () => { if (!shareToken) await handleCreateShare(); if (shareToken) await handleCopyLink(); } },
+        { key: 'download', label: 'Download', icon: Download, onPress: handleDownload },
+    ];
 
-        linkBox: { backgroundColor: theme.colors.inputBg, borderRadius: theme.radius.md, padding: theme.spacing.lg, marginBottom: theme.spacing.lg },
-        linkText: { fontSize: theme.typography.caption.fontSize, color: theme.colors.textBody, lineHeight: 20 },
-        copyBtn: { backgroundColor: theme.colors.primary, borderRadius: theme.radius.md, height: 50, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: theme.spacing.sm },
-        copyBtnText: { color: '#fff', fontWeight: theme.typography.hero.fontWeight as any, fontSize: theme.typography.body.fontSize },
-        linkSub: { fontSize: theme.typography.metadata.fontSize, color: theme.colors.textBody, textAlign: 'center', marginTop: theme.spacing.md },
 
-        moveRow: { paddingVertical: theme.spacing.lg, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
-        moveLabel: { fontSize: theme.typography.body.fontSize, fontWeight: theme.typography.subtitle.fontWeight as any, color: theme.colors.textHeading },
-
-        centeredOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: theme.spacing.xl },
-        modalCard: { width: '100%', backgroundColor: theme.colors.card, borderRadius: theme.radius.modal, padding: theme.spacing.xl, ...staticTheme.shadows.elevation2 },
-        renameInput: { borderWidth: 1.5, borderColor: theme.colors.border, borderRadius: theme.radius.md, paddingHorizontal: theme.spacing.lg, height: 50, fontSize: theme.typography.body.fontSize, marginBottom: theme.spacing.lg, color: theme.colors.textHeading },
-    }), [theme]);
 
     return (
         <SafeAreaView style={styles.container}>
-            {/* Top Header */}
-            <View style={styles.header}>
+            <Animated2.View style={[styles.header, controlsAnimStyle]}>
                 <TouchableOpacity style={styles.glassBtn} onPress={goBackSafe}>
-                    <ArrowLeft color={theme.colors.textHeading} size={22} />
+                    <ArrowLeft color="#fff" size={22} />
                 </TouchableOpacity>
                 <View style={styles.headerActions}>
                     <TouchableOpacity style={styles.glassBtn} onPress={handleStar}>
-                        <Star color={isStarred ? theme.colors.accent : theme.colors.textHeading} size={20} fill={isStarred ? theme.colors.accent : 'transparent'} />
+                        <Star color={isStarred ? '#FACC15' : '#fff'} size={20} fill={isStarred ? '#FACC15' : 'transparent'} />
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.glassBtn} onPress={handleTrash}>
-                        <Trash2 color={theme.colors.danger} size={20} />
+                    <TouchableOpacity style={styles.glassBtn} onPress={() => setActiveTab('actions')}>
+                        <MoreHorizontal color="#fff" size={20} />
                     </TouchableOpacity>
                 </View>
-            </View>
+            </Animated2.View>
 
             {/* Preview Area — Swipeable FlatList */}
             <View style={styles.previewContainer}>
@@ -797,46 +1028,110 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                 )}
             </View>
 
-            {/* Slide indicator */}
             {previewData.length > 1 && (
-                <View style={styles.dotRow}>
+                <Animated2.View style={[styles.dotRow, controlsAnimStyle]}>
                     {previewData.map((_, i) => (
                         <View key={i} style={[styles.dot, i === currentIndex && styles.dotActive]} />
                     ))}
-                </View>
+                </Animated2.View>
             )}
 
-            {/* Details Bottom Sheet */}
-            <View style={styles.detailSheet}>
-                <Text style={styles.fileName} numberOfLines={2}>{file?.name || file?.file_name || 'Unknown file'}</Text>
-                <Text style={styles.fileMeta}>
-                    {formatSize(file?.size || 0)} · {file?.created_at ? new Date(file.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'Unknown date'}
-                </Text>
+            <Animated2.View style={[styles.fabDownload, fabAnimStyle]}>
+                <TouchableOpacity style={{ width: '100%', height: '100%', borderRadius: 29, justifyContent: 'center', alignItems: 'center' }} onPress={handleDownload}>
+                    {downloading ? <ActivityIndicator color="#fff" size="small" /> : <Download color="#fff" size={24} />}
+                </TouchableOpacity>
+            </Animated2.View>
 
-                {/* Action Row */}
-                <View style={styles.actionRow}>
-                    <TouchableOpacity style={styles.primaryBtn} onPress={handleDownload} disabled={downloading}>
-                        {downloading ? <ActivityIndicator color="#fff" size="small" /> : <><Download color="#fff" size={20} /><Text style={styles.primaryBtnText}>Download</Text></>}
-                    </TouchableOpacity>
+            <GestureDetector gesture={sheetPan}>
+                <Animated2.View style={[styles.detailSheetFloating, sheetAnimStyle]}>
+                    <View style={styles.detailSheetHandleArea}>
+                        <View style={styles.detailSheetHandle} />
+                        <View style={styles.tabRow}>
+                            {['details', 'actions', 'activity', 'permissions'].map((tab) => (
+                                <TouchableOpacity
+                                    key={tab}
+                                    style={[styles.tabBtn, activeTab === tab && styles.tabBtnActive]}
+                                    onPress={() => {
+                                        setActiveTab(tab as any);
+                                        if (!sheetExpanded) setSheetState(true);
+                                    }}
+                                >
+                                    <Text style={[styles.tabBtnText, activeTab === tab && styles.tabBtnTextActive]}>{tab.charAt(0).toUpperCase() + tab.slice(1)}</Text>
+                                </TouchableOpacity>
+                            ))}
+                        </View>
+                        {!sheetExpanded && (
+                            <TouchableOpacity style={{ alignSelf: 'center', paddingVertical: 6 }} onPress={() => setSheetState(true)}>
+                                <ChevronUp color={theme.colors.textBody} size={18} />
+                            </TouchableOpacity>
+                        )}
+                    </View>
 
-                    <TouchableOpacity style={styles.secondaryBtn} onPress={() => {
-                        setShareToken('');
-                        setShareError('');
-                        setShareModalVisible(true);
-                        void handleCreateShare();
-                    }}>
-                        <Link color={theme.colors.primary} size={20} />
-                    </TouchableOpacity>
+                    <ScrollView style={styles.sheetContent} showsVerticalScrollIndicator={false}>
+                        {activeTab === 'details' && (
+                            <>
+                                <Text style={styles.fileName} numberOfLines={2}>{file?.name || file?.file_name || 'Unknown file'}</Text>
+                                <Text style={styles.fileMeta}>
+                                    {formatSize(file?.size || 0)} · {file?.created_at ? new Date(file.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'Unknown date'}
+                                </Text>
+                                <View style={styles.actionRow}>
+                                    <TouchableOpacity style={styles.primaryBtn} onPress={handleDownload} disabled={downloading}>
+                                        {downloading ? <ActivityIndicator color="#fff" size="small" /> : <><Download color="#fff" size={20} /><Text style={styles.primaryBtnText}>Download</Text></>}
+                                    </TouchableOpacity>
+                                    <TouchableOpacity style={styles.secondaryBtn} onPress={() => { setShareToken(''); setShareError(''); setShareModalVisible(true); void handleCreateShare(); }}>
+                                        <Link color={theme.colors.primary} size={20} />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity style={styles.secondaryBtn} onPress={() => setRenameModalVisible(true)}>
+                                        <Pencil color={theme.colors.textHeading} size={19} />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity style={styles.secondaryBtn} onPress={openMoveModal}>
+                                        <FolderInput color={theme.colors.textHeading} size={20} />
+                                    </TouchableOpacity>
+                                </View>
+                            </>
+                        )}
 
-                    <TouchableOpacity style={styles.secondaryBtn} onPress={() => setRenameModalVisible(true)}>
-                        <Text style={{ fontSize: 18 }}>✏️</Text>
-                    </TouchableOpacity>
+                        {activeTab === 'actions' && (
+                            <View style={styles.quickActionsGrid}>
+                                {quickActions.map((action) => {
+                                    const Icon = action.icon;
+                                    return (
+                                        <TouchableOpacity key={action.key} style={styles.quickActionItem} onPress={action.onPress}>
+                                            <View style={styles.quickActionIcon}>
+                                                <Icon color={action.key === 'delete' ? theme.colors.danger : theme.colors.textHeading} size={20} />
+                                            </View>
+                                            <Text style={styles.quickActionText}>{action.label}</Text>
+                                        </TouchableOpacity>
+                                    );
+                                })}
+                            </View>
+                        )}
 
-                    <TouchableOpacity style={styles.secondaryBtn} onPress={openMoveModal}>
-                        <FolderInput color={theme.colors.textBody} size={20} />
-                    </TouchableOpacity>
-                </View>
-            </View>
+                        {activeTab === 'activity' && (
+                            <View style={styles.infoCard}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                    <Clock3 color={theme.colors.textHeading} size={16} />
+                                    <Text style={styles.infoLine}>Uploaded: {file?.created_at ? new Date(file.created_at).toLocaleString() : 'Unknown'}</Text>
+                                </View>
+                                <Text style={styles.infoLine}>Recent activity will appear here.</Text>
+                            </View>
+                        )}
+
+                        {activeTab === 'permissions' && (
+                            <View style={styles.infoCard}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                    <Shield color={theme.colors.textHeading} size={16} />
+                                    <Text style={styles.infoLine}>Owner access: Full control</Text>
+                                </View>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                    <Lock color={theme.colors.textHeading} size={16} />
+                                    <Text style={styles.infoLine}>Shared access: Controlled via share links</Text>
+                                </View>
+                            </View>
+                        )}
+                    </ScrollView>
+                </Animated2.View>
+            </GestureDetector>
 
             {/* Share Modal */}
             <Modal visible={shareModalVisible} transparent animationType="slide">
@@ -891,7 +1186,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                                 ))}
                             </ScrollView>
                         )}
-                        <TouchableOpacity style={[styles.copyBtn, { backgroundColor: '#f1f5f9', marginTop: 12 }]} onPress={() => setMoveModalVisible(false)}>
+                        <TouchableOpacity style={[styles.copyBtn, { backgroundColor: theme.colors.background, marginTop: 12 }]} onPress={() => setMoveModalVisible(false)}>
                             <Text style={{ color: theme.colors.textHeading, fontWeight: '600' }}>Cancel</Text>
                         </TouchableOpacity>
                     </View>
@@ -905,7 +1200,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                         <Text style={styles.sheetTitle}>Rename File</Text>
                         <TextInput style={styles.renameInput} value={newName} onChangeText={setNewName} autoFocus />
                         <View style={{ flexDirection: 'row', gap: 12, justifyContent: 'flex-end' }}>
-                            <TouchableOpacity style={[styles.copyBtn, { backgroundColor: '#f1f5f9', flex: 1 }]} onPress={() => setRenameModalVisible(false)}>
+                            <TouchableOpacity style={[styles.copyBtn, { backgroundColor: theme.colors.background, flex: 1 }]} onPress={() => setRenameModalVisible(false)}>
                                 <Text style={{ color: theme.colors.textHeading, fontWeight: '600' }}>Cancel</Text>
                             </TouchableOpacity>
                             <TouchableOpacity style={[styles.copyBtn, { flex: 1 }]} onPress={handleRename}>

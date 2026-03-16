@@ -1,6 +1,6 @@
-﻿import React, { memo } from 'react';
+import React, { memo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image as RNImage } from 'react-native';
-import { Folder, Star, FileText, Image as ImageIcon, Film, Music, Archive } from 'lucide-react-native';
+import { Folder, Star, FileText, Image as ImageIcon, Film, Music, Archive, MoreHorizontal } from 'lucide-react-native';
 import { lightTheme } from '../context/ThemeContext';
 import { formatFolderMeta } from '../utils/folderMeta';
 
@@ -27,29 +27,17 @@ interface FileListItemProps {
     theme: Theme;
     isDark: boolean;
     onPress: (item: FileItem, isFolder: boolean) => void;
+    variant?: 'default' | 'card';
 }
 
-const getIconConfig = (mime: string, C: {
-    primary: string;
-    warning: string;
-    purple: string;
-    success: string;
-    danger: string;
-    orange: string;
-    softPrimary: string;
-    softWarning: string;
-    softPurple: string;
-    softSuccess: string;
-    softDanger: string;
-    softOrange: string;
-}) => {
-    if (!mime) return { Icon: FileText, color: C.primary, bg: C.softPrimary };
-    if (mime.includes('image')) return { Icon: ImageIcon, color: C.warning, bg: C.softWarning };
-    if (mime.includes('video')) return { Icon: Film, color: C.purple, bg: C.softPurple };
-    if (mime.includes('audio')) return { Icon: Music, color: C.success, bg: C.softSuccess };
-    if (mime.includes('pdf')) return { Icon: FileText, color: C.danger, bg: C.softDanger };
-    if (mime.includes('zip') || mime.includes('compress')) return { Icon: Archive, color: C.orange, bg: C.softOrange };
-    return { Icon: FileText, color: C.primary, bg: C.softPrimary };
+const getIconConfig = (mime: string, isDark: boolean) => {
+    if (!mime) return { Icon: FileText, color: '#8892A4', bg: isDark ? 'rgba(136,146,164,0.15)' : '#F1F3F9' };
+    if (mime.includes('image')) return { Icon: ImageIcon, color: '#F59E0B', bg: isDark ? 'rgba(245,158,11,0.15)' : '#FEF3C7' };
+    if (mime.includes('video')) return { Icon: Film, color: '#9333EA', bg: isDark ? 'rgba(147,51,234,0.15)' : '#F3E8FF' };
+    if (mime.includes('audio')) return { Icon: Music, color: '#1FD45A', bg: isDark ? 'rgba(31,212,90,0.15)' : '#DCFCE7' };
+    if (mime.includes('pdf')) return { Icon: FileText, color: '#EF4444', bg: isDark ? 'rgba(239,68,68,0.15)' : '#FEE2E2' };
+    if (mime.includes('zip') || mime.includes('compress')) return { Icon: Archive, color: '#F97316', bg: isDark ? 'rgba(249,115,22,0.15)' : '#FFEDD5' };
+    return { Icon: FileText, color: '#8892A4', bg: isDark ? 'rgba(136,146,164,0.15)' : '#F1F3F9' };
 };
 
 const formatSize = (bytes?: number) => {
@@ -63,12 +51,7 @@ const formatSize = (bytes?: number) => {
 const formatDate = (d?: string) => {
     if (!d) return '';
     const date = new Date(d);
-    const now = new Date();
-    const diff = (now.getTime() - date.getTime()) / 1000;
-    if (diff < 60) return 'Just now';
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase();
 };
 
 const createStyles = (theme: Theme) => StyleSheet.create({
@@ -76,32 +59,47 @@ const createStyles = (theme: Theme) => StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         paddingVertical: 14,
-        paddingHorizontal: 16,
-        borderRadius: 14,
-        marginBottom: 8,
+        paddingHorizontal: 0,
+    },
+    fileRowCard: {
+        borderRadius: 0,
+        paddingHorizontal: 20,
+        paddingVertical: 14,
+        backgroundColor: theme.colors.card,
+        borderBottomWidth: 0,
+        shadowColor: 'transparent',
+        elevation: 0,
     },
     fileIcon: {
-        width: 44,
-        height: 44,
-        borderRadius: 12,
-        alignItems: 'center',
+        width: 42,
+        height: 42,
         justifyContent: 'center',
+        alignItems: 'center',
+        marginRight: 16,
+    },
+    fileIconCard: {
+        width: 54,
+        height: 54,
+        marginRight: 16,
     },
     fileInfo: {
         flex: 1,
-        marginLeft: 12,
+        justifyContent: 'center',
     },
     fileName: {
-        fontSize: 15,
-        fontWeight: '500',
+        fontSize: 16,
+        fontWeight: '600',
+        color: theme.colors.textHeading,
+        marginBottom: 4,
     },
     fileMeta: {
-        fontSize: 12,
-        marginTop: 3,
+        fontSize: 13,
+        color: theme.colors.textBody,
+        fontWeight: '500',
     },
 });
 
-const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress }: FileListItemProps) => {
+const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress, variant = 'default' }: FileListItemProps) => {
     const styles = React.useMemo(() => createStyles(theme), [theme]);
     const C = {
         card: theme.colors.card,
@@ -124,8 +122,8 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress }: FileL
 
     const isFolder = item.mime_type === 'inode/directory' || item.result_type === 'folder';
     const cfg = isFolder
-        ? { Icon: Folder, color: C.primary, bg: C.softPrimary }
-        : getIconConfig(item.mime_type || '', C);
+        ? { Icon: Folder, color: '#4B6EF5', bg: 'transparent' }
+        : getIconConfig(item.mime_type || '', isDark);
     const { Icon, color, bg } = cfg;
 
     const handlePress = () => {
@@ -134,11 +132,17 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress }: FileL
 
     return (
         <TouchableOpacity
-            style={[styles.fileRow, { backgroundColor: C.card }]}
+            style={[styles.fileRow, variant === 'card' && styles.fileRowCard]}
             activeOpacity={0.7}
             onPress={handlePress}
         >
-            <View style={[styles.fileIcon, { backgroundColor: bg, overflow: 'hidden' }]}>
+            <View style={[
+                styles.fileIcon,
+                { backgroundColor: bg, overflow: 'hidden' },
+                !isFolder ? { borderRadius: 16 } : null,
+                variant === 'card' && styles.fileIconCard,
+                variant === 'card' && !isFolder ? { borderRadius: 16 } : null
+            ]}>
                 {!isFolder && (item.mime_type?.includes('image') || item.mime_type?.includes('video')) ? (
                     <RNImage
                         source={{
@@ -147,24 +151,27 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress }: FileL
                         }}
                         style={{ width: '100%', height: '100%' }}
                         resizeMode="cover"
+                        // fallback to just the background box if no thumbnail is generated yet
+                        defaultSource={undefined}
                     />
                 ) : (
-                    <Icon color={color} size={22} />
+                    <Icon color={color} size={isFolder ? 38 : (variant === 'card' ? 24 : 22)} fill={isFolder ? color : 'none'} />
                 )}
             </View>
             <View style={styles.fileInfo}>
-                <Text style={[styles.fileName, { color: C.text }]} numberOfLines={1}>
+                <Text style={styles.fileName} numberOfLines={1}>
                     {item.name || item.file_name}
                 </Text>
-                <Text style={[styles.fileMeta, { color: C.muted }]}>
+                <Text style={styles.fileMeta}>
                     {isFolder
                         ? formatFolderMeta(item)
-                        : [formatSize(item.size), formatDate(item.created_at)].filter(Boolean).join(' · ')}
+                        : [formatSize(item.size), formatDate(item.created_at)].filter(Boolean).join(' • ')}
                 </Text>
             </View>
             {item.is_starred && (
-                <Star color={C.accent} size={14} fill={C.accent} />
+                <Star color={C.accent} size={14} fill={C.accent} style={{ marginRight: 8 }} />
             )}
+            <MoreHorizontal color={theme.colors.border} size={20} />
         </TouchableOpacity>
     );
 };
@@ -182,9 +189,9 @@ function arePropsEqual(prev: FileListItemProps, next: FileListItemProps): boolea
         prev.item.folder_count === next.item.folder_count &&
         prev.theme === next.theme &&
         prev.isDark === next.isDark &&
-        prev.token === next.token
+        prev.token === next.token &&
+        prev.variant === next.variant
     );
 }
 
 export default memo(FileListItem, arePropsEqual);
-

@@ -195,9 +195,18 @@ export const initSchema = async () => {
             UNIQUE(file_id, tag)
         );
 
+        CREATE TABLE IF NOT EXISTS file_access_log (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+          user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          accessed_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+
         CREATE INDEX IF NOT EXISTS idx_files_user_folder ON files (user_id, folder_id);
         CREATE INDEX IF NOT EXISTS idx_activity_user ON activity_log(user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_file_tags_user ON file_tags(user_id, tag);
+        CREATE INDEX IF NOT EXISTS idx_file_access_log_file_time ON file_access_log(file_id, accessed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_file_access_log_user_time ON file_access_log(user_id, accessed_at DESC);
     `;
 
   const migrations = [
@@ -230,6 +239,7 @@ export const initSchema = async () => {
     `CREATE INDEX IF NOT EXISTS idx_folders_user_parent ON folders (user_id, parent_id)`,
     `CREATE INDEX IF NOT EXISTS idx_folders_user_trashed ON folders (user_id, is_trashed)`,
     `CREATE TABLE IF NOT EXISTS file_tags (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), file_id UUID REFERENCES files(id) ON DELETE CASCADE, user_id UUID REFERENCES users(id) ON DELETE CASCADE, tag TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW(), UNIQUE(file_id, tag))`,
+    `CREATE TABLE IF NOT EXISTS file_access_log (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, accessed_at TIMESTAMP NOT NULL DEFAULT NOW())`,
     `CREATE INDEX IF NOT EXISTS idx_files_hash ON files (sha256_hash) WHERE sha256_hash IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_files_user_hash ON files (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_files_md5 ON files (md5_hash) WHERE md5_hash IS NOT NULL`,
@@ -258,6 +268,8 @@ export const initSchema = async () => {
     `CREATE INDEX IF NOT EXISTS idx_files_tg_duration ON files (user_id, tg_duration_sec)`,
     `CREATE INDEX IF NOT EXISTS idx_files_tg_size_created ON files (user_id, file_size, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_activity_log_user_created ON activity_log(user_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_file_access_log_file_time ON file_access_log(file_id, accessed_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_file_access_log_user_time ON file_access_log(user_id, accessed_at DESC)`,
     `UPDATE users u SET
        storage_used_bytes = COALESCE(s.used_bytes, 0),
        total_files_count  = COALESCE(s.cnt, 0)

@@ -10,7 +10,7 @@ import {
     bulkAction,
     addTag, removeTag, getFileTags, getFilesByTag, getAllUserTags,
     markAccessed, getRecentlyAccessed,
-    getFileDetails,
+    getFileDetails, getFileHistory,
 } from '../controllers/file.controller';
 import { requireAuth } from '../middlewares/auth.middleware';
 
@@ -103,6 +103,7 @@ router.delete('/:id/tags/:tag', removeTag);
 
 // ── File Details ─────────────────────────────────────────────────────────────
 router.get('/:id/details', getFileDetails);
+router.get('/:id/history', getFileHistory);
 
 // ── Recently Accessed Mark ───────────────────────────────────────────────────
 router.post('/:id/accessed', markAccessed);

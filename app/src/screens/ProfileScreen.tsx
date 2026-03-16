@@ -1,12 +1,11 @@
-﻿import React, { useState, useEffect, useContext, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useContext, useRef, useCallback } from 'react';
 import {
     View, Text, StyleSheet, SafeAreaView,
-    TouchableOpacity, Alert, Platform, Animated, Pressable,
+    TouchableOpacity, Alert, Platform, Animated, Pressable, Switch,
 } from 'react-native';
 import {
-    ArrowLeft, LogOut, Star,
-    Trash2, ChevronRight, Activity,
-    Settings, FolderOpen, BarChart2, HardDrive,
+    ArrowLeft, Trash2,
+    Settings, Edit2, Sparkles, UploadCloud, Moon
 } from 'lucide-react-native';
 import { AuthContext } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -16,76 +15,20 @@ import { SkeletonBlock } from '../ui/Skeleton';
 import Constants from 'expo-constants';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const ACTION_ICONS: Record<string, string> = {
-    upload: 'UP',
-    delete_permanent: 'DEL',
-    trash: 'TR',
-    restore: 'RE',
-    rename: 'RN',
-    create_folder: 'FD',
-    move: 'MV',
-};
-
-function PressableRow({
-    children,
-    onPress,
-    style,
-    disabled,
-}: {
-    children: React.ReactNode;
-    onPress?: () => void;
-    style?: any;
-    disabled?: boolean;
-}) {
-    const scale = useRef(new Animated.Value(1)).current;
-
-    const onPressIn = () => {
-        Animated.spring(scale, {
-            toValue: 0.98,
-            tension: 280,
-            friction: 20,
-            useNativeDriver: true,
-        }).start();
-    };
-
-    const onPressOut = () => {
-        Animated.spring(scale, {
-            toValue: 1,
-            tension: 280,
-            friction: 20,
-            useNativeDriver: true,
-        }).start();
-    };
-
-    if (!onPress) {
-        return <View style={style}>{children}</View>;
-    }
-
-    return (
-        <Pressable
-            onPress={onPress}
-            onPressIn={onPressIn}
-            onPressOut={onPressOut}
-            disabled={disabled}
-        >
-            <Animated.View style={[style, { transform: [{ scale }] }]}>
-                {children}
-            </Animated.View>
-        </Pressable>
-    );
-}
-
 export default function ProfileScreen({ navigation }: any) {
     const authCtx = useContext(AuthContext);
     const { showToast } = useToast();
-    const { theme, isDark } = useTheme();
+    const { theme, isDark, toggleTheme } = useTheme();
     const insets = useSafeAreaInsets();
 
     const [loading, setLoading] = useState(true);
     const [isSigningOut, setIsSigningOut] = useState(false);
     const [stats, setStats] = useState<any>({});
-    const [activity, setActivity] = useState<any[]>([]);
-    const appVersion = Constants.expoConfig?.version || 'dev';
+    
+    // Preferences state
+    const [uploadNotifs, setUploadNotifs] = useState(true);
+    
+    const appVersion = Constants.expoConfig?.version || '1.0.0';
 
     const fadeAnim = useRef(new Animated.Value(0)).current;
     const slideAnim = useRef(new Animated.Value(20)).current;
@@ -101,14 +44,10 @@ export default function ProfileScreen({ navigation }: any) {
     const fetchAll = async () => {
         setLoading(true);
         try {
-            const [statsRes, actRes] = await Promise.all([
-                apiClient.get('/files/stats').catch(() => ({ data: { success: false } })),
-                apiClient.get('/files/activity').catch(() => ({ data: { success: false } })),
-            ]);
+            const statsRes = await apiClient.get('/files/stats').catch(() => ({ data: { success: false } }));
             if (statsRes.data?.success) setStats(statsRes.data);
-            if (actRes.data?.success) setActivity(actRes.data.activity.slice(0, 20));
         } catch {
-            // keep previous values
+            // silent fail
         } finally {
             setLoading(false);
         }
@@ -138,23 +77,17 @@ export default function ProfileScreen({ navigation }: any) {
         const mb = bytes / (1024 * 1024);
         if (mb >= 1024) {
             const gb = mb / 1024;
-            return { value: gb >= 10 ? Math.round(gb).toString() : gb.toFixed(1), unit: 'GB' };
+            return { value: gb >= 10 ? Math.round(gb).toString() : gb.toFixed(2), unit: 'GB' };
         }
         return { value: Math.round(mb).toString(), unit: 'MB' };
     };
 
-    const formatDate = (d: string) =>
-        new Date(d).toLocaleString('en-US', {
-            month: 'short', day: 'numeric',
-            hour: '2-digit', minute: '2-digit',
-        });
-
-    const C = theme.colors;
     const userName = authCtx.user?.name || authCtx.user?.username || 'Axya User';
     const userPhone = authCtx.user?.phone || '';
     const avatarLetter = (userName[0] || '?').toUpperCase();
 
     const storage = loading ? { value: '-', unit: '' } : formatStorageSplit(stats.totalBytes || 0);
+
     const handleBack = () => {
         if (navigation?.canGoBack?.()) {
             navigation.goBack();
@@ -163,18 +96,23 @@ export default function ProfileScreen({ navigation }: any) {
         navigation?.navigate?.('MainTabs', { screen: 'Home' });
     };
 
+    // Premium minimal styling values
+    const BG_COLOR = isDark ? '#0A0A0F' : '#F9FBFF';
+    const CARD_BG = isDark ? '#14141E' : '#FFFFFF';
+    const TEXT_MAIN = isDark ? '#FFFFFF' : '#0F172A';
+    const TEXT_SUB = isDark ? '#94A3B8' : '#64748B';
+    const BORDER_COLOR = isDark ? '#1F1F2E' : '#E2E8F0';
+
     return (
-        <SafeAreaView style={[st.root, { backgroundColor: C.background }]}>
-            <View style={[st.header, { paddingTop: Math.max(insets.top + 8, 16) }]}>
-                <TouchableOpacity
-                    style={[st.headerBtn, { backgroundColor: C.card }]}
-                    onPress={handleBack}
-                    activeOpacity={0.7}
-                >
-                    <ArrowLeft color={C.textHeading} size={20} />
+        <SafeAreaView style={[st.root, { backgroundColor: BG_COLOR }]}>
+            {/* STICKY HEADER */}
+            <View style={[st.header, { backgroundColor: BG_COLOR, paddingTop: Math.max(insets.top + 8, 16) }]}>
+                <TouchableOpacity style={st.headerBtn} onPress={handleBack} activeOpacity={0.7}>
+                    <ArrowLeft color={TEXT_MAIN} size={24} strokeWidth={2.5} />
                 </TouchableOpacity>
-                <Text style={[st.headerTitle, { color: C.textHeading }]}>Profile</Text>
-                <View style={{ width: 44 }} />
+                <TouchableOpacity style={st.headerBtnRight} onPress={() => navigation.navigate('Settings')} activeOpacity={0.7}>
+                    <Sparkles color="#4B6EF5" size={24} strokeWidth={2} />
+                </TouchableOpacity>
             </View>
 
             <Animated.ScrollView
@@ -182,256 +120,130 @@ export default function ProfileScreen({ navigation }: any) {
                 contentContainerStyle={st.scroll}
                 style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
             >
-                <View
-                    style={[
-                        st.profileCard,
-                        {
-                            backgroundColor: C.card,
-                            borderColor: C.border,
-                        },
-                        theme.shadows.card,
-                    ]}
-                >
-                    <View style={st.profileTopRow}>
-                        <View style={[st.avatarRing, { borderColor: isDark ? C.primary : '#D6DFFE' }]}>
-                            <View style={[st.avatarCircle, { backgroundColor: C.primary }]}>
-                                <Text style={st.avatarLetter}>{avatarLetter}</Text>
-                            </View>
+                {/* PROFILE SECTION */}
+                <View style={st.profileCenterCol}>
+                    <View style={st.avatarWrap}>
+                        <View style={st.avatarCircle}>
+                            <Text style={st.avatarLetter}>{avatarLetter}</Text>
                         </View>
-
-                        {loading ? (
-                            <View style={{ marginLeft: 14, flex: 1 }}>
-                                <SkeletonBlock width={160} height={18} borderRadius={8} />
-                                <SkeletonBlock width={120} height={13} borderRadius={6} style={{ marginTop: 8 }} />
-                            </View>
-                        ) : (
-                            <View style={st.profileInfoCol}>
-                                <Text style={[st.userName, { color: C.textHeading }]} numberOfLines={1}>{userName}</Text>
-                                <Text style={[st.userSub, { color: C.muted }]} numberOfLines={1}>
-                                    {userPhone || 'No phone linked'}
-                                </Text>
-                                <View style={[st.accountBadge, { backgroundColor: isDark ? C.primaryLight : '#EEF1FD' }]}>
-                                    <Text style={[st.accountBadgeText, { color: C.primary }]}>Personal Workspace</Text>
-                                </View>
-                            </View>
-                        )}
+                        <TouchableOpacity style={st.editIconBadge} activeOpacity={0.8}>
+                            <Edit2 color="#FFF" size={14} strokeWidth={2.5} />
+                        </TouchableOpacity>
                     </View>
-                </View>
 
-                <View style={st.statsGrid}>
-                    <StatTile
-                        label="Files"
-                        value={loading ? '-' : String(stats.totalFiles ?? 0)}
-                        color={C.primary}
-                        bg={isDark ? 'rgba(88,117,255,0.12)' : '#EEF2FF'}
-                        labelColor={isDark ? '#9CB4FF' : '#4A63E6'}
-                        icon={<FolderOpen color={isDark ? '#9CB4FF' : '#4A63E6'} size={16} />}
-                        onPress={() => navigation.navigate('Files')}
-                    />
-                    <StatTile
-                        label="Storage Used"
-                        value={storage.value}
-                        unit={storage.unit}
-                        color={C.textHeading}
-                        bg={isDark ? 'rgba(148,163,184,0.12)' : '#F1F5F9'}
-                        labelColor={isDark ? '#A8B9CF' : '#5C728F'}
-                        icon={<HardDrive color={isDark ? '#A8B9CF' : '#5C728F'} size={16} />}
-                        onPress={() => navigation.navigate('Analytics')}
-                    />
-                    <StatTile
-                        label="Starred"
-                        value={loading ? '-' : String(stats.starredCount ?? 0)}
-                        color={C.accent}
-                        bg={isDark ? 'rgba(245,158,11,0.12)' : '#FFFBEB'}
-                        labelColor={isDark ? '#F5C56A' : '#C18A00'}
-                        icon={<Star color={isDark ? '#F5C56A' : '#C18A00'} size={16} />}
-                        onPress={() => navigation.navigate('Starred')}
-                    />
-                    <StatTile
-                        label="Trash"
-                        value={loading ? '-' : String(stats.trashCount ?? 0)}
-                        color={C.danger}
-                        bg={isDark ? 'rgba(239,68,68,0.12)' : '#FEF2F2'}
-                        labelColor={isDark ? '#FF9C9C' : '#CF3A3A'}
-                        icon={<Trash2 color={isDark ? '#FF9C9C' : '#CF3A3A'} size={16} />}
-                        onPress={() => navigation.navigate('Trash')}
-                    />
-                </View>
-
-                <Text style={[st.sectionLabel, { color: C.muted }]}>Quick Access</Text>
-                <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
-                    <MenuItem
-                        icon={<Star color="#F59E0B" size={20} />}
-                        iconBg={isDark ? 'rgba(245,158,11,0.12)' : '#FEF3C7'}
-                        title="Starred Files"
-                        color={C.textHeading}
-                        chevronColor={C.muted}
-                        onPress={() => navigation.navigate('Starred')}
-                    />
-                    <View style={[st.rowDivider, { backgroundColor: C.border }]} />
-                    <MenuItem
-                        icon={<FolderOpen color={C.primary} size={20} />}
-                        iconBg={isDark ? C.primaryLight : '#EEF1FD'}
-                        title="All Folders"
-                        color={C.textHeading}
-                        chevronColor={C.muted}
-                        onPress={() => navigation.navigate('Folders')}
-                    />
-                    <View style={[st.rowDivider, { backgroundColor: C.border }]} />
-                    <MenuItem
-                        icon={<Trash2 color={C.danger} size={20} />}
-                        iconBg={isDark ? 'rgba(239,68,68,0.12)' : '#FEE2E2'}
-                        title="Trash"
-                        color={C.textHeading}
-                        chevronColor={C.muted}
-                        onPress={() => navigation.navigate('Trash')}
-                    />
-                    <View style={[st.rowDivider, { backgroundColor: C.border }]} />
-                    <MenuItem
-                        icon={<BarChart2 color="#8B5CF6" size={20} />}
-                        iconBg={isDark ? 'rgba(139,92,246,0.12)' : '#EDE9FE'}
-                        title="Storage Analytics"
-                        color={C.textHeading}
-                        chevronColor={C.muted}
-                        onPress={() => navigation.navigate('Analytics')}
-                    />
-                </View>
-
-                <Text style={[st.sectionLabel, { color: C.muted }]}>Settings</Text>
-                <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
-                    <MenuItem
-                        icon={<Settings color={C.textBody} size={20} />}
-                        iconBg={isDark ? 'rgba(100,116,139,0.12)' : '#F1F5F9'}
-                        title="Preferences"
-                        subtitle="Theme, notifications, and account options"
-                        color={C.textHeading}
-                        chevronColor={C.muted}
-                        onPress={() => navigation.navigate('Settings')}
-                    />
-                </View>
-
-                <Text style={[st.sectionLabel, { color: C.muted }]}>Recent Activity</Text>
-                <View style={[st.card, { backgroundColor: C.card }, theme.shadows.card]}>
                     {loading ? (
-                        [1, 2, 3].map(i => (
-                            <View key={i} style={st.actRow}>
-                                <SkeletonBlock width={34} height={34} borderRadius={10} />
-                                <View style={{ marginLeft: 14, flex: 1 }}>
-                                    <SkeletonBlock width="65%" height={13} borderRadius={5} style={{ marginBottom: 6 }} />
-                                    <SkeletonBlock width="40%" height={11} borderRadius={5} />
-                                </View>
-                            </View>
-                        ))
-                    ) : activity.length === 0 ? (
-                        <View style={st.emptyState}>
-                            <Activity color={C.muted} size={28} />
-                            <Text style={[st.emptyText, { color: C.muted }]}>No recent activity</Text>
+                        <View style={{ alignItems: 'center', marginTop: 12 }}>
+                            <SkeletonBlock width={140} height={20} borderRadius={8} />
+                            <SkeletonBlock width={100} height={14} borderRadius={6} style={{ marginTop: 8 }} />
                         </View>
                     ) : (
-                        activity.map((act, i) => (
-                            <React.Fragment key={act.id}>
-                                <View style={st.actRow}>
-                                    <View style={[st.actIconBox, { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F8FAFC' }]}>
-                                        <Text style={{ fontSize: 16 }}>
-                                            {ACTION_ICONS[act.action] || 'FI'}
-                                        </Text>
-                                    </View>
-                                    <View style={{ flex: 1 }}>
-                                        <Text style={[st.actTitle, { color: C.textHeading }]} numberOfLines={1}>
-                                            {act.action.replace(/_/g, ' ')}{act.file_name ? `: ${act.file_name}` : ''}
-                                        </Text>
-                                        <Text style={[st.actDate, { color: C.muted }]}>{formatDate(act.created_at)}</Text>
-                                    </View>
+                        <View style={st.profileInfoCol}>
+                            <Text style={[st.userNameText, { color: TEXT_MAIN }]}>{userName}</Text>
+                            <View style={st.phoneProRow}>
+                                <Text style={[st.userPhoneText, { color: TEXT_SUB }]}>{userPhone || '+91XXXXXXXXXX'}</Text>
+                                <View style={st.proBadge}>
+                                    <Text style={st.proBadgeText}>PRO</Text>
                                 </View>
-                                {i < activity.length - 1 && (
-                                    <View style={[st.rowDivider, { backgroundColor: C.border }]} />
-                                )}
-                            </React.Fragment>
-                        ))
+                            </View>
+                            
+                            <View style={st.syncBadge}>
+                                <View style={st.syncDot} />
+                                <Text style={st.syncBadgeText}>Telegram Cloud Sync Enabled</Text>
+                            </View>
+                        </View>
                     )}
                 </View>
 
+                {/* PREMIUM STORAGE CARD */}
+                <View style={[st.storageCard, { backgroundColor: CARD_BG, borderColor: BORDER_COLOR }]}>
+                    <Text style={[st.storageCardTitle, { color: TEXT_MAIN }]}>Cloud Storage</Text>
+                    <Text style={[st.storageCardUsage, { color: TEXT_SUB }]}>
+                         {storage.value} {storage.unit} used · Unlimited Storage
+                    </Text>
+
+                    {/* STORAGE ACTION MINI CARDS */}
+                    <View style={st.actionCardsGrid}>
+                        <TouchableOpacity 
+                            style={[st.actionCardSmall, { backgroundColor: isDark ? '#1C1C2A' : '#FAFAFA', borderColor: BORDER_COLOR }]} 
+                            onPress={() => navigation.navigate('Settings')}
+                            activeOpacity={0.7}
+                        >
+                            <View style={[st.actionIconBox, { backgroundColor: isDark ? 'rgba(75,110,245,0.1)' : '#EEF2FF' }]}>
+                                <Settings color="#4B6EF5" size={20} />
+                            </View>
+                            <View>
+                                <Text style={[st.actionCardTitle, { color: TEXT_MAIN }]}>Preferences</Text>
+                                <Text style={[st.actionCardSub, { color: TEXT_SUB }]}>Manage app settings</Text>
+                            </View>
+                        </TouchableOpacity>
+                        
+                        <TouchableOpacity 
+                            style={[st.actionCardSmall, { backgroundColor: isDark ? '#1C1C2A' : '#FAFAFA', borderColor: BORDER_COLOR }]} 
+                            onPress={() => navigation.navigate('Trash')}
+                            activeOpacity={0.7}
+                        >
+                            <View style={[st.actionIconBox, { backgroundColor: isDark ? 'rgba(16,185,129,0.1)' : '#F0FDF4' }]}>
+                                <Trash2 color="#10B981" size={20} />
+                            </View>
+                            <View>
+                                <Text style={[st.actionCardTitle, { color: TEXT_MAIN }]}>Trash</Text>
+                                <Text style={[st.actionCardSub, { color: TEXT_SUB }]}>Restore or delete files</Text>
+                            </View>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+
+                {/* PREFERENCES SECTION */}
+                <View style={[st.listCard, { backgroundColor: CARD_BG, borderColor: BORDER_COLOR }]}>
+                    <View style={st.settingRow}>
+                        <View style={[st.settingIconContainer, { backgroundColor: isDark ? '#1C1C2A' : '#F8FAFC' }]}>
+                            <UploadCloud color={TEXT_MAIN} size={20} />
+                        </View>
+                        <Text style={[st.settingLabel, { color: TEXT_MAIN }]}>Upload Notifications</Text>
+                        <Switch 
+                            value={uploadNotifs} 
+                            onValueChange={setUploadNotifs} 
+                            trackColor={{ false: isDark ? '#333' : '#E2E8F0', true: '#4B6EF5' }} 
+                            thumbColor="#FFF"
+                        />
+                    </View>
+                    
+                    <View style={[st.divider, { backgroundColor: BORDER_COLOR }]} />
+                    
+                    <View style={[st.settingRow, { paddingBottom: 16 }]}>
+                        <View style={[st.settingIconContainer, { backgroundColor: isDark ? '#1C1C2A' : '#F8FAFC' }]}>
+                            <Moon color={TEXT_MAIN} size={20} />
+                        </View>
+                        <Text style={[st.settingLabel, { color: TEXT_MAIN }]}>Dark Mode</Text>
+                        <Switch 
+                            value={isDark} 
+                            onValueChange={toggleTheme} 
+                            trackColor={{ false: isDark ? '#333' : '#E2E8F0', true: '#4B6EF5' }} 
+                            thumbColor="#FFF"
+                        />
+                    </View>
+                </View>
+
+
+
+                {/* LOGOUT BUTTON */}
                 <TouchableOpacity
                     onPress={handleLogout}
                     activeOpacity={0.85}
                     disabled={isSigningOut}
                     style={[
-                        st.logoutCard,
-                        {
-                            backgroundColor: isDark ? 'rgba(239,68,68,0.08)' : 'rgba(239,68,68,0.05)',
-                            opacity: isSigningOut ? 0.65 : 1,
-                        },
+                        st.logoutBtn,
+                        { opacity: isSigningOut ? 0.65 : 1 },
                     ]}
                 >
-                    <LogOut color={C.danger} size={20} />
-                    <Text style={[st.logoutText, { color: C.danger }]}>
+                    <Text style={st.logoutText}>
                         {isSigningOut ? 'Signing out...' : 'Sign Out'}
                     </Text>
                 </TouchableOpacity>
 
-                <Text style={[st.footerText, { color: C.muted }]}>Axya Cloud v{appVersion}</Text>
+                <View style={{height: 60}} />
             </Animated.ScrollView>
         </SafeAreaView>
-    );
-}
-
-function StatTile({
-    label,
-    value,
-    unit,
-    color,
-    bg,
-    labelColor,
-    icon,
-    onPress,
-}: {
-    label: string;
-    value: string;
-    unit?: string;
-    color: string;
-    bg: string;
-    labelColor?: string;
-    icon?: React.ReactNode;
-    onPress?: () => void;
-}) {
-    return (
-        <PressableRow onPress={onPress} style={[st.statTile, { backgroundColor: bg }]}>
-            <View style={st.statRow}>
-                {icon ? <View style={[st.statIconWrap, { backgroundColor: color + '18' }]}>{icon}</View> : null}
-                <View style={st.statTextCol}>
-                    <View style={st.statValueRow}>
-                        <Text style={[st.statValue, { color }]} numberOfLines={1}>{value}</Text>
-                        {unit ? <Text style={[st.statUnit, { color }]}>{unit}</Text> : null}
-                    </View>
-                    <Text style={[st.statLabel, labelColor ? { color: labelColor } : null]} numberOfLines={1}>{label}</Text>
-                </View>
-            </View>
-        </PressableRow>
-    );
-}
-
-function MenuItem({
-    icon, iconBg, title, subtitle, color, chevronColor, onPress,
-}: {
-    icon: React.ReactNode;
-    iconBg: string;
-    title: string;
-    subtitle?: string;
-    color: string;
-    chevronColor: string;
-    onPress?: () => void;
-}) {
-    return (
-        <PressableRow onPress={onPress} style={st.menuRow}>
-            <View style={[st.menuIconBox, { backgroundColor: iconBg }]}>
-                {icon}
-            </View>
-            <View style={{ flex: 1 }}>
-                <Text style={[st.menuTitle, { color }]}>{title}</Text>
-                {subtitle && <Text style={[st.menuSub, { color: chevronColor }]}>{subtitle}</Text>}
-            </View>
-            {onPress && <ChevronRight color={chevronColor} size={18} />}
-        </PressableRow>
     );
 }
 
@@ -444,240 +256,220 @@ const st = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingHorizontal: 20,
-        paddingTop: 16,
-        paddingBottom: 12,
+        paddingBottom: 8,
+        zIndex: 10,
     },
     headerBtn: {
         width: 44,
         height: 44,
-        borderRadius: 14,
         justifyContent: 'center',
-        alignItems: 'center',
-        ...Platform.select({
-            ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 6 },
-            android: { elevation: 2 },
-        }),
+        alignItems: 'flex-start',
     },
-    headerTitle: {
-        fontSize: 18,
-        fontWeight: '600',
-        letterSpacing: -0.3,
+    headerBtnRight: {
+        width: 44,
+        height: 44,
+        justifyContent: 'center',
+        alignItems: 'flex-end',
     },
     scroll: {
         paddingHorizontal: 20,
-        paddingTop: 12,
+        paddingTop: 8,
         paddingBottom: 24,
     },
 
-    profileCard: {
-        borderRadius: 20,
-        borderWidth: 1,
-        paddingHorizontal: 20,
-        paddingVertical: 20,
-        marginBottom: 20,
-    },
-    profileTopRow: {
-        flexDirection: 'row',
+    /* Profile Header */
+    profileCenterCol: {
         alignItems: 'center',
+        marginBottom: 32,
     },
-    profileInfoCol: {
-        marginLeft: 16,
-        flex: 1,
-    },
-    avatarRing: {
-        width: 76,
-        height: 76,
-        borderRadius: 38,
-        borderWidth: 3,
-        justifyContent: 'center',
-        alignItems: 'center',
+    avatarWrap: {
+        position: 'relative',
+        marginBottom: 16,
     },
     avatarCircle: {
-        width: 64,
-        height: 64,
-        borderRadius: 32,
+        width: 100,
+        height: 100,
+        borderRadius: 50,
+        backgroundColor: '#4B6EF5',
         justifyContent: 'center',
         alignItems: 'center',
+        shadowColor: '#4B6EF5',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.2,
+        shadowRadius: 16,
+        elevation: 6,
     },
     avatarLetter: {
-        color: '#fff',
-        fontSize: 26,
+        color: '#FFF',
+        fontSize: 38,
         fontWeight: '700',
     },
-    userName: {
-        fontSize: 20,
-        fontWeight: '600',
-        letterSpacing: -0.3,
-        fontFamily: Platform.select({
-            ios: 'Avenir Next',
-            android: 'sans-serif-medium',
-            default: undefined,
-        }),
-    },
-    userSub: {
-        fontSize: 14,
-        fontWeight: '500',
-        marginTop: 4,
-        letterSpacing: 0.1,
-    },
-    accountBadge: {
-        alignSelf: 'flex-start',
-        borderRadius: 999,
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        marginTop: 10,
-    },
-    accountBadgeText: {
-        fontSize: 11,
-        fontWeight: '600',
-        letterSpacing: 0.2,
-    },
-
-    statsGrid: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 12,
-        marginBottom: 24,
-    },
-    statTile: {
-        flex: 1,
-        minWidth: '45%',
+    editIconBadge: {
+        position: 'absolute',
+        bottom: 0,
+        right: 0,
+        backgroundColor: '#111827',
+        width: 32,
+        height: 32,
         borderRadius: 16,
-        paddingVertical: 16,
-        paddingHorizontal: 16,
-    },
-    statRow: {
-        flexDirection: 'row',
+        justifyContent: 'center',
         alignItems: 'center',
-        gap: 12,
+        borderWidth: 2,
+        borderColor: '#FFF',
     },
-    statTextCol: {
-        flex: 1,
+    profileInfoCol: {
+        alignItems: 'center',
     },
-    statValueRow: {
-        flexDirection: 'row',
-        alignItems: 'baseline',
-        gap: 4,
-    },
-    statValue: {
+    userNameText: {
         fontSize: 24,
         fontWeight: '700',
         letterSpacing: -0.5,
+        marginBottom: 4,
     },
-    statUnit: {
-        fontSize: 14,
-        fontWeight: '600',
-    },
-    statLabel: {
-        fontSize: 12,
-        fontWeight: '500',
-        color: '#94A3B8',
-        marginTop: 4,
-    },
-    statIconWrap: {
-        width: 40,
-        height: 40,
-        borderRadius: 12,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-
-    card: {
-        borderRadius: 20,
-        marginBottom: 20,
-        overflow: 'hidden',
-    },
-    sectionLabel: {
-        fontSize: 13,
-        fontWeight: '600',
-        letterSpacing: 0.3,
-        marginBottom: 10,
-        paddingLeft: 2,
-        textTransform: 'uppercase',
-    },
-
-    menuRow: {
+    phoneProRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        paddingHorizontal: 16,
-        paddingVertical: 16,
+        gap: 8,
+        marginBottom: 16,
+    },
+    userPhoneText: {
+        fontSize: 15,
+        fontWeight: '500',
+    },
+    proBadge: {
+        backgroundColor: '#EEF2FF',
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 6,
+    },
+    proBadgeText: {
+        color: '#4B6EF5',
+        fontSize: 10,
+        fontWeight: '800',
+        letterSpacing: 0.5,
+    },
+    syncBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 20,
+        gap: 6,
+    },
+    syncDot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        backgroundColor: '#10B981',
+    },
+    syncBadgeText: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: '#10B981',
+    },
+
+    /* Premium Storage Card */
+    storageCard: {
+        borderRadius: 24,
+        padding: 20,
+        marginBottom: 24,
+        borderWidth: 1,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.03,
+        shadowRadius: 12,
+        elevation: 2,
+    },
+    storageCardTitle: {
+        fontSize: 18,
+        fontWeight: '700',
+        marginBottom: 4,
+        letterSpacing: -0.3,
+    },
+    storageCardUsage: {
+        fontSize: 14,
+        marginBottom: 20,
+        fontWeight: '500',
+    },
+
+
+    actionCardsGrid: {
+        flexDirection: 'column',
+        gap: 12,
+    },
+    actionCardSmall: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        borderRadius: 16,
+        padding: 14,
+        borderWidth: 1,
         gap: 14,
     },
-    menuIconBox: {
-        width: 42,
-        height: 42,
+    actionIconBox: {
+        width: 44,
+        height: 44,
         borderRadius: 12,
         justifyContent: 'center',
         alignItems: 'center',
     },
-    menuTitle: {
+    actionCardTitle: {
         fontSize: 15,
         fontWeight: '600',
-        letterSpacing: -0.1,
-    },
-    menuSub: {
-        fontSize: 12,
-        marginTop: 3,
-        fontWeight: '500',
-    },
-    rowDivider: {
-        height: StyleSheet.hairlineWidth,
-        marginLeft: 72,
-    },
-
-    actRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: 16,
-        paddingVertical: 14,
-        gap: 14,
-    },
-    actIconBox: {
-        width: 40,
-        height: 40,
-        borderRadius: 12,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    actTitle: {
-        fontSize: 14,
-        fontWeight: '600',
-        textTransform: 'capitalize',
         marginBottom: 2,
     },
-    actDate: {
-        fontSize: 12,
-        fontWeight: '500',
-    },
-    emptyState: {
-        paddingVertical: 32,
-        alignItems: 'center',
-        gap: 10,
-    },
-    emptyText: {
-        fontSize: 14,
-        fontWeight: '600',
+    actionCardSub: {
+        fontSize: 13,
     },
 
-    logoutCard: {
+    /* Settings & Trash Cards */
+    listCard: {
+        borderRadius: 24,
+        borderWidth: 1,
+        marginBottom: 24,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.02,
+        shadowRadius: 8,
+        elevation: 1,
+    },
+    settingRow: {
         flexDirection: 'row',
         alignItems: 'center',
+        paddingVertical: 16,
+        paddingHorizontal: 20,
+    },
+    settingIconContainer: {
+        width: 36,
+        height: 36,
+        borderRadius: 10,
         justifyContent: 'center',
-        gap: 10,
-        height: 54,
-        borderRadius: 16,
-        marginBottom: 16,
+        alignItems: 'center',
+        marginRight: 14,
+    },
+    settingLabel: {
+        flex: 1,
+        fontSize: 16,
+        fontWeight: '500',
+    },
+    divider: {
+        height: 1,
+        marginLeft: 70,
+        marginRight: 20,
+    },
+
+    /* Logout */
+    logoutBtn: {
+        height: 56,
+        borderRadius: 24,
+        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+        justifyContent: 'center',
+        alignItems: 'center',
         marginTop: 8,
     },
     logoutText: {
-        fontSize: 15,
+        fontSize: 16,
         fontWeight: '600',
-    },
-
-    footerText: {
-        textAlign: 'center',
-        fontSize: 12,
-        fontWeight: '500',
-        marginBottom: 12,
+        color: '#EF4444',
     },
 });

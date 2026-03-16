@@ -4,6 +4,7 @@ import { NavigationContainer, LinkingOptions } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import * as Notifications from 'expo-notifications';
 import * as ExpoSplashScreen from 'expo-splash-screen';
+import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
@@ -22,6 +23,7 @@ import TrashScreen from './src/screens/TrashScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import FilesScreen from './src/screens/FilesScreen';
+import AllFilesScreen from './src/screens/AllFilesScreen';
 import SharedLinksScreen from './src/screens/SharedLinksScreen';
 import SharedLinkDetailScreen from './src/screens/SharedLinkDetailScreen';
 import MainTabs from './src/navigation/MainTabs';
@@ -79,6 +81,7 @@ function RootNavigator() {
                             <Stack.Screen name="Settings" component={SettingsScreen} />
                             <Stack.Screen name="Analytics" component={AnalyticsScreen} />
                             <Stack.Screen name="Files" component={FilesScreen} />
+                            <Stack.Screen name="AllFiles" component={AllFilesScreen} />
                             <Stack.Screen name="SharedLinks" component={SharedLinksScreen} />
                             <Stack.Screen name="SharedLinkDetail" component={SharedLinkDetailScreen} />
                         </>
@@ -100,6 +103,13 @@ function RootNavigator() {
 }
 
 export default function App() {
+    const [fontsLoaded] = useFonts({
+        Inter_400Regular,
+        Inter_500Medium,
+        Inter_600SemiBold,
+        Inter_700Bold,
+    });
+
     useEffect(() => {
         const globalAny = global as any;
         const ErrorUtilsRef = globalAny?.ErrorUtils;
@@ -146,6 +156,10 @@ export default function App() {
             }
         };
     }, []);
+
+    if (!fontsLoaded) {
+        return null;
+    }
 
     return (
         <AppErrorBoundary>

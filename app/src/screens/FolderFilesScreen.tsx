@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useContext, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useContext, useCallback, useRef, useMemo } from 'react';
 import {
     View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView,
     Alert, Platform, Modal, TextInput, KeyboardAvoidingView,
@@ -64,9 +64,12 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
 
     return (
         <TouchableOpacity
-            style={[isGridView ? styles.gridCard : styles.fileCard,
-            { backgroundColor: isGridView ? theme.colors.card : theme.colors.background },
-            isSelected && styles.fileCardSelected]}
+            style={[
+                isGridView ? styles.gridCard : styles.fileCard,
+                !isGridView && isFolder ? styles.folderRow : null,
+                { backgroundColor: theme.colors.card },
+                isSelected && styles.fileCardSelected,
+            ]}
             onPress={() => onAction(selectMode ? 'toggle' : isFolder ? 'openFolder' : 'preview', item)}
             onLongPress={() => onAction('longPress', item)}
         >
@@ -77,6 +80,11 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
                     </View>
                     <View style={styles.gridLabel}>
                         <Text style={[styles.gridName, { color: theme.colors.textHeading }]} numberOfLines={1}>{item.name || item.file_name}</Text>
+                        <Text style={[styles.gridMeta, { color: theme.colors.textBody }]} numberOfLines={1}>
+                            {isFolder
+                                ? formatFolderMeta(item)
+                                : `${formatSize(item.size)} • ${new Date(item.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`.toUpperCase()}
+                        </Text>
                     </View>
                     {selectMode && (
                         <View style={styles.gridCheckbox}>
@@ -85,14 +93,14 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
                     )}
                 </>
             ) : (
-                <>
-                    <FileIcon item={item} size={46} token={token} apiBase={apiClient.defaults.baseURL} themeColors={theme.colors} style={{ marginRight: 14 }} />
+                <View style={styles.fileCardInner}>
+                    <FileIcon item={item} size={42} token={token} apiBase={apiClient.defaults.baseURL} themeColors={theme.colors} style={{ marginRight: 16 }} />
                     <View style={styles.fileDetails}>
                         <Text style={[styles.fileName, { color: theme.colors.textHeading }]} numberOfLines={1}>{item.name || item.file_name}</Text>
                         <Text style={[styles.fileMeta, { color: theme.colors.textBody }]}>
                             {isFolder
                                 ? formatFolderMeta(item)
-                                : `${formatSize(item.size)} · ${new Date(item.created_at).toLocaleDateString()}`
+                                : `${formatSize(item.size)} • ${new Date(item.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`.toUpperCase()
                             }
                         </Text>
                     </View>
@@ -106,10 +114,15 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
                                 onAction('options', item);
                             }}
                         >
-                            <MoreHorizontal color={theme.colors.textBody} size={20} />
+                            <MoreHorizontal color={theme.colors.border} size={20} />
                         </TouchableOpacity >
                     )}
-                </>
+                    {selectMode && (
+                        <View style={{ paddingRight: 8 }}>
+                            {isSelected ? <CheckSquare color={theme.colors.primary} size={22} /> : <Square color={theme.colors.textBody} size={22} />}
+                        </View>
+                    )}
+                </View>
             )}
         </TouchableOpacity>
     );
@@ -481,8 +494,8 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     }, [selectMode, navigation, toggleSelect, currentBreadcrumb, filteredFiles, fetchFolderFiles]);
 
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
-            <View style={[styles.header, { backgroundColor: theme.colors.background }]}>
+        <SafeAreaView style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
+            <View style={[styles.header, { backgroundColor: '#FFFFFF' }]}>
                 <TouchableOpacity style={styles.iconBtn} onPress={() => { if (selectMode) { setSelectMode(false); setSelectedIds(new Set()); } else navigation.goBack(); }}>
                     {selectMode ? <X color={theme.colors.textHeading} size={22} /> : <ArrowLeft color={theme.colors.textHeading} size={24} />}
                 </TouchableOpacity>
@@ -509,7 +522,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             </View>
 
             {breadcrumb.length > 0 && (
-                <View style={[styles.breadcrumbBar, { backgroundColor: theme.colors.card, borderBottomColor: theme.colors.border }]}>
+                <View style={[styles.breadcrumbBar, { backgroundColor: '#FFFFFF', borderBottomColor: theme.colors.border }]}>
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 20 }}>
                         <TouchableOpacity onPress={() => navigation.navigate('MainTabs', { screen: 'Home' })}><Text style={[styles.crumbLink, { color: theme.colors.primary }]}>Home</Text></TouchableOpacity>
                         {breadcrumb.map((b, i) => (
@@ -524,7 +537,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 </View>
             )}
 
-            <View style={{ backgroundColor: theme.colors.card, paddingBottom: 10 }}>
+            <View style={{ backgroundColor: '#FFFFFF', paddingBottom: 10 }}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={{ gap: 8, paddingHorizontal: 20, alignItems: 'center' }}>
                     {FILTER_TABS.map(t => (
                         <TouchableOpacity
@@ -579,7 +592,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 numColumns={isGridView ? 2 : 1}
                 key={isGridView ? 'grid' : 'list'}
                 columnWrapperStyle={isGridView ? styles.gridContainer : undefined}
-                contentContainerStyle={{ paddingBottom: 100, marginTop: isGridView ? 12 : 0 }}
+                contentContainerStyle={{ paddingBottom: 100, paddingTop: isGridView ? 12 : 8 }}
                 showsVerticalScrollIndicator={false}
                 windowSize={10}
                 maxToRenderPerBatch={20}
@@ -737,7 +750,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                                 </Text>
                                 {sortKey === opt.key && (
                                     <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: theme.colors.primary, justifyContent: 'center', alignItems: 'center' }}>
-                                        <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>?</Text>
+                                        <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>✓</Text>
                                     </View>
                                 )}
                             </TouchableOpacity>
@@ -753,33 +766,33 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     activeOpacity={1}
                     onPress={() => setOptionsTarget(null)}
                 >
-                    <View style={[styles.modalCard, { backgroundColor: theme.colors.card, borderRadius: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40 }]}>
-                        <View style={{ width: 36, height: 4, backgroundColor: theme.colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: 16 }} />
-                        <Text style={[styles.modalTitle, { color: theme.colors.textHeading, marginBottom: 12 }]}>{optionsTarget?.name || optionsTarget?.file_name}</Text>
+                    <View style={[styles.modalCard, { backgroundColor: theme.colors.card, borderRadius: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40, paddingTop: 16 }]}>
+                        <View style={{ width: 40, height: 5, backgroundColor: theme.colors.border, borderRadius: 3, alignSelf: 'center', marginBottom: 20 }} />
+                        <Text style={[styles.modalTitle, { color: theme.colors.textHeading, marginBottom: 16, fontSize: 18 }]}>{optionsTarget?.name || optionsTarget?.file_name}</Text>
 
                         <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('shareLink', optionsTarget); }}>
                             <Share2 color={theme.colors.primary} size={20} />
                             <Text style={[styles.optionText, { color: theme.colors.textHeading }]}>Share Link</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('rename', optionsTarget); }}>
-                            <Tag color={theme.colors.accent} size={20} />
+                            <Tag color={theme.colors.textHeading} size={20} />
                             <Text style={[styles.optionText, { color: theme.colors.textHeading }]}>Rename</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('info', optionsTarget); }}>
-                            <Info color={theme.colors.primary} size={20} />
+                            <Info color={theme.colors.textHeading} size={20} />
                             <Text style={[styles.optionText, { color: theme.colors.textHeading }]}>Info & Tags</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('star', optionsTarget); }}>
-                            <Star color={optionsTarget?.is_starred ? theme.colors.accent : theme.colors.textBody} size={20} />
+                            <Star color={optionsTarget?.is_starred ? '#F59E0B' : theme.colors.textHeading} size={20} fill={optionsTarget?.is_starred ? '#F59E0B' : 'transparent'} />
                             <Text style={[styles.optionText, { color: theme.colors.textHeading }]}>{optionsTarget?.is_starred ? 'Unstar' : 'Star'}</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={styles.optionItem} onPress={() => { setOptionsTarget(null); handleCardAction('move', optionsTarget); }}>
-                            <Move color={theme.colors.primary} size={20} />
+                            <Move color={theme.colors.textHeading} size={20} />
                             <Text style={[styles.optionText, { color: theme.colors.textHeading }]}>Move to Folder</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity style={[styles.optionItem, { backgroundColor: '#fee2e2' }]} onPress={() => { setOptionsTarget(null); handleCardAction('trash', optionsTarget); }}>
-                            <Trash2 color={theme.colors.danger} size={20} />
-                            <Text style={[styles.optionText, { color: theme.colors.danger }]}>Move to Trash</Text>
+                        <TouchableOpacity style={[styles.optionItem, { backgroundColor: theme.mode === 'dark' ? 'rgba(239,68,68,0.1)' : '#FEF2F2', marginTop: 8 }]} onPress={() => { setOptionsTarget(null); handleCardAction('trash', optionsTarget); }}>
+                            <Trash2 color="#EF4444" size={20} />
+                            <Text style={[styles.optionText, { color: '#EF4444' }]}>Move to Trash</Text>
                         </TouchableOpacity>
                     </View>
                 </TouchableOpacity>
@@ -817,17 +830,38 @@ const createStyles = (theme: any) => StyleSheet.create({
     scrollArea: { flex: 1, paddingHorizontal: 20 },
     emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
     emptyText: { color: theme.colors.textBody, fontSize: 15, marginTop: 16 },
-    fileCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'transparent', paddingVertical: 12, paddingHorizontal: 0, marginBottom: 4 },
-    fileCardSelected: { backgroundColor: 'rgba(75, 110, 245, 0.1)', borderRadius: 16, paddingHorizontal: 16 },
-    fileDetails: { flex: 1 },
-    fileName: { fontSize: 16, color: theme.colors.textHeading, fontWeight: '600', marginBottom: 3 },
-    fileMeta: { fontSize: 13, color: theme.colors.textBody },
-    moreBtn: { padding: 8, justifyContent: 'center', alignItems: 'center' },
-    gridContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 12 },
-    gridCard: { width: GRID_SIZE, borderRadius: 16, backgroundColor: theme.colors.card, overflow: 'hidden', ...theme.shadows.card },
-    gridIcon: { width: '100%', height: GRID_SIZE * 0.75, justifyContent: 'center', alignItems: 'center' },
-    gridLabel: { padding: 8 },
-    gridName: { fontSize: 12, fontWeight: '600', color: theme.colors.textHeading },
+    fileCard: { backgroundColor: theme.colors.card },
+    fileCardInner: {
+        flexDirection: 'row', 
+        alignItems: 'center', 
+        paddingVertical: 14, 
+        paddingHorizontal: 20, // Keep some padding for the screen edges since parent doesn't pad
+        borderBottomWidth: 1, 
+        borderBottomColor: theme.colors.border 
+    },
+    folderRow: {
+    },
+    fileCardSelected: { backgroundColor: theme.mode === 'dark' ? 'rgba(75,110,245,0.08)' : '#F8FAFC' },
+    fileDetails: { flex: 1, justifyContent: 'center' },
+    fileName: { fontSize: 16, fontWeight: '500', marginBottom: 2 },
+    fileMeta: { fontSize: 13, fontWeight: '400' },
+    moreBtn: { padding: 4, justifyContent: 'center', alignItems: 'center' },
+    gridContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+    gridCard: {
+        width: GRID_SIZE,
+        borderRadius: 20,
+        backgroundColor: theme.colors.card,
+        overflow: 'hidden',
+        shadowColor: '#253057',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.06,
+        shadowRadius: 10,
+        elevation: 3,
+    },
+    gridIcon: { width: '100%', height: GRID_SIZE * 0.75, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.mode === 'dark' ? theme.colors.background : '#F8FAFC' },
+    gridLabel: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12, gap: 2 },
+    gridName: { fontSize: 13, fontWeight: '700', color: theme.colors.textHeading },
+    gridMeta: { fontSize: 11, fontWeight: '500', color: theme.colors.textBody },
     gridCheckbox: { position: 'absolute', top: 8, right: 8, width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#fff', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.3)' },
     fab: { position: 'absolute', bottom: 40, right: 24, width: 64, height: 64, borderRadius: 32, backgroundColor: theme.colors.primary, justifyContent: 'center', alignItems: 'center', ...theme.shadows.soft, elevation: 10, zIndex: 10 },
     centeredModal: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },

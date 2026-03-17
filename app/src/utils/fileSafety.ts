@@ -5,8 +5,13 @@ export const safeDecodeURIComponent = (value: string): string => {
     try {
         return decodeURIComponent(input);
     } catch {
-        console.warn('Invalid URI:', input);
-        return input;
+        try {
+            // Replace standalone % that aren't followed by 2 hex digits
+            const escaped = input.replace(/%(?![0-9A-Fa-f]{2})/g, '%25');
+            return decodeURIComponent(escaped);
+        } catch {
+            return input;
+        }
     }
 };
 

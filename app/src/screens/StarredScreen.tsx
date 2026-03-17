@@ -1,23 +1,22 @@
 /**
- * StarredScreen.tsx — Starred files with sort, FlatList, and debounced markAccessed
- * Fixes #19: was a basic ScrollView with no sorting
+ * StarredScreen.tsx — Starred files using FileListItem for consistency
  */
-import React, { useState, useEffect, useContext, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useContext, useCallback, useRef, useMemo } from 'react';
 import {
     View, Text, StyleSheet, SafeAreaView, FlatList, TouchableOpacity,
-    RefreshControl, Alert, Modal, ScrollView,
+    RefreshControl, Modal,
 } from 'react-native';
-import { ArrowLeft, Star, SortAsc, SortDesc, Filter } from 'lucide-react-native';
+import { ArrowLeft, SortAsc, SortDesc, Filter } from 'lucide-react-native';
 import apiClient from '../services/apiClient';
 import { useToast } from '../context/ToastContext';
 import { AuthContext } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import FileCard from '../components/FileCard';
-import { FileCardSkeleton } from '../ui/Skeleton';
+import FileListItem from '../components/FileListItem';
+import FileQuickActions from '../components/FileQuickActions';
+import { FileCardSkeleton, ContentFadeIn } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
 import { useFileRefresh, useOptimisticFiles } from '../utils/events';
-import { dedupeFilesById, sortFilesLatestFirst, syncAfterFileMutation } from '../services/fileStateSync';
-import { sanitizeDisplayName } from '../utils/fileSafety';
+import { normalizeItems, sortItems, syncAfterFileMutation } from '../services/fileStateSync';
 
 const SORT_OPTIONS = [
     { key: 'created_at_DESC', label: 'Newest First', icon: SortDesc },
@@ -28,26 +27,10 @@ const SORT_OPTIONS = [
     { key: 'file_size_ASC', label: 'Smallest First', icon: SortAsc },
 ];
 
-function clientSort(files: any[], sortKey: string) {
-    return [...files].sort((a, b) => {
-        if (sortKey.startsWith('file_name')) {
-            const cmp = (a.file_name || '').localeCompare(b.file_name || '');
-            return sortKey.endsWith('ASC') ? cmp : -cmp;
-        }
-        if (sortKey.startsWith('file_size')) {
-            const cmp = (a.file_size || 0) - (b.file_size || 0);
-            return sortKey.endsWith('ASC') ? cmp : -cmp;
-        }
-        // default: created_at
-        const cmp = new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
-        return sortKey.endsWith('ASC') ? cmp : -cmp;
-    });
-}
-
 export default function StarredScreen({ navigation }: any) {
     const { showToast } = useToast();
     const { token } = useContext(AuthContext);
-    const { theme } = useTheme();
+    const { theme, isDark } = useTheme();
     const C = theme.colors;
 
     const [isLoading, setIsLoading] = useState(true);
@@ -55,10 +38,12 @@ export default function StarredScreen({ navigation }: any) {
     const [files, setFiles] = useState<any[]>([]);
     const [sortKey, setSortKey] = useState('created_at_DESC');
     const [showSortModal, setShowSortModal] = useState(false);
+    const [optionsTarget, setOptionsTarget] = useState<any>(null);
 
-    // ✅ Fix #29: debounce markAccessed  (max once per 5 min per file)
     const lastAccessedRef = useRef<Map<string, number>>(new Map());
+    const mountedRef = useRef(true);
 
+    useEffect(() => { return () => { mountedRef.current = false; }; }, []);
     useEffect(() => { fetchStarred(); }, []);
     useFileRefresh(() => { fetchStarred(); });
     useOptimisticFiles(setFiles);
@@ -67,75 +52,50 @@ export default function StarredScreen({ navigation }: any) {
         setIsLoading(true);
         try {
             const res = await apiClient.get('/files/starred');
-            if (res.data.success) {
-                setFiles(sortFilesLatestFirst(dedupeFilesById(res.data.files || [])));
+            if (mountedRef.current && res.data.success) {
+                setFiles(normalizeItems(res.data.files || [], 'created_at_DESC'));
             }
-        } catch { showToast('Could not load starred files', 'error'); }
-        finally { setIsLoading(false); setRefreshing(false); }
+        } catch { if (mountedRef.current) showToast('Could not load starred files', 'error'); }
+        finally { if (mountedRef.current) { setIsLoading(false); setRefreshing(false); } }
     };
 
-    const sortedFiles = clientSort(files, sortKey);
+    const sortedFiles = sortItems(files, sortKey as any);
     const currentSort = SORT_OPTIONS.find(s => s.key === sortKey) ?? SORT_OPTIONS[0];
+
     const handleBack = () => {
-        if (navigation?.canGoBack?.()) {
-            navigation.goBack();
-            return;
-        }
+        if (navigation?.canGoBack?.()) { navigation.goBack(); return; }
         navigation?.navigate?.('MainTabs', { screen: 'Home' });
     };
 
-    const handleStar = async (id: string) => {
-        try {
-            await apiClient.patch(`/files/${id}/star`);
-            setFiles(prev => prev.filter(f => f.id !== id));
-            syncAfterFileMutation({ clearCache: true });
-            showToast('Removed from starred');
-        } catch { showToast('Failed to update star', 'error'); }
-    };
-
-    const handleTrash = (id: string, name: string) => {
-        Alert.alert('Move to Trash', `Move "${name}" to trash?`, [
-            { text: 'Cancel', style: 'cancel' },
-            {
-                text: 'Move to Trash', style: 'destructive', onPress: async () => {
-                    try {
-                        await apiClient.patch(`/files/${id}/trash`);
-                        showToast('Moved to trash');
-                        setFiles(prev => prev.filter(f => f.id !== id));
-                        syncAfterFileMutation();
-                    } catch { showToast('Failed', 'error'); }
-                }
-            }
-        ]);
-    };
-
-    const handleOpen = useCallback((item: any, index: number) => {
+    const handleOpen = useCallback((item: any, isFolder: boolean) => {
+        if (isFolder) return;
+        const index = sortedFiles.findIndex((f: any) => f.id === item.id);
         const now = Date.now();
         const last = lastAccessedRef.current.get(item.id) ?? 0;
         if (now - last > 5 * 60 * 1000) {
             lastAccessedRef.current.set(item.id, now);
-            apiClient.post(`/files/${item.id}/accessed`).catch(() => { });
+            apiClient.post(`/files/${item.id}/accessed`).catch(() => {});
         }
-        navigation.navigate('FilePreview', { files: sortedFiles, initialIndex: index });
+        navigation.navigate('FilePreview', { files: sortedFiles, initialIndex: Math.max(index, 0) });
     }, [sortedFiles, navigation]);
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
-
-            {/* Header */}
-            <View style={[styles.header, { backgroundColor: C.card, borderBottomColor: C.border }]}>
-                <TouchableOpacity onPress={handleBack} style={styles.iconBtn}>
+            {/* Header — matches AllFilesScreen pattern */}
+            <View style={[styles.header, { backgroundColor: C.background, borderBottomColor: C.border }]}>
+                <TouchableOpacity onPress={handleBack} style={styles.iconBtn} activeOpacity={0.7}>
                     <ArrowLeft color={C.textHeading} size={24} />
                 </TouchableOpacity>
-                <View style={{ flex: 1, marginLeft: 8 }}>
-                    <Text style={[styles.title, { color: C.textHeading }]}>⭐ Starred</Text>
-                    <Text style={[styles.subtitle, { color: C.textBody }]}>
-                        {sortedFiles.length} files · {currentSort.label}
+                <View style={styles.headerInfo}>
+                    <Text style={[styles.title, { color: C.textHeading }]} numberOfLines={1}>Starred</Text>
+                    <Text style={[styles.subtitle, { color: C.textBody }]} numberOfLines={1}>
+                        {sortedFiles.length} file{sortedFiles.length !== 1 ? 's' : ''} · {currentSort.label}
                     </Text>
                 </View>
                 <TouchableOpacity
                     style={[styles.sortBtn, { backgroundColor: C.background }]}
                     onPress={() => setShowSortModal(true)}
+                    activeOpacity={0.7}
                 >
                     <Filter size={15} color={C.primary} />
                     <Text style={[styles.sortBtnText, { color: C.primary }]}>Sort</Text>
@@ -145,28 +105,29 @@ export default function StarredScreen({ navigation }: any) {
             {/* File List */}
             {isLoading ? (
                 <View style={{ padding: 20 }}>
-                    {[1, 2, 3].map(i => <FileCardSkeleton key={i} />)}
+                    {[0, 1, 2, 3, 4].map(i => <FileCardSkeleton key={i} index={i} />)}
                 </View>
             ) : sortedFiles.length === 0 ? (
                 <EmptyState
                     title="No starred files"
-                    description="Tap the ⭐ on any file to star it"
+                    description="Tap the star icon on any file to add it here"
                     iconType="file"
                 />
             ) : (
+                <ContentFadeIn visible={!isLoading} style={{ flex: 1 }}>
                 <FlatList
                     data={sortedFiles}
                     keyExtractor={item => item.id}
                     contentContainerStyle={styles.list}
-                    renderItem={({ item, index }) => (
-                        <FileCard
-                            key={item.id}
+                    renderItem={({ item }) => (
+                        <FileListItem
                             item={item}
-                            onPress={() => handleOpen(item, index)}
-                            onStar={() => handleStar(item.id)}
-                            onTrash={() => handleTrash(item.id, item.file_name || item.name || 'this file')}
                             token={token || ''}
-                            apiBase={apiClient.defaults.baseURL}
+                            apiBaseUrl={apiClient.defaults.baseURL || ''}
+                            theme={theme}
+                            isDark={isDark}
+                            onPress={handleOpen}
+                            onOptionsPress={setOptionsTarget}
                         />
                     )}
                     refreshControl={
@@ -180,7 +141,16 @@ export default function StarredScreen({ navigation }: any) {
                     maxToRenderPerBatch={20}
                     removeClippedSubviews
                 />
+                </ContentFadeIn>
             )}
+
+            {/* Quick Actions Bottom Sheet */}
+            <FileQuickActions
+                item={optionsTarget}
+                visible={!!optionsTarget}
+                onClose={() => setOptionsTarget(null)}
+                onRefresh={fetchStarred}
+            />
 
             {/* Sort Modal */}
             <Modal visible={showSortModal} transparent animationType="slide">
@@ -197,6 +167,7 @@ export default function StarredScreen({ navigation }: any) {
                                 key={opt.key}
                                 style={[styles.sortRow, sortKey === opt.key && { backgroundColor: C.primary + '18' }]}
                                 onPress={() => { setSortKey(opt.key); setShowSortModal(false); }}
+                                activeOpacity={0.7}
                             >
                                 <opt.icon size={18} color={sortKey === opt.key ? C.primary : C.textBody} />
                                 <Text style={[
@@ -225,20 +196,19 @@ const styles = StyleSheet.create({
     container: { flex: 1 },
     header: {
         flexDirection: 'row', alignItems: 'center',
-        paddingHorizontal: 16, height: 60, borderBottomWidth: 1,
+        paddingHorizontal: 20, paddingVertical: 16,
+        borderBottomWidth: 1, gap: 12,
     },
     iconBtn: { width: 40, height: 40, justifyContent: 'center' },
-    title: { fontSize: 18, fontWeight: '700' },
-    subtitle: { fontSize: 12, marginTop: 1 },
+    headerInfo: { flex: 1 },
+    title: { fontSize: 24, fontWeight: '700' },
+    subtitle: { fontSize: 12, color: '#64748B', marginTop: 2, fontWeight: '500' },
     sortBtn: {
         flexDirection: 'row', alignItems: 'center', gap: 5,
         paddingHorizontal: 12, height: 34, borderRadius: 20,
     },
     sortBtnText: { fontSize: 13, fontWeight: '600' },
-    list: { padding: 20, paddingBottom: 40 },
-    empty: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-    emptyTitle: { fontSize: 18, fontWeight: '700', marginTop: 16, marginBottom: 8 },
-    emptySub: { fontSize: 14 },
+    list: { paddingVertical: 12, paddingHorizontal: 20 },
     // Sort sheet
     overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
     sheet: { borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 12 },

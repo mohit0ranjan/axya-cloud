@@ -1,8 +1,7 @@
-import React, { useContext, useEffect, useState } from 'react';
-import { Platform, View } from 'react-native';
-import { NavigationContainer, LinkingOptions } from '@react-navigation/native';
+import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, View, StatusBar, Animated, Easing } from 'react-native';
+import { NavigationContainer, LinkingOptions, DefaultTheme as NavigationDefaultTheme, DarkTheme as NavigationDarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import * as Notifications from 'expo-notifications';
 import * as ExpoSplashScreen from 'expo-splash-screen';
 import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -10,7 +9,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AuthProvider, AuthContext } from './src/context/AuthContext';
 import { ToastProvider } from './src/context/ToastContext';
-import { ThemeProvider } from './src/context/ThemeContext';
+import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import { ServerStatusProvider } from './src/context/ServerStatusContext';
 import { UploadProvider } from './src/context/UploadContext';
 import { DownloadProvider } from './src/context/DownloadContext';
@@ -53,14 +52,53 @@ const getLinking = (isAuthenticated: boolean): LinkingOptions<any> => ({
 
 function RootNavigator() {
     const auth = useContext(AuthContext);
+    const { theme } = useTheme();
     const isAuthenticated = auth?.isAuthenticated;
     const isLoading = auth?.isLoading;
     const linking = getLinking(Boolean(isAuthenticated));
     const [isSplashAnimationDone, setIsSplashAnimationDone] = useState(false);
+    const previousBgRef = useRef(theme.colors.background);
+    const transitionOpacity = useRef(new Animated.Value(0)).current;
+
+    const navigationTheme = useMemo(() => {
+        const baseTheme = theme.mode === 'dark' ? NavigationDarkTheme : NavigationDefaultTheme;
+        return {
+            ...baseTheme,
+            colors: {
+                ...baseTheme.colors,
+                primary: theme.colors.primary,
+                background: theme.colors.background,
+                card: theme.colors.card,
+                text: theme.colors.textHeading,
+                border: theme.colors.border,
+                notification: theme.colors.accent,
+            },
+        };
+    }, [theme]);
+
+    useEffect(() => {
+        if (previousBgRef.current === theme.colors.background) {
+            return;
+        }
+
+        transitionOpacity.stopAnimation();
+        transitionOpacity.setValue(1);
+        Animated.timing(transitionOpacity, {
+            toValue: 0,
+            duration: 220,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: Platform.OS !== 'web',
+        }).start();
+        previousBgRef.current = theme.colors.background;
+    }, [theme.colors.background, transitionOpacity]);
 
     return (
-        <NavigationContainer linking={linking}>
-            <View style={{ flex: 1 }}>
+        <NavigationContainer linking={linking} theme={navigationTheme}>
+            <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
+                <StatusBar
+                    barStyle={theme.mode === 'dark' ? 'light-content' : 'dark-content'}
+                    backgroundColor={theme.colors.background}
+                />
                 <Stack.Navigator
                     id="root"
                     initialRouteName={isAuthenticated ? 'MainTabs' : 'Welcome'}
@@ -95,6 +133,18 @@ function RootNavigator() {
                         isAuthLoading={!!isLoading}
                     />
                 )}
+                <Animated.View
+                    style={{
+                        position: 'absolute',
+                        top: 0,
+                        right: 0,
+                        bottom: 0,
+                        left: 0,
+                        pointerEvents: 'none' as any,
+                        backgroundColor: previousBgRef.current,
+                        opacity: transitionOpacity,
+                    }}
+                />
             </View>
         </NavigationContainer>
     );
@@ -124,29 +174,33 @@ export default function App() {
             });
         }
 
-        if (Platform.OS === 'android') {
-            Notifications.setNotificationChannelAsync('upload_channel', {
-                name: 'File Transfers',
-                importance: Notifications.AndroidImportance.LOW,
-                description: 'Shows file upload and download progress',
-                enableVibrate: false,
-                showBadge: false,
+        if (Platform.OS !== 'web') {
+            const Notifications = require('expo-notifications');
+
+            if (Platform.OS === 'android') {
+                Notifications.setNotificationChannelAsync('upload_channel', {
+                    name: 'File Transfers',
+                    importance: Notifications.AndroidImportance.LOW,
+                    description: 'Shows file upload and download progress',
+                    enableVibrate: false,
+                    showBadge: false,
+                });
+            }
+
+            Notifications.requestPermissionsAsync().then(({ status }: { status: string }) => {
+                if (status !== 'granted') console.warn('[Notifications] Permission not granted');
+            });
+
+            Notifications.setNotificationHandler({
+                handleNotification: async () => ({
+                    shouldShowAlert: false,
+                    shouldShowBanner: false,
+                    shouldShowList: true,
+                    shouldPlaySound: false,
+                    shouldSetBadge: false,
+                }),
             });
         }
-
-        Notifications.requestPermissionsAsync().then(({ status }) => {
-            if (status !== 'granted') console.warn('[Notifications] Permission not granted');
-        });
-
-        Notifications.setNotificationHandler({
-            handleNotification: async () => ({
-                shouldShowAlert: false,
-                shouldShowBanner: false,
-                shouldShowList: true,
-                shouldPlaySound: false,
-                shouldSetBadge: false,
-            }),
-        });
 
         return () => {
             if (ErrorUtilsRef?.setGlobalHandler && existingGlobalHandler) {

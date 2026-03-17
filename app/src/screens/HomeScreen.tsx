@@ -20,7 +20,7 @@ import { AuthContext } from '../context/AuthContext';
 import { useUpload } from '../context/UploadContext';
 import { useApiCacheStore } from '../context/ApiCacheStore';
 import { useToast } from '../context/ToastContext';
-import { FileCardSkeleton, SkeletonBlock } from '../ui/Skeleton';
+import { FileCardSkeleton, SkeletonBlock, ContentFadeIn } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
 import { useTheme } from '../context/ThemeContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -33,7 +33,7 @@ import AppButton from '../components/AppButton';
 import IconButton from '../components/IconButton';
 import { formatFolderMeta } from '../utils/folderMeta';
 import { useFileRefresh, useOptimisticFiles } from '../utils/events';
-import { dedupeFilesById, sortFilesLatestFirst, syncAfterFileMutation } from '../services/fileStateSync';
+import { dedupeFilesById, normalizeItems, sortFilesLatestFirst, syncAfterFileMutation } from '../services/fileStateSync';
 
 const { width } = Dimensions.get('window');
 const HOME_RECENT_FILES_PREVIEW_LIMIT = 3;
@@ -429,8 +429,8 @@ export default function HomeScreen({ navigation, route }: any) {
     useEffect(() => {
         if (homeData) { // Instantiate instantly from cache to prevent empty screen flashes
             setStats(homeData.stats);
-            setRecentFiles(sortFilesLatestFirst(dedupeFilesById(asArray(homeData.files))));
-            setAllFolders(asArray(homeData.folders));
+            setRecentFiles(normalizeItems(asArray(homeData.files), 'created_at_DESC'));
+            setAllFolders(normalizeItems(asArray(homeData.folders), 'created_at_DESC'));
             setLoading(false);
         }
         void hydratePinnedFolderIds();
@@ -487,9 +487,11 @@ export default function HomeScreen({ navigation, route }: any) {
 
             const newStats = statsRes.data.success ? statsRes.data : {};
             const newFiles = filesRes.data.success
-                ? sortFilesLatestFirst(dedupeFilesById(asArray(filesRes.data.files)))
+                ? normalizeItems(asArray(filesRes.data.files), 'created_at_DESC')
                 : [];
-            const newFolders = foldersRes.data.success ? asArray(foldersRes.data.folders) : [];
+            const newFolders = foldersRes.data.success
+                ? normalizeItems(asArray(foldersRes.data.folders), 'created_at_DESC')
+                : [];
 
             if (!mountedRef.current) return;
             setHomeData({ stats: newStats, files: newFiles, folders: newFolders, recent: [], activity: [] });
@@ -836,11 +838,11 @@ export default function HomeScreen({ navigation, route }: any) {
 
                         {loading ? (
                             <View style={s.folderGrid}>
-                                {[1, 2, 3, 4].map(i => (
+                                {[0, 1, 2, 3].map(i => (
                                     <View key={`folder-skel-${i}`} style={s.folderGridCard}>
-                                        <SkeletonBlock width={44} height={44} borderRadius={12} />
-                                        <SkeletonBlock width="70%" height={13} borderRadius={6} style={{ marginTop: 28 }} />
-                                        <SkeletonBlock width="50%" height={11} borderRadius={5} style={{ marginTop: 6 }} />
+                                        <SkeletonBlock width={44} height={44} borderRadius={12} delay={i * 80} />
+                                        <SkeletonBlock width="70%" height={13} borderRadius={6} style={{ marginTop: 28 }} delay={i * 80 + 40} />
+                                        <SkeletonBlock width="50%" height={11} borderRadius={5} style={{ marginTop: 6 }} delay={i * 80 + 80} />
                                     </View>
                                 ))}
                             </View>
@@ -850,6 +852,7 @@ export default function HomeScreen({ navigation, route }: any) {
                                 <Text style={s.emptyFolderText}>Create your first folder</Text>
                             </TouchableOpacity>
                         ) : (
+                            <ContentFadeIn visible={!loading}>
                             <View style={s.folderGrid}>
                                 <TouchableOpacity style={s.folderGridCard} onPress={() => navigation.navigate('AllFiles')}>
                                     <View style={s.folderGridTop}>
@@ -947,6 +950,7 @@ export default function HomeScreen({ navigation, route }: any) {
                                     );
                                 })}
                             </View>
+                            </ContentFadeIn>
                         )}
                     </>
                 )}
@@ -968,7 +972,7 @@ export default function HomeScreen({ navigation, route }: any) {
 
                 {loading || searching ? (
                     <View style={{ paddingHorizontal: 20 }}>
-                        {[1, 2, 3, 4].map(i => <FileCardSkeleton key={i} />)}
+                        {[0, 1, 2, 3].map(i => <FileCardSkeleton key={i} index={i} />)}
                     </View>
                 ) : displayItems.length === 0 ? (
                     <EmptyState
@@ -978,6 +982,7 @@ export default function HomeScreen({ navigation, route }: any) {
                         style={{ paddingVertical: 40, flex: 0 }}
                     />
                 ) : (
+                    <ContentFadeIn visible={!loading && !searching}>
                     <View style={s.fileList}>
                         {displayItems.map((item: any) => (
                             <FileListItem
@@ -993,6 +998,7 @@ export default function HomeScreen({ navigation, route }: any) {
                             />
                         ))}
                     </View>
+                    </ContentFadeIn>
                 )}
 
                 <View style={{ height: 20 }} />

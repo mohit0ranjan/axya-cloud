@@ -26,7 +26,7 @@ import { FileIcon } from '../components/FileIcon';
 import { normalizeExternalShareUrl } from '../utils/shareUrls';
 import { formatFolderMeta } from '../utils/folderMeta';
 import { useFileRefresh, useOptimisticFiles } from '../utils/events';
-import { dedupeFilesById, sortFilesLatestFirst, syncAfterFileMutation } from '../services/fileStateSync';
+import { dedupeFilesById, getItemName, getItemSize, normalizeItems, sortItems, syncAfterFileMutation } from '../services/fileStateSync';
 import { sanitizeDisplayName, sanitizeFileName } from '../utils/fileSafety';
 
 
@@ -241,29 +241,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             }
             if (filesRes.data.success) merged = [...merged, ...filesRes.data.files];
 
-            // Client-side sort to unify folders and files
-            merged.sort((a, b) => {
-                if (sortCol === 'created_at') {
-                    const timeA = new Date(a.created_at || 0).getTime();
-                    const timeB = new Date(b.created_at || 0).getTime();
-                    return sortOrder === 'DESC' ? timeB - timeA : timeA - timeB;
-                }
-                if (sortCol === 'file_name') {
-                    const nameA = (a.name || a.file_name || '').toLowerCase();
-                    const nameB = (b.name || b.file_name || '').toLowerCase();
-                    return sortOrder === 'DESC' ? nameB.localeCompare(nameA) : nameA.localeCompare(nameB);
-                }
-                if (sortCol === 'file_size') {
-                    const sizeA = a.size || 0;
-                    const sizeB = b.size || 0;
-                    return sortOrder === 'DESC' ? sizeB - sizeA : sizeA - sizeB;
-                }
-                return 0;
-            });
-
-            const foldersOnly = merged.filter((x) => x.result_type === 'folder' || x.mime_type === 'inode/directory');
-            const filesOnly = merged.filter((x) => x.result_type !== 'folder' && x.mime_type !== 'inode/directory');
-            const normalized = [...dedupeFilesById(foldersOnly), ...sortFilesLatestFirst(dedupeFilesById(filesOnly))];
+            const normalized = normalizeItems(merged, sortKey as any);
             setFiles(normalized);
         } catch (e) {
             setLoadError('Could not load folder contents.');
@@ -313,7 +291,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 setMoveModalVisible(true);
                 return; // don't reset select mode yet
             }
-        } catch (e) { Alert.alert('Error', 'Bulk action failed'); }
+        } catch (e) { showToast('Bulk action failed', 'error'); }
         finally { setSelectMode(false); setSelectedIds(new Set()); }
     };
 
@@ -327,7 +305,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             setSelectedIds(new Set());
             fetchFolderFiles();
             syncAfterFileMutation();
-        } catch (e) { Alert.alert('Error', 'Could not move files'); }
+        } catch (e) { showToast('Could not move files', 'error'); }
     };
 
     const handleDelete = async (item: any) => {
@@ -353,7 +331,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                             fetchFolderFiles();
                             syncAfterFileMutation();
                         } catch (e: any) {
-                            Alert.alert('Error', e.response?.data?.error || 'Could not move to trash');
+                            showToast(e.response?.data?.error || 'Could not move to trash', 'error');
                         }
                     }
                 }
@@ -377,7 +355,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                             syncAfterFileMutation();
                             navigation.goBack();
                         } catch (e: any) {
-                            Alert.alert('Error', e.response?.data?.error || 'Could not delete folder');
+                            showToast(e.response?.data?.error || 'Could not delete folder', 'error');
                         }
                     }
                 }
@@ -397,7 +375,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             await apiClient.post('/files/folder', { name: nextFolderName, parent_id: folderId, color: folderColor });
             setNewFolderName(''); setCreateModalVisible(false); fetchFolderFiles();
             syncAfterFileMutation();
-        } catch (e: any) { Alert.alert('Error', e.response?.data?.error || 'Failed'); }
+        } catch (e: any) { showToast(e.response?.data?.error || 'Failed', 'error'); }
     };
 
     const handleRename = async () => {
@@ -408,7 +386,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             await apiClient.patch(endpoint, { name: nextName, file_name: nextName });
             setRenameTarget(null); setRenameModalVisible(false); fetchFolderFiles();
             syncAfterFileMutation();
-        } catch (e: any) { Alert.alert('Error', e.response?.data?.error || 'Failed'); }
+        } catch (e: any) { showToast(e.response?.data?.error || 'Failed', 'error'); }
     };
 
     const openInfoSheet = async (item: any) => {
@@ -466,7 +444,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 mimeType: a.mimeType ?? 'application/octet-stream',
             }));
             addUpload(fileAssets, folderId, 'me');
-        } catch { Alert.alert('Error', 'Pick failed'); }
+        } catch { showToast('Pick failed', 'error'); }
     };
 
     const currentBreadcrumb = [...breadcrumb, { id: folderId, name: folderName }];
@@ -503,7 +481,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     fetchFolderFiles();
                     syncAfterFileMutation({ clearCache: true });
                 })
-                .catch(() => Alert.alert('Error', 'Could not update star'));
+                .catch(() => showToast('Could not update star', 'error'));
         } else if (action === 'move') {
             apiClient.get('/files/folders').then((res: any) => {
                 if (res.data.success) {
@@ -511,15 +489,15 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     setMoveTarget({ ids: [item.id] });
                     setMoveModalVisible(true);
                 }
-            }).catch(() => Alert.alert('Error', 'Could not load folders'));
+            }).catch(() => showToast('Could not load folders', 'error'));
         } else if (action === 'trash') {
             handleDelete(item);
         }
     }, [selectMode, navigation, toggleSelect, currentBreadcrumb, filteredFiles, fetchFolderFiles]);
 
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
-            <View style={[styles.header, { backgroundColor: '#FFFFFF' }]}>
+        <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+            <View style={[styles.header, { backgroundColor: theme.colors.background }]}>
                 <TouchableOpacity style={styles.iconBtn} onPress={() => { if (selectMode) { setSelectMode(false); setSelectedIds(new Set()); } else navigation.goBack(); }}>
                     {selectMode ? <X color={theme.colors.textHeading} size={22} /> : <ArrowLeft color={theme.colors.textHeading} size={24} />}
                 </TouchableOpacity>
@@ -546,7 +524,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             </View>
 
             {breadcrumb.length > 0 && (
-                <View style={[styles.breadcrumbBar, { backgroundColor: '#FFFFFF', borderBottomColor: theme.colors.border }]}>
+                <View style={[styles.breadcrumbBar, { backgroundColor: theme.colors.surfaceElevated, borderBottomColor: theme.colors.border }]}> 
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 20 }}>
                         <TouchableOpacity onPress={() => navigation.navigate('MainTabs', { screen: 'Home' })}><Text style={[styles.crumbLink, { color: theme.colors.primary }]}>Home</Text></TouchableOpacity>
                         {breadcrumb.map((b, i) => (
@@ -561,7 +539,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 </View>
             )}
 
-            <View style={{ backgroundColor: '#FFFFFF', paddingBottom: 10 }}>
+            <View style={{ backgroundColor: theme.colors.background, paddingBottom: 10 }}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={{ gap: 8, paddingHorizontal: 20, alignItems: 'center' }}>
                     {FILTER_TABS.map(t => (
                         <TouchableOpacity
@@ -710,7 +688,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                                 style={[styles.modalBtn, { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10, paddingHorizontal: 16, width: '100%', backgroundColor: theme.colors.background }]}
                                 onPress={() => handleBulkMove(f.id)}
                             >
-                                <Folder color="#D97706" size={20} />
+                                <Folder color={theme.colors.accent} size={20} />
                                 <Text style={[styles.modalBtnText, { color: theme.colors.textHeading }]}>{f.name}</Text>
                             </TouchableOpacity>
                         ))}
@@ -814,7 +792,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                             <Move color={theme.colors.textHeading} size={20} />
                             <Text style={[styles.optionText, { color: theme.colors.textHeading }]}>Move to Folder</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity style={[styles.optionItem, { backgroundColor: theme.mode === 'dark' ? 'rgba(239,68,68,0.1)' : '#FEF2F2', marginTop: 8 }]} onPress={() => { setOptionsTarget(null); handleCardAction('trash', optionsTarget); }}>
+                        <TouchableOpacity style={[styles.optionItem, { backgroundColor: theme.colors.dangerSoft, marginTop: 8 }]} onPress={() => { setOptionsTarget(null); handleCardAction('trash', optionsTarget); }}>
                             <Trash2 color="#EF4444" size={20} />
                             <Text style={[styles.optionText, { color: '#EF4444' }]}>Move to Trash</Text>
                         </TouchableOpacity>
@@ -865,7 +843,7 @@ const createStyles = (theme: any) => StyleSheet.create({
     },
     folderRow: {
     },
-    fileCardSelected: { backgroundColor: theme.mode === 'dark' ? 'rgba(75,110,245,0.08)' : '#F8FAFC' },
+    fileCardSelected: { backgroundColor: theme.colors.infoSoft },
     fileDetails: { flex: 1, justifyContent: 'center' },
     fileName: { fontSize: 16, fontWeight: '500', marginBottom: 2 },
     fileMeta: { fontSize: 13, fontWeight: '400' },
@@ -882,7 +860,7 @@ const createStyles = (theme: any) => StyleSheet.create({
         shadowRadius: 10,
         elevation: 3,
     },
-    gridIcon: { width: '100%', height: GRID_SIZE * 0.75, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.mode === 'dark' ? theme.colors.background : '#F8FAFC' },
+    gridIcon: { width: '100%', height: GRID_SIZE * 0.75, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.surfaceMuted },
     gridLabel: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12, gap: 2 },
     gridName: { fontSize: 13, fontWeight: '700', color: theme.colors.textHeading },
     gridMeta: { fontSize: 11, fontWeight: '500', color: theme.colors.textBody },

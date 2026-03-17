@@ -38,6 +38,7 @@ export default function FileQuickActions({ item, visible, onClose, onRefresh }: 
     const [allFolders, setAllFolders] = useState<any[]>([]);
 
     const [isShareVisible, setShareVisible] = useState(false);
+    const mutationPendingRef = useRef<Set<string>>(new Set());
 
     useEffect(() => {
         if (!visible) {
@@ -51,9 +52,27 @@ export default function FileQuickActions({ item, visible, onClose, onRefresh }: 
 
     const isFolder = item.mime_type === 'inode/directory' || item.result_type === 'folder';
 
+    const beginMutation = () => {
+        const id = String(item?.id || '').trim();
+        if (!id) return false;
+        if (mutationPendingRef.current.has(id)) return false;
+        mutationPendingRef.current.add(id);
+        return true;
+    };
+
+    const endMutation = () => {
+        const id = String(item?.id || '').trim();
+        if (!id) return;
+        mutationPendingRef.current.delete(id);
+    };
+
     const handleRename = async () => {
         const nextName = sanitizeFileName(renameValue, 'file');
         if (!nextName || isRenaming) return;
+        if (!beginMutation()) {
+            showToast('Action already in progress');
+            return;
+        }
         setIsRenaming(true);
         try {
             const endpoint = isFolder ? `/files/folder/${item.id}` : `/files/${item.id}`;
@@ -68,6 +87,7 @@ export default function FileQuickActions({ item, visible, onClose, onRefresh }: 
             showToast(e.response?.data?.error || 'Could not rename', 'error');
         } finally {
             setIsRenaming(false);
+            endMutation();
         }
     };
 
@@ -79,6 +99,10 @@ export default function FileQuickActions({ item, visible, onClose, onRefresh }: 
             'Move to Trash'
         );
         if (!confirmed) return;
+        if (!beginMutation()) {
+            showToast('Action already in progress');
+            return;
+        }
         
         try {
             if (isFolder) {
@@ -93,19 +117,28 @@ export default function FileQuickActions({ item, visible, onClose, onRefresh }: 
             onRefresh?.();
         } catch (e: any) {
             showToast(e.response?.data?.error || 'Could not delete', 'error');
+        } finally {
+            endMutation();
         }
     };
 
     const handleStar = async () => {
+        if (!beginMutation()) {
+            showToast('Action already in progress');
+            return;
+        }
         try {
-            await apiClient.patch(`/files/${item.id}/star`);
-            emitFileUpdated(item.id, { is_starred: !item.is_starred });
+            const response = await apiClient.patch(`/files/${item.id}/star`);
+            const nextStarState = Boolean(response?.data?.is_starred);
+            emitFileUpdated(item.id, { is_starred: nextStarState });
             syncAfterFileMutation();
-            showToast(item.is_starred ? 'Removed from favorites' : 'Added to favorites');
+            showToast(nextStarState ? 'Added to favorites' : 'Removed from favorites');
             onClose();
             onRefresh?.();
         } catch {
             showToast('Could not update status', 'error');
+        } finally {
+            endMutation();
         }
     };
 
@@ -122,6 +155,10 @@ export default function FileQuickActions({ item, visible, onClose, onRefresh }: 
     };
 
     const handleMoveConfirm = async (targetFolderId: string | null) => {
+        if (!beginMutation()) {
+            showToast('Action already in progress');
+            return;
+        }
         try {
             await apiClient.post('/files/bulk', { ids: [item.id], action: 'move', folder_id: targetFolderId });
             emitFileUpdated(item.id, { folder_id: targetFolderId });
@@ -132,6 +169,8 @@ export default function FileQuickActions({ item, visible, onClose, onRefresh }: 
             onRefresh?.();
         } catch {
             showToast('Could not move item', 'error');
+        } finally {
+            endMutation();
         }
     };
 
@@ -211,7 +250,7 @@ export default function FileQuickActions({ item, visible, onClose, onRefresh }: 
                             <Text style={s.moveRowText}>Home (Root)</Text>
                         </TouchableOpacity>
 
-                        {allFolders.filter(f => f.id !== item.id).map(f => (
+                        {allFolders.filter(f => String(f.id) !== String(item.id) && String(f.id) !== String(item.folder_id || '')).map(f => (
                             <TouchableOpacity key={f.id} style={s.moveRow} onPress={() => handleMoveConfirm(f.id)}>
                                 <Folder color="#D97706" size={20} />
                                 <Text style={s.moveRowText}>{f.name}</Text>

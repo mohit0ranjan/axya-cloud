@@ -71,40 +71,39 @@ export default function StorageAnalyticsScreen({ navigation }: any) {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + s[i];
     };
 
-    const TOTAL_QUOTA = 15 * 1024 * 1024 * 1024; // 15GB 
+    const TOTAL_QUOTA = 15 * 1024 * 1024 * 1024; // Keeping reference but making donut relative
     
-    // Core colors from prompt
-    const Accent = '#FF5A1F'; // Apps/Images
+    // Core colors from prompt (slightly tuned for pure vibrancy)
+    const Accent = '#F97316'; // Images
     const Blue = '#3B82F6';   // Videos
-    const Green = '#10B981';  // Music/Docs
+    const Green = '#10B981';  // Docs
+    const Other = '#8B5CF6';  // Other (Purple)
 
     // Theme adaptations
     const BG_COLOR = isDark ? '#0A0A0A' : '#FFFFFF';
     const CARD_BG = isDark ? '#141414' : '#F5F7FB';
+    const BORDER = isDark ? '#2C2C2E' : '#E5E7EB';
     const TEXT_MAIN = isDark ? '#FFFFFF' : '#1A1A1A';
     const TEXT_SUB = isDark ? '#A0A0A0' : '#6B7280';
 
-    const getPercent = (val: number) => {
-        if (!TOTAL_QUOTA) return 0;
-        return (val / TOTAL_QUOTA);
-    };
-
     const vTotal = stats.videoBytes;
     const iTotal = stats.imageBytes;
-    const dTotal = stats.docBytes + stats.otherBytes;
-    const usedBytes = vTotal + iTotal + dTotal;
+    const dTotal = stats.docBytes;
+    const oTotal = stats.otherBytes;
+    const usedBytes = vTotal + iTotal + dTotal + oTotal;
     
-    const vPct = getPercent(vTotal);
-    const iPct = getPercent(iTotal);
-    const dPct = getPercent(dTotal);
-    const usedPct = getPercent(usedBytes) * 100;
+    // Compute percentages relative to USED space, NOT quota! (Unlimited Drive)
+    const getUsedPct = (val: number) => {
+        if (usedBytes === 0) return 0;
+        return (val / usedBytes);
+    };
 
-    // Chart Dimensions
-    const size = 280;
-    const strokeWidth = 32;
-    const center = size / 2;
-    const radius = (size - strokeWidth) / 2;
-    const circumference = 2 * Math.PI * radius;
+    const vPct = getUsedPct(vTotal);
+    const iPct = getUsedPct(iTotal);
+    const dPct = getUsedPct(dTotal);
+    const oPct = getUsedPct(oTotal);
+
+
 
     return (
         <SafeAreaView style={[st.root, { backgroundColor: BG_COLOR }]}>
@@ -113,13 +112,13 @@ export default function StorageAnalyticsScreen({ navigation }: any) {
                 <TouchableOpacity style={st.headerBtn} onPress={() => navigation.goBack()}>
                     <ArrowLeft color={TEXT_MAIN} size={24} />
                 </TouchableOpacity>
-                <Text style={[st.headerTitle, { color: TEXT_MAIN }]}>My Storage</Text>
+                <Text style={[st.headerTitle, { color: TEXT_MAIN }]}>Storage Analytics</Text>
                 <View style={{ width: 44 }} />
             </View>
 
             {loading ? (
                 <View style={st.loaderView}>
-                    <ActivityIndicator size="large" color={Accent} />
+                    <ActivityIndicator size="large" color={Blue} />
                 </View>
             ) : (
                 <Animated.ScrollView 
@@ -127,133 +126,83 @@ export default function StorageAnalyticsScreen({ navigation }: any) {
                     contentContainerStyle={st.scroll} 
                     showsVerticalScrollIndicator={false}
                 >
-                    {/* 2. Top Category Cards */}
-                    <View style={st.topCardsRow}>
-                        <View style={[st.topCard, { backgroundColor: CARD_BG }]}>
-                            <View style={[st.topCardIcon, { backgroundColor: 'rgba(59, 130, 246, 0.1)' }]}>
-                                <Video color={Blue} size={20} />
+                    {/* 3. Memory Status Card (MAIN COMPONENT) */}
+                    <View style={[st.memoryCard, { backgroundColor: CARD_BG, borderColor: BORDER, borderWidth: StyleSheet.hairlineWidth }]}>
+                        <View style={st.memoryCardHeader}>
+                            <View>
+                                <Text style={[st.memoryCardTitle, { color: TEXT_MAIN }]}>Storage Usage</Text>
+                                <Text style={[st.memoryCardSub, { color: TEXT_SUB }]}>Total Used • Unlimited</Text>
                             </View>
-                            <Text style={[st.topCardPercent, { color: TEXT_MAIN }]}>
-                                {(getPercent(vTotal) * 100).toFixed(0)}%
-                            </Text>
-                            <Text style={[st.topCardLabel, { color: TEXT_SUB }]}>Videos</Text>
-                        </View>
-                        
-                        <View style={[st.topCard, { backgroundColor: CARD_BG }]}>
-                            <View style={[st.topCardIcon, { backgroundColor: 'rgba(255, 90, 31, 0.1)' }]}>
-                                <ImageIcon color={Accent} size={20} />
-                            </View>
-                            <Text style={[st.topCardPercent, { color: TEXT_MAIN }]}>
-                                {(getPercent(iTotal) * 100).toFixed(0)}%
-                            </Text>
-                            <Text style={[st.topCardLabel, { color: TEXT_SUB }]}>Images</Text>
+                            <Text style={[st.memoryCardUsedBytes, { color: TEXT_MAIN }]}>{formatBytes(usedBytes)}</Text>
                         </View>
 
-                        <View style={[st.topCard, { backgroundColor: CARD_BG }]}>
-                            <View style={[st.topCardIcon, { backgroundColor: 'rgba(16, 185, 129, 0.1)' }]}>
-                                <FileText color={Green} size={20} />
-                            </View>
-                            <Text style={[st.topCardPercent, { color: TEXT_MAIN }]}>
-                                {(getPercent(dTotal) * 100).toFixed(0)}%
-                            </Text>
-                            <Text style={[st.topCardLabel, { color: TEXT_SUB }]}>Docs</Text>
+                        {/* 4. Horizontal Stacked Bar */}
+                        <View style={[st.stackedBarTrack, { backgroundColor: isDark ? '#1F2937' : '#F1F5F9' }]}>
+                            {usedBytes === 0 ? (
+                                <View style={[st.stackedBarSegment, { backgroundColor: isDark ? '#2C2C2E' : '#E5E7EB', width: '100%' }]} />
+                            ) : (
+                                <>
+                                    {vPct > 0 && <View style={[st.stackedBarSegment, { backgroundColor: Blue, width: `${vPct * 100}%` }]} />}
+                                    {iPct > 0 && <View style={[st.stackedBarSegment, { backgroundColor: Accent, width: `${iPct * 100}%` }]} />}
+                                    {dPct > 0 && <View style={[st.stackedBarSegment, { backgroundColor: Green, width: `${dPct * 100}%` }]} />}
+                                    {oPct > 0 && <View style={[st.stackedBarSegment, { backgroundColor: Other, width: `${oPct * 100}%` }]} />}
+                                </>
+                            )}
                         </View>
                     </View>
 
-                    {/* 3. Memory Status Card (MAIN COMPONENT) */}
-                    <View style={[st.memoryCard, { backgroundColor: isDark ? '#1C1C1E' : '#FFFFFF', 
-                        borderColor: isDark ? '#2C2C2E' : '#E5E7EB', borderWidth: isDark ? 1 : 0,
-                        shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: isDark ? 0 : 0.05, shadowRadius: 20
-                    }]}>
-                        <View style={st.memoryCardHeader}>
-                            <Text style={[st.memoryCardTitle, { color: TEXT_MAIN }]}>Memory Status</Text>
-                            <TouchableOpacity style={st.memoryCardArrow}>
-                                <ChevronRight color={TEXT_SUB} size={20} />
-                            </TouchableOpacity>
-                        </View>
-
-                        {/* 4. Circular Storage Visualization */}
-                        <View style={st.chartContainer}>
-                            <Svg width={size} height={size}>
-                                {/* Background Empty Ring */}
-                                <Circle 
-                                    cx={center} cy={center} r={radius} 
-                                    stroke={isDark ? '#2C2C2E' : '#F5F7FB'} 
-                                    strokeWidth={strokeWidth} 
-                                    fill="none" 
-                                />
-
-                                {/* Video G */}
-                                {vPct > 0 && (
-                                    <G rotation="-90" originX={center} originY={center}>
-                                        <Circle 
-                                            cx={center} cy={center} r={radius} 
-                                            stroke={Blue} strokeWidth={strokeWidth} fill="none" 
-                                            strokeDasharray={`${vPct * circumference} ${circumference}`} 
-                                            strokeLinecap={Platform.OS === 'ios' ? "round" : "butt"} 
-                                        />
-                                    </G>
-                                )}
-
-                                {/* Images G */}
-                                {iPct > 0 && (
-                                    <G rotation={-90 + (vPct * 360)} originX={center} originY={center}>
-                                        <Circle 
-                                            cx={center} cy={center} r={radius} 
-                                            stroke={Accent} strokeWidth={strokeWidth} fill="none" 
-                                            strokeDasharray={`${iPct * circumference} ${circumference}`}
-                                            strokeLinecap={Platform.OS === 'ios' ? "round" : "butt"} 
-                                        />
-                                    </G>
-                                )}
-
-                                {/* Docs G */}
-                                {dPct > 0 && (
-                                    <G rotation={-90 + ((vPct + iPct) * 360)} originX={center} originY={center}>
-                                        <Circle 
-                                            cx={center} cy={center} r={radius} 
-                                            stroke={Green} strokeWidth={strokeWidth} fill="none" 
-                                            strokeDasharray={`${dPct * circumference} ${circumference}`}
-                                            strokeLinecap={Platform.OS === 'ios' ? "round" : "butt"} 
-                                        />
-                                    </G>
-                                )}
-                            </Svg>
-
-                            {/* Center Content */}
-                            <View style={st.chartCenterContent}>
-                                <Text style={[st.chartCenterPercent, { color: TEXT_MAIN }]}>{usedPct.toFixed(0)}%</Text>
-                                <Text style={[st.chartCenterText, { color: TEXT_SUB }]}>
-                                    {formatBytes(usedBytes)} of {formatBytes(TOTAL_QUOTA)} used
-                                </Text>
-                            </View>
-
-                            {/* 5. Labels Around Circle (Simplified Absolute Positioning) */}
-                            {vPct > 0 && (
-                                <View style={[st.floatingLabel, { top: 20, left: -10 }]}>
-                                    <View style={[st.labelDotBox, { backgroundColor: isDark ? '#2C2C2E' : 'rgba(255,255,255,0.9)' }]}>
-                                        <View style={[st.dot, { backgroundColor: Blue }]} /><Text style={[st.labelText, { color: TEXT_SUB }]}>Videos</Text>
-                                    </View>
-                                </View>
-                            )}
-                            
-                            {iPct > 0 && (
-                                <View style={[st.floatingLabel, { bottom: 10, right: 20 }]}>
-                                    <View style={[st.labelDotBox, { backgroundColor: isDark ? '#2C2C2E' : 'rgba(255,255,255,0.9)' }]}>
-                                        <View style={[st.dot, { backgroundColor: Accent }]} /><Text style={[st.labelText, { color: TEXT_SUB }]}>Images</Text>
-                                    </View>
-                                </View>
-                            )}
-
-                            {dPct > 0 && (
-                                <View style={[st.floatingLabel, { top: 80, right: -20 }]}>
-                                    <View style={[st.labelDotBox, { backgroundColor: isDark ? '#2C2C2E' : 'rgba(255,255,255,0.9)' }]}>
-                                        <View style={[st.dot, { backgroundColor: Green }]} /><Text style={[st.labelText, { color: TEXT_SUB }]}>Docs</Text>
-                                    </View>
-                                </View>
-                            )}
-                        </View>
+                    {/* 2. Top Category Breakdown Rows */}
+                    <Text style={[st.sectionLabel, { color: TEXT_SUB, marginTop: 28 }]}>BREAKDOWN BY CATEGORY</Text>
+                    
+                    <View style={[st.breakdownCard, { backgroundColor: CARD_BG, borderColor: BORDER, borderWidth: StyleSheet.hairlineWidth }]}>
                         
+                        <View style={st.breakdownRow}>
+                            <View style={st.breakdownIconWrap}>
+                                <View style={[st.breakdownDot, { backgroundColor: Blue }]} />
+                                <Text style={[st.breakdownText, { color: TEXT_MAIN }]}>Videos</Text>
+                            </View>
+                            <View style={st.breakdownRight}>
+                                <Text style={[st.breakdownSize, { color: TEXT_MAIN }]}>{formatBytes(vTotal)}</Text>
+                                <Text style={[st.breakdownPct, { color: TEXT_SUB }]}>{(vPct * 100).toFixed(1)}%</Text>
+                            </View>
+                        </View>
+                        <View style={[st.breakdownDivider, { backgroundColor: BORDER }]} />
+                        
+                        <View style={st.breakdownRow}>
+                            <View style={st.breakdownIconWrap}>
+                                <View style={[st.breakdownDot, { backgroundColor: Accent }]} />
+                                <Text style={[st.breakdownText, { color: TEXT_MAIN }]}>Images</Text>
+                            </View>
+                            <View style={st.breakdownRight}>
+                                <Text style={[st.breakdownSize, { color: TEXT_MAIN }]}>{formatBytes(iTotal)}</Text>
+                                <Text style={[st.breakdownPct, { color: TEXT_SUB }]}>{(iPct * 100).toFixed(1)}%</Text>
+                            </View>
+                        </View>
+                        <View style={[st.breakdownDivider, { backgroundColor: BORDER }]} />
+                        
+                        <View style={st.breakdownRow}>
+                            <View style={st.breakdownIconWrap}>
+                                <View style={[st.breakdownDot, { backgroundColor: Green }]} />
+                                <Text style={[st.breakdownText, { color: TEXT_MAIN }]}>Documents</Text>
+                            </View>
+                            <View style={st.breakdownRight}>
+                                <Text style={[st.breakdownSize, { color: TEXT_MAIN }]}>{formatBytes(dTotal)}</Text>
+                                <Text style={[st.breakdownPct, { color: TEXT_SUB }]}>{(dPct * 100).toFixed(1)}%</Text>
+                            </View>
+                        </View>
+                        <View style={[st.breakdownDivider, { backgroundColor: BORDER }]} />
+                        
+                        <View style={st.breakdownRow}>
+                            <View style={st.breakdownIconWrap}>
+                                <View style={[st.breakdownDot, { backgroundColor: Other }]} />
+                                <Text style={[st.breakdownText, { color: TEXT_MAIN }]}>Other</Text>
+                            </View>
+                            <View style={st.breakdownRight}>
+                                <Text style={[st.breakdownSize, { color: TEXT_MAIN }]}>{formatBytes(oTotal)}</Text>
+                                <Text style={[st.breakdownPct, { color: TEXT_SUB }]}>{(oPct * 100).toFixed(1)}%</Text>
+                            </View>
+                        </View>
+
                     </View>
                     
                     <View style={{ height: 60 }} />
@@ -273,61 +222,51 @@ const st = StyleSheet.create({
     headerTitle: { fontSize: 20, fontWeight: '700', letterSpacing: -0.4 },
     loaderView: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     scroll: { paddingHorizontal: 20, paddingBottom: 24, paddingTop: 12 },
-    
-    topCardsRow: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        marginBottom: 24,
-        gap: 12
-    },
-    topCard: {
-        flex: 1,
-        borderRadius: 20,
-        padding: 16,
-        alignItems: 'center',
-    },
-    topCardIcon: {
-        width: 40, height: 40, borderRadius: 12,
-        justifyContent: 'center', alignItems: 'center',
-        marginBottom: 12,
-    },
-    topCardPercent: { fontSize: 18, fontWeight: '700', marginBottom: 2 },
-    topCardLabel: { fontSize: 13, fontWeight: '500' },
 
     memoryCard: {
-        borderRadius: 32,
+        borderRadius: 28,
         padding: 24, paddingVertical: 28,
         alignItems: 'center',
+        shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.05, shadowRadius: 20, elevation: 4,
     },
     memoryCardHeader: {
         flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%',
-        marginBottom: 40,
+        marginBottom: 30,
     },
     memoryCardTitle: { fontSize: 18, fontWeight: '700' },
-    memoryCardArrow: { width: 40, height: 40, justifyContent: 'center', alignItems: 'flex-end' },
-    
-    chartContainer: {
-        position: 'relative',
-        width: 280, height: 280,
-        justifyContent: 'center', alignItems: 'center',
-        marginBottom: 20,
-    },
-    chartCenterContent: {
-        position: 'absolute',
-        justifyContent: 'center', alignItems: 'center',
-        width: 180, height: 180,
-    },
-    chartCenterPercent: { fontSize: 44, fontWeight: '800', letterSpacing: -1, marginBottom: 8 },
-    chartCenterText: { fontSize: 13, textAlign: 'center', maxWidth: 120, lineHeight: 18 },
+    memoryCardSub: { fontSize: 13, marginTop: 4, fontWeight: '500' },
+    memoryCardUsedBytes: { fontSize: 24, fontWeight: '800', letterSpacing: -0.5 },
 
-    floatingLabel: {
-        position: 'absolute',
+    stackedBarTrack: {
+        height: 12,
+        borderRadius: 6,
+        flexDirection: 'row',
+        overflow: 'hidden',
+        width: '100%',
+        marginTop: 4,
     },
-    labelDotBox: {
-        flexDirection: 'row', alignItems: 'center', gap: 6,
-        paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20,
-        shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2,
+    stackedBarSegment: {
+        height: '100%',
     },
-    dot: { width: 8, height: 8, borderRadius: 4 },
-    labelText: { fontSize: 12, fontWeight: '600' }
+
+    sectionLabel: {
+        fontSize: 12, fontWeight: '700', letterSpacing: 1.2,
+        marginBottom: 12, paddingLeft: 6,
+    },
+    breakdownCard: {
+        borderRadius: 24,
+        overflow: 'hidden',
+        shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.04, shadowRadius: 16, elevation: 3,
+    },
+    breakdownRow: {
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        paddingVertical: 18, paddingHorizontal: 20,
+    },
+    breakdownIconWrap: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+    breakdownDot: { width: 12, height: 12, borderRadius: 6 },
+    breakdownText: { fontSize: 16, fontWeight: '600' },
+    breakdownRight: { alignItems: 'flex-end' },
+    breakdownSize: { fontSize: 16, fontWeight: '700', marginBottom: 2 },
+    breakdownPct: { fontSize: 13, fontWeight: '500' },
+    breakdownDivider: { height: StyleSheet.hairlineWidth, marginHorizontal: 20 },
 });

@@ -1,4 +1,4 @@
-﻿import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import {
     View,
     Text,
@@ -6,7 +6,7 @@ import {
     SafeAreaView,
     FlatList,
     TouchableOpacity,
-    ActivityIndicator,
+    RefreshControl,
     Alert,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
@@ -46,21 +46,20 @@ const createStyles = (theme: any, C: any) =>
         header: {
             flexDirection: 'row',
             alignItems: 'center',
-            justifyContent: 'space-between',
             paddingHorizontal: 20,
             paddingVertical: 16,
+            borderBottomWidth: 1,
+            borderBottomColor: C.border,
+            gap: 12,
         },
         backBtn: {
-            width: 44,
-            height: 44,
-            borderRadius: 12,
+            width: 40,
+            height: 40,
             justifyContent: 'center',
-            alignItems: 'center',
-            backgroundColor: C.card,
-            borderWidth: 1,
-            borderColor: C.border,
         },
-        title: { fontSize: 20, fontWeight: '700' },
+        headerInfo: { flex: 1 },
+        title: { fontSize: 24, fontWeight: '700' },
+        subtitle: { fontSize: 12, marginTop: 2, fontWeight: '500' },
         center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
         list: { padding: 20, gap: 16 },
         card: {
@@ -107,6 +106,7 @@ export default function SharedLinksScreen({ navigation }: any) {
     const { showToast } = useToast();
     const [links, setLinks] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
     const [loadError, setLoadError] = useState('');
 
     const fetchLinks = async () => {
@@ -136,7 +136,7 @@ export default function SharedLinksScreen({ navigation }: any) {
 
     const handleCopy = async (shareUrl: string) => {
         await Clipboard.setStringAsync(shareUrl);
-        Alert.alert('Copied!', 'Link copied to clipboard.');
+        showToast('Link copied to clipboard', 'success');
     };
 
     const handleRevoke = (token: string) => {
@@ -148,9 +148,10 @@ export default function SharedLinksScreen({ navigation }: any) {
                 onPress: async () => {
                     try {
                         await revokeShareLink(token);
+                        showToast('Share link revoked', 'success');
                         void fetchLinks();
                     } catch (e: any) {
-                        Alert.alert('Error', e?.response?.data?.error || 'Failed to revoke link.');
+                        showToast(e?.response?.data?.error || 'Failed to revoke link.', 'error');
                     }
                 },
             },
@@ -243,19 +244,32 @@ export default function SharedLinksScreen({ navigation }: any) {
         );
     };
 
+    const onRefresh = useCallback(() => {
+        setRefreshing(true);
+        fetchLinks().finally(() => setRefreshing(false));
+    }, []);
+
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
             <View style={styles.header}>
-                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-                    <ArrowLeft color={C.textHeading} size={22} />
+                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.7}>
+                    <ArrowLeft color={C.textHeading} size={24} />
                 </TouchableOpacity>
-                <Text style={[styles.title, { color: C.textHeading }]}>Shared Links</Text>
-                <View style={{ width: 44 }} />
+                <View style={styles.headerInfo}>
+                    <Text style={[styles.title, { color: C.textHeading }]} numberOfLines={1}>Shared Links</Text>
+                    <Text style={[styles.subtitle, { color: C.textBody }]} numberOfLines={1}>
+                        {links.length} link{links.length !== 1 ? 's' : ''}
+                    </Text>
+                </View>
             </View>
 
-            {isLoading ? (
+            {isLoading && links.length === 0 ? (
                 <View style={styles.center}>
-                    <ActivityIndicator size="large" color={C.primary} />
+                    <View style={{ padding: 20 }}>
+                        {[1, 2, 3].map(i => (
+                            <View key={i} style={{ height: 120, borderRadius: 16, backgroundColor: C.card, marginBottom: 16, opacity: 0.5 }} />
+                        ))}
+                    </View>
                 </View>
             ) : loadError && links.length === 0 ? (
                 <ErrorState title="Could not load shared links" message={loadError} onRetry={() => void fetchLinks()} />
@@ -265,6 +279,16 @@ export default function SharedLinksScreen({ navigation }: any) {
                     keyExtractor={item => item.id}
                     renderItem={renderItem}
                     contentContainerStyle={styles.list}
+                    refreshControl={
+                        <RefreshControl
+                            refreshing={refreshing}
+                            tintColor={C.primary}
+                            onRefresh={onRefresh}
+                        />
+                    }
+                    windowSize={10}
+                    maxToRenderPerBatch={15}
+                    removeClippedSubviews
                     ListEmptyComponent={
                         <View style={styles.empty}>
                             <LinkIcon color={C.textBody} size={48} />

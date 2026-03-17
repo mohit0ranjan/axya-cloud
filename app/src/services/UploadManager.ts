@@ -21,6 +21,7 @@ import { File, Paths } from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import { getNotificationsEnabled } from '../utils/preferences';
 import { Buffer } from 'buffer';
 import apiClient, { uploadClient } from './apiClient';
 import { syncAfterFileMutation } from './fileStateSync';
@@ -482,7 +483,7 @@ class UploadManager {
     // ── Notifications ─────────────────────────────────────────────────────────
 
     private async updateNotification() {
-        if (!this.notificationsEnabled) return;
+        if (!this.notificationsEnabled || !(await getNotificationsEnabled())) return;
         const stats = this.getStats();
 
         if (stats.activeCount > 0) {

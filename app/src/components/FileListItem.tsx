@@ -115,6 +115,15 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress, onOptio
         }).start();
     }, []);
 
+    // ── Press scale animation ─────────────────────────────────────────────
+    const rowScale = useRef(new Animated.Value(1)).current;
+    const handleRowPressIn = useCallback(() => {
+        Animated.spring(rowScale, { toValue: 0.97, useNativeDriver: true, speed: 50, bounciness: 4 }).start();
+    }, []);
+    const handleRowPressOut = useCallback(() => {
+        Animated.spring(rowScale, { toValue: 1, useNativeDriver: true, speed: 50, bounciness: 4 }).start();
+    }, []);
+
     // ── Thumbnail error state ─────────────────────────────────────────────
     const [thumbFailed, setThumbFailed] = useState(false);
     const handleThumbError = useCallback(() => setThumbFailed(true), []);
@@ -138,18 +147,25 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress, onOptio
         : getIconConfig(item.mime_type || '', isDark);
     const { Icon, color, bg } = cfg;
 
-    const canShowThumb = !isFolder && !thumbFailed && (item.mime_type?.includes('image') || item.mime_type?.includes('video'));
+    const mimeType = String(item.mime_type || '').toLowerCase();
+    const canShowThumb = !isFolder && !thumbFailed && (
+        mimeType.startsWith('image/')
+        || mimeType.startsWith('video/')
+        || mimeType === 'application/pdf'
+    );
 
     const handlePress = () => {
         onPress(item, isFolder);
     };
 
     return (
-        <Animated.View style={{ opacity: fadeAnim }}>
+        <Animated.View style={{ opacity: fadeAnim, transform: [{ scale: rowScale }] }}>
             <TouchableOpacity
                 style={[styles.fileRow, variant === 'card' && styles.fileRowCard]}
                 activeOpacity={0.7}
                 onPress={handlePress}
+                onPressIn={handleRowPressIn}
+                onPressOut={handleRowPressOut}
             >
                 <View style={[
                     styles.fileIcon,

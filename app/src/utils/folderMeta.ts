@@ -11,7 +11,8 @@ const toSafeCount = (value: unknown): number => {
 };
 
 export const formatFolderMeta = (item: FolderMetaLike): string => {
-    const totalFiles = toSafeCount(item.total_file_count ?? item.file_count ?? 0);
+    const directFiles = toSafeCount(item.file_count ?? 0);
+    const totalFiles = Math.max(directFiles, toSafeCount(item.total_file_count ?? directFiles));
     const subfolders = toSafeCount(item.folder_count ?? 0);
 
     if (totalFiles > 0 && subfolders > 0) {

@@ -16,11 +16,12 @@ import { SkeletonBlock } from '../ui/Skeleton';
 import Constants from 'expo-constants';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFileRefresh } from '../utils/events';
+import { getNotificationsEnabled, setNotificationsEnabled as persistNotificationsEnabled } from '../utils/preferences';
 
 export default function ProfileScreen({ navigation }: any) {
     const authCtx = useContext(AuthContext);
     const { showToast } = useToast();
-    const { isDark, toggleTheme } = useTheme();
+    const { theme, isDark, setThemeMode } = useTheme();
     const insets = useSafeAreaInsets();
 
     const [loading, setLoading] = useState(true);
@@ -37,9 +38,7 @@ export default function ProfileScreen({ navigation }: any) {
 
     useEffect(() => {
         fetchAll();
-        AsyncStorage.getItem('notificationsEnabled').then(val => {
-            if (val !== null) setNotificationsEnabled(val === 'true');
-        });
+        getNotificationsEnabled().then(setNotificationsEnabled).catch(() => setNotificationsEnabled(true));
         Animated.parallel([
             Animated.timing(fadeAnim, { toValue: 1, duration: 420, useNativeDriver: true }),
             Animated.timing(storageFillAnim, { toValue: 1, duration: 850, useNativeDriver: true }),
@@ -64,8 +63,16 @@ export default function ProfileScreen({ navigation }: any) {
 
     const toggleNotifications = (val: boolean) => {
         setNotificationsEnabled(val);
-        AsyncStorage.setItem('notificationsEnabled', String(val));
+        persistNotificationsEnabled(val)
+            .then(() => showToast(val ? 'Notifications enabled' : 'Notifications disabled', 'info'))
+            .catch(() => showToast('Could not update notifications', 'error'));
     };
+
+    const handleThemeToggle = useCallback((value: boolean) => {
+        void setThemeMode(value ? 'dark' : 'light')
+            .then(() => showToast(value ? 'Dark mode enabled' : 'Light mode enabled', 'info'))
+            .catch(() => showToast('Could not update theme', 'error'));
+    }, [setThemeMode, showToast]);
 
     const confirmLogout = useCallback(async () => {
         if (isSigningOut) return;
@@ -100,9 +107,10 @@ export default function ProfileScreen({ navigation }: any) {
     const quotaBytes = Number(stats.totalQuotaBytes || stats.quotaBytes || stats.total_quota || 0);
     const hasQuota = quotaBytes > 0;
     const storageUsed = formatBytes(usedBytes);
+    const usedGBNum = usedBytes / (1024 ** 3);
     const storageProgress = hasQuota
         ? Math.max(0, Math.min(usedBytes / quotaBytes, 1))
-        : Math.max(0.02, Math.min(1, Math.log10(usedBytes + 1) / 6));
+        : Math.max(0.02, Math.min(0.92, 0.12 + Math.log10(usedGBNum + 1) * 0.3));
 
     const handleBack = () => {
         if (navigation?.canGoBack?.()) navigation.goBack();
@@ -110,13 +118,15 @@ export default function ProfileScreen({ navigation }: any) {
     };
 
     // Design System Values
-    const BG_COLOR = isDark ? '#0F172A' : '#F6F8FA';
-    const CARD_BG = isDark ? '#111827' : '#FFFFFF';
-    const BORDER = isDark ? '#1F2937' : '#EBEEF2';
-    const TEXT_MAIN = isDark ? '#FFFFFF' : '#1A1A1A';
-    const TEXT_SUB = isDark ? '#94A3B8' : '#6B7280';
-    const ACCENT = '#FF5A1F'; 
-    const BLUE = '#3B82F6';
+    const BG_COLOR = theme.colors.background;
+    const CARD_BG = theme.colors.card;
+    const BORDER = theme.colors.border;
+    const TEXT_MAIN = theme.colors.textHeading;
+    const TEXT_SUB = theme.colors.textBody;
+    const ACCENT = theme.colors.accent;
+    const BLUE = theme.colors.primary;
+    const SURFACE_MUTED = theme.colors.surfaceMuted;
+    const SWITCH_TRACK_OFF = theme.colors.switchTrackOff;
 
     const renderMenuItem = (
         icon: React.ReactNode, 
@@ -184,6 +194,7 @@ export default function ProfileScreen({ navigation }: any) {
                                     transform: [{ scale: pressed ? 0.96 : 1 }],
                                 },
                             ]}
+                            onPress={() => showToast('Profile editing will be added here', 'info')}
                         >
                             <Edit2 color={TEXT_MAIN} size={14} strokeWidth={2.5} />
                         </Pressable>
@@ -229,25 +240,29 @@ export default function ProfileScreen({ navigation }: any) {
                                     ? 'Checking...'
                                     : hasQuota
                                         ? `${storageUsed} used of ${formatBytes(quotaBytes)}`
-                                        : `${storageUsed} used`}
+                                        : `${storageUsed} used • Unlimited`}
                             </Text>
                         </View>
                         <ChevronRight color={TEXT_SUB} size={18} style={{ opacity: 0.65 }} />
                     </Pressable>
-                    <View style={[st.progressTrack, { backgroundColor: isDark ? '#1E293B' : '#E5E7EB' }]}>
-                        <Animated.View
-                            style={{
-                                width: `${Math.max(storageProgress * 100, 2)}%`,
-                                transform: [{ scaleX: storageFillAnim }],
-                            }}
-                        >
-                            <LinearGradient
-                                colors={['#60A5FA', '#3B82F6']}
-                                start={{ x: 0, y: 0.5 }}
-                                end={{ x: 1, y: 0.5 }}
-                                style={st.progressFill}
-                            />
-                        </Animated.View>
+                    <View style={[st.progressTrack, { backgroundColor: SURFACE_MUTED }]}> 
+                        {loading ? (
+                            <SkeletonBlock width="100%" height={6} borderRadius={6} />
+                        ) : (
+                            <Animated.View
+                                style={{
+                                    width: `${Math.max(storageProgress * 100, 2)}%`,
+                                    transform: [{ scaleX: storageFillAnim }],
+                                }}
+                            >
+                                <LinearGradient
+                                    colors={['#60A5FA', '#3B82F6']}
+                                    start={{ x: 0, y: 0.5 }}
+                                    end={{ x: 1, y: 0.5 }}
+                                    style={st.progressFill}
+                                />
+                            </Animated.View>
+                        )}
                     </View>
                 </View>
 
@@ -262,29 +277,29 @@ export default function ProfileScreen({ navigation }: any) {
                     },
                 ]}>
                     {renderMenuItem(
-                        <Bell color="#F59E0B" size={20} />, 
-                        isDark ? 'rgba(245,158,11,0.1)' : '#FEF3C7',
+                        <Bell color={theme.colors.accent} size={20} />, 
+                        theme.colors.warningSoft,
                         "Upload Notifications",
                         () => toggleNotifications(!notificationsEnabled),
                         <Switch
                             value={notificationsEnabled}
                             onValueChange={toggleNotifications}
-                            trackColor={{ true: '#F59E0B', false: isDark ? '#334155' : '#D1D5DB' }}
+                            trackColor={{ true: theme.colors.accent, false: SWITCH_TRACK_OFF }}
                             thumbColor="#FFFFFF"
-                            ios_backgroundColor={isDark ? '#334155' : '#D1D5DB'}
+                            ios_backgroundColor={SWITCH_TRACK_OFF}
                         />
                     )}
                     {renderMenuItem(
-                        <Moon color="#A855F7" size={20} />, 
-                        isDark ? 'rgba(168,85,247,0.1)' : '#F3E8FF',
+                        <Moon color={theme.colors.purple} size={20} />, 
+                        theme.colors.infoSoft,
                         "Dark Mode",
-                        toggleTheme,
+                        () => handleThemeToggle(!isDark),
                         <Switch
                             value={isDark}
-                            onValueChange={toggleTheme}
-                            trackColor={{ true: '#A855F7', false: isDark ? '#334155' : '#D1D5DB' }}
+                            onValueChange={handleThemeToggle}
+                            trackColor={{ true: theme.colors.purple, false: SWITCH_TRACK_OFF }}
                             thumbColor="#FFFFFF"
-                            ios_backgroundColor={isDark ? '#334155' : '#D1D5DB'}
+                            ios_backgroundColor={SWITCH_TRACK_OFF}
                         />,
                         true // last item
                     )}
@@ -302,13 +317,13 @@ export default function ProfileScreen({ navigation }: any) {
                 ]}>
                     {renderMenuItem(
                         <LinkIcon color="#10B981" size={20} />, 
-                        isDark ? 'rgba(16,185,129,0.1)' : '#D1FAE5',
+                        theme.colors.successSoft,
                         "Shared Links",
                         () => navigation.navigate('SharedLinks'),
                     )}
                     {renderMenuItem(
                         <Trash2 color="#EF4444" size={20} />, 
-                        isDark ? 'rgba(239,68,68,0.1)' : '#FEE2E2',
+                        theme.colors.dangerSoft,
                         "Trash",
                         () => navigation.navigate('Trash'),
                         undefined,

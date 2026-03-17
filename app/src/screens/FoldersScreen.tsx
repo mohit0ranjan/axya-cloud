@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import {
     View,
     Text,
@@ -13,6 +13,7 @@ import {
     Modal,
     KeyboardAvoidingView,
     Platform,
+    RefreshControl,
 } from 'react-native';
 import {
     MoreHorizontal,
@@ -131,6 +132,7 @@ export default function FoldersScreen({ navigation }: any) {
     const styles = useMemo(() => createStyles(theme, C), [theme, C]);
 
     const [isLoading, setIsLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
     const [folders, setFolders] = useState<any[]>([]);
     const [searchQuery, setSearchQuery] = useState('');
     const [isSearchFocused, setIsSearchFocused] = useState(false);
@@ -394,7 +396,18 @@ export default function FoldersScreen({ navigation }: any) {
                 </View>
             </View>
 
-            <ScrollView style={styles.scrollArea} showsVerticalScrollIndicator={false}>
+            <ScrollView style={styles.scrollArea} showsVerticalScrollIndicator={false}
+                refreshControl={
+                    <RefreshControl
+                        refreshing={refreshing}
+                        tintColor={C.primary}
+                        onRefresh={() => {
+                            setRefreshing(true);
+                            fetchFolders().finally(() => setRefreshing(false));
+                        }}
+                    />
+                }
+            >
                 {isLoading ? (
                     <View style={styles.gridContainer}>{[1, 2, 3, 4].map(i => <FolderCardSkeleton key={i} />)}</View>
                 ) : (

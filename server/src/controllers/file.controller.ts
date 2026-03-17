@@ -522,15 +522,22 @@ export const deleteFile = async (req: AuthRequest, res: Response) => {
 
         const { telegram_message_id, telegram_chat_id } = fileResult.rows[0];
 
-        try {
-            const clients = await getTelegramReadClients(req.user.sessionString);
-            const messageId = Number.parseInt(String(telegram_message_id || ''), 10);
-            const chatId = String(telegram_chat_id || '').trim();
-            if (chatId && Number.isFinite(messageId) && messageId > 0) {
-                await deleteMessageAcrossTelegramClients(clients, chatId, messageId);
+        const messageId = Number.parseInt(String(telegram_message_id || ''), 10);
+        const chatId = String(telegram_chat_id || '').trim();
+        const hasTelegramPointer = chatId && Number.isFinite(messageId) && messageId > 0;
+
+        if (hasTelegramPointer) {
+            let clients: TelegramReadClient[] = [];
+            try {
+                clients = await getTelegramReadClients(req.user.sessionString);
+            } catch (e) {
+                return res.status(502).json({ success: false, error: 'Could not connect Telegram session for delete. Please retry.' });
             }
-        } catch (e) {
-            console.warn('Could not delete Telegram message, removing from DB anyway:', e);
+
+            const deletedInTelegram = await deleteMessageAcrossTelegramClients(clients, chatId, messageId);
+            if (!deletedInTelegram) {
+                return res.status(502).json({ success: false, error: 'Could not delete Telegram message. File was not removed.' });
+            }
         }
 
         await pool.query('DELETE FROM files WHERE id = $1 AND user_id = $2', [id, req.user.id]);
@@ -568,34 +575,38 @@ export const emptyTrash = async (req: AuthRequest, res: Response) => {
             [req.user.id]
         );
         const files = result.rows;
-        if (files.length === 0) return res.json({ success: true, message: 'Trash is already empty.' });
 
-        let clients: TelegramReadClient[] = [];
-        try {
-            clients = await getTelegramReadClients(req.user.sessionString);
-        } catch (sessionErr) {
-            console.warn('Could not initialize Telegram clients for emptyTrash. Proceeding DB cleanup only.', sessionErr);
-        }
+        const telegramPointers = files
+            .map((f) => ({
+                chatId: String(f.telegram_chat_id || '').trim(),
+                messageId: Number.parseInt(String(f.telegram_message_id || ''), 10),
+            }))
+            .filter((ptr) => ptr.chatId && Number.isFinite(ptr.messageId) && ptr.messageId > 0);
 
-        // Group by chat for efficiency
-        const byChat: Record<string, number[]> = {};
-        files.forEach(f => {
-            if (!byChat[f.telegram_chat_id]) byChat[f.telegram_chat_id] = [];
-            byChat[f.telegram_chat_id].push(parseInt(f.telegram_message_id, 10));
-        });
+        if (telegramPointers.length > 0) {
+            let clients: TelegramReadClient[] = [];
+            try {
+                clients = await getTelegramReadClients(req.user.sessionString);
+            } catch {
+                return res.status(502).json({ success: false, error: 'Could not connect Telegram session for empty trash. Please retry.' });
+            }
 
-        // Delete from Telegram
-        for (const chat_id in byChat) {
-            for (const messageId of byChat[chat_id]) {
-                if (!clients.length || !Number.isFinite(messageId) || messageId <= 0) continue;
-                const deleted = await deleteMessageAcrossTelegramClients(clients, String(chat_id), messageId);
+            const failedPointers: Array<{ chatId: string; messageId: number }> = [];
+            for (const pointer of telegramPointers) {
+                const deleted = await deleteMessageAcrossTelegramClients(clients, pointer.chatId, pointer.messageId);
                 if (!deleted) {
-                    console.warn(`Could not delete message ${messageId} in chat ${chat_id}`);
+                    failedPointers.push(pointer);
                 }
+            }
+
+            if (failedPointers.length > 0) {
+                return res.status(502).json({
+                    success: false,
+                    error: `Could not delete ${failedPointers.length} Telegram message(s). Trash was not cleared.`,
+                });
             }
         }
 
-        // Delete from DB
         await pool.query('DELETE FROM files WHERE user_id = $1 AND is_trashed = true', [req.user.id]);
         await pool.query('DELETE FROM folders WHERE user_id = $1 AND is_trashed = true', [req.user.id]);
 
@@ -1025,46 +1036,51 @@ export const fetchFolders = async (req: AuthRequest, res: Response) => {
     const ALLOWED_SORT: Record<string, string> = {
         name: 'f.name',
         created_at: 'f.created_at',
-        file_count: 'file_count',
+        file_count: 'total_file_count',
     };
     const sortCol = ALLOWED_SORT[sort as string] || 'f.created_at';
     const sortOrder = (order as string)?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
     try {
-        // Use recursive CTE to count all files in folder and subfolders
         let query = `
-            WITH RECURSIVE folder_tree AS (
-                -- Base case: direct children of the requested parent
-                SELECT id, user_id FROM folders
-                WHERE user_id = $1 AND is_trashed = false
-                ${parent_id ? 'AND parent_id = $2' : 'AND parent_id IS NULL'}
-                
-                UNION ALL
-                -- Recursive case: all descendants
-                SELECT f.id, f.user_id
+            WITH RECURSIVE descendants AS (
+                SELECT f.id AS root_id, f.id AS descendant_id
                 FROM folders f
-                INNER JOIN folder_tree ft ON f.parent_id = ft.id
                 WHERE f.user_id = $1 AND f.is_trashed = false
+
+                UNION ALL
+
+                SELECT d.root_id, child.id AS descendant_id
+                FROM descendants d
+                INNER JOIN folders child ON child.parent_id = d.descendant_id
+                WHERE child.user_id = $1 AND child.is_trashed = false
             ),
-            folder_file_counts AS (
-                SELECT ft.id as folder_id, COUNT(fi.id)::int as total_files
-                FROM folder_tree ft
-                LEFT JOIN files fi ON fi.folder_id = ft.id AND fi.is_trashed = false
-                GROUP BY ft.id
+            total_file_counts AS (
+                SELECT d.root_id AS folder_id, COUNT(fi.id)::int AS total_files
+                FROM descendants d
+                LEFT JOIN files fi
+                    ON fi.folder_id = d.descendant_id
+                    AND fi.user_id = $1
+                    AND fi.is_trashed = false
+                GROUP BY d.root_id
             )
             SELECT f.*, 
                    COALESCE(direct_files.file_count, 0)::int as file_count,
-                   COALESCE(total_files.total_files, 0)::int as total_file_count,
+                   COALESCE(total_file_counts.total_files, 0)::int as total_file_count,
                    COALESCE(subfolder_count.subfolders, 0)::int as folder_count
             FROM folders f
             LEFT JOIN (
                 SELECT folder_id, COUNT(*)::int as file_count 
-                FROM files WHERE is_trashed = false GROUP BY folder_id
+                FROM files
+                WHERE user_id = $1 AND is_trashed = false
+                GROUP BY folder_id
             ) direct_files ON direct_files.folder_id = f.id
-            LEFT JOIN folder_file_counts total_files ON total_files.folder_id = f.id
+            LEFT JOIN total_file_counts ON total_file_counts.folder_id = f.id
             LEFT JOIN (
                 SELECT parent_id, COUNT(*)::int as subfolders 
-                FROM folders WHERE is_trashed = false GROUP BY parent_id
+                FROM folders
+                WHERE user_id = $1 AND is_trashed = false
+                GROUP BY parent_id
             ) subfolder_count ON subfolder_count.parent_id = f.id
             WHERE f.user_id = $1 AND f.is_trashed = false
         `;
@@ -1257,31 +1273,50 @@ export const bulkAction = async (req: AuthRequest, res: Response) => {
     }
 
     try {
+        let affected = 0;
         switch (action) {
             case 'trash':
-                await pool.query(`UPDATE files SET is_trashed = true, trashed_at = NOW() WHERE id = ANY($1::uuid[]) AND user_id = $2`, [ids, req.user.id]);
+                affected = (await pool.query(`UPDATE files SET is_trashed = true, trashed_at = NOW() WHERE id = ANY($1::uuid[]) AND user_id = $2`, [ids, req.user.id])).rowCount || 0;
                 break;
             case 'restore':
-                await pool.query(`UPDATE files SET is_trashed = false, trashed_at = NULL WHERE id = ANY($1::uuid[]) AND user_id = $2`, [ids, req.user.id]);
+                affected = (await pool.query(`UPDATE files SET is_trashed = false, trashed_at = NULL WHERE id = ANY($1::uuid[]) AND user_id = $2`, [ids, req.user.id])).rowCount || 0;
                 break;
             case 'star':
-                await pool.query(`UPDATE files SET is_starred = true WHERE id = ANY($1::uuid[]) AND user_id = $2`, [ids, req.user.id]);
+                affected = (await pool.query(`UPDATE files SET is_starred = true WHERE id = ANY($1::uuid[]) AND user_id = $2`, [ids, req.user.id])).rowCount || 0;
                 break;
             case 'unstar':
-                await pool.query(`UPDATE files SET is_starred = false WHERE id = ANY($1::uuid[]) AND user_id = $2`, [ids, req.user.id]);
+                affected = (await pool.query(`UPDATE files SET is_starred = false WHERE id = ANY($1::uuid[]) AND user_id = $2`, [ids, req.user.id])).rowCount || 0;
                 break;
             case 'move':
                 if (folder_id === undefined) return res.status(400).json({ success: false, error: 'folder_id required for move' });
-                await pool.query(`UPDATE files SET folder_id = $1, updated_at = NOW() WHERE id = ANY($2::uuid[]) AND user_id = $3`, [folder_id || null, ids, req.user.id]);
+                if (folder_id !== null) {
+                    const targetFolderId = String(folder_id || '').trim();
+                    if (!targetFolderId) {
+                        return res.status(400).json({ success: false, error: 'folder_id must be a valid UUID or null' });
+                    }
+                    const targetFolder = await pool.query(
+                        `SELECT id FROM folders WHERE id = $1 AND user_id = $2 AND is_trashed = false`,
+                        [targetFolderId, req.user.id]
+                    );
+                    if (targetFolder.rows.length === 0) {
+                        return res.status(404).json({ success: false, error: 'Destination folder not found' });
+                    }
+                }
+                affected = (await pool.query(
+                    `UPDATE files
+                     SET folder_id = $1, updated_at = NOW()
+                     WHERE id = ANY($2::uuid[]) AND user_id = $3 AND is_trashed = false`,
+                    [folder_id || null, ids, req.user.id]
+                )).rowCount || 0;
                 break;
             case 'delete':
                 // Hard delete from DB only (Telegram message stays — user may have shared it)
-                await pool.query(`DELETE FROM files WHERE id = ANY($1::uuid[]) AND user_id = $2 AND is_trashed = true`, [ids, req.user.id]);
+                affected = (await pool.query(`DELETE FROM files WHERE id = ANY($1::uuid[]) AND user_id = $2 AND is_trashed = true`, [ids, req.user.id])).rowCount || 0;
                 break;
             default:
                 return res.status(400).json({ success: false, error: 'Unknown action. Use: trash, restore, star, unstar, move, delete' });
         }
-        res.json({ success: true, affected: ids.length });
+        res.json({ success: true, affected });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
     }

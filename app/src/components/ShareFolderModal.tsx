@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
     View, Text, StyleSheet, Modal, TouchableOpacity,
-    KeyboardAvoidingView, Platform, Switch, ActivityIndicator, Alert, TextInput, Keyboard
+    KeyboardAvoidingView, Platform, Switch, ActivityIndicator, TextInput, Keyboard, Share
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import { X, Copy, Link as LinkIcon } from 'lucide-react-native';
+import { X, Copy, Link as LinkIcon, Share2 } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
+import { useToast } from '../context/ToastContext';
 import { createShareLink } from '../services/api';
-import { normalizeExternalShareUrl } from '../utils/shareUrls';
+import { resolveShareUrl } from '../utils/shareUrls';
 
 interface ShareFolderModalProps {
     visible: boolean;
@@ -33,6 +34,7 @@ const resolveTargetId = (target: any): string => {
 
 export default function ShareFolderModal({ visible, onClose, targetItem }: ShareFolderModalProps) {
     const { theme } = useTheme();
+    const { showToast } = useToast();
     const [activeTarget, setActiveTarget] = useState<any>(null);
 
     const [isLoading, setIsLoading] = useState(false);
@@ -82,7 +84,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
             const isFolder = isFolderTarget(activeTarget);
             const targetId = resolveTargetId(activeTarget);
             if (!targetId) {
-                Alert.alert('Error', 'Invalid item selected for sharing.');
+                showToast('Invalid item selected for sharing.', 'error');
                 return;
             }
 
@@ -95,10 +97,12 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
             };
 
             const res = await createShareLink(options);
-            if (res.success && (res.share_url || res.shareUrl)) {
-                setGeneratedLink(normalizeExternalShareUrl(String(res.share_url || res.shareUrl)));
+            const resolvedLink = resolveShareUrl(res);
+            if (res.success && resolvedLink) {
+                setGeneratedLink(resolvedLink);
+                showToast('Share link generated', 'success');
             } else {
-                Alert.alert('Error', res?.error || res?.message || 'Failed to generate link.');
+                showToast(res?.error || res?.message || 'Failed to generate link.', 'error');
             }
         } catch (err: any) {
             const status = Number(err?.response?.status || 0);
@@ -111,7 +115,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
                 || (!err?.response ? 'Cannot reach server. Check API URL/server status and retry.' : '')
                 || err?.message
                 || 'Failed to create share link.';
-            Alert.alert('Error', msg);
+            showToast(msg, 'error');
         } finally {
             setIsLoading(false);
         }
@@ -120,7 +124,16 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
     const handleCopy = async () => {
         if (generatedLink) {
             await Clipboard.setStringAsync(generatedLink);
-            Alert.alert('Copied!', 'Link copied to clipboard.');
+            showToast('Link copied to clipboard', 'success');
+        }
+    };
+
+    const handleNativeShare = async () => {
+        if (!generatedLink) return;
+        try {
+            await Share.share({ message: generatedLink, url: generatedLink });
+        } catch {
+            showToast('System share is unavailable on this device.', 'error');
         }
     };
 
@@ -162,16 +175,22 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
                         <View style={styles.resultContainer}>
                             <View style={[styles.linkBox, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}>
                                 <LinkIcon color={theme.colors.primary} size={20} />
-                                <Text style={[styles.linkText, { color: theme.colors.textHeading }]} numberOfLines={1}>
+                                <Text style={[styles.linkText, { color: theme.colors.textHeading }]} numberOfLines={2}>
                                     {generatedLink}
                                 </Text>
                                 <TouchableOpacity onPress={handleCopy} style={[styles.copyBtn, { backgroundColor: theme.colors.primary }]}>
                                     <Copy color="#fff" size={16} />
                                 </TouchableOpacity>
                             </View>
-                            <TouchableOpacity style={[styles.btn, { backgroundColor: theme.colors.border }]} onPress={onClose}>
-                                <Text style={[styles.btnText, { color: theme.colors.textHeading }]}>Done</Text>
-                            </TouchableOpacity>
+                            <View style={styles.resultActions}>
+                                <TouchableOpacity style={[styles.secondaryBtn, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]} onPress={handleNativeShare}>
+                                    <Share2 color={theme.colors.primary} size={16} />
+                                    <Text style={[styles.secondaryBtnText, { color: theme.colors.textHeading }]}>Share</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity style={[styles.btn, { backgroundColor: theme.colors.border }]} onPress={onClose}>
+                                    <Text style={[styles.btnText, { color: theme.colors.textHeading }]}>Done</Text>
+                                </TouchableOpacity>
+                            </View>
                         </View>
                     ) : (
                         <View style={styles.settingsContainer}>
@@ -238,23 +257,26 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
                             </View>
 
                             {enablePassword && (
-                                <TextInput
-                                    style={[
-                                        styles.passwordInput,
-                                        {
-                                            borderColor: theme.colors.border,
-                                            backgroundColor: theme.colors.background,
-                                            color: theme.colors.textHeading,
-                                        },
-                                    ]}
-                                    value={password}
-                                    onChangeText={setPassword}
-                                    placeholder="Set share password"
-                                    placeholderTextColor={theme.colors.textBody}
-                                    secureTextEntry
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
-                                />
+                                <View>
+                                    <TextInput
+                                        style={[
+                                            styles.passwordInput,
+                                            {
+                                                borderColor: theme.colors.border,
+                                                backgroundColor: theme.colors.background,
+                                                color: theme.colors.textHeading,
+                                            },
+                                        ]}
+                                        value={password}
+                                        onChangeText={setPassword}
+                                        placeholder="Set share password"
+                                        placeholderTextColor={theme.colors.textBody}
+                                        secureTextEntry
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                    />
+                                    <Text style={[styles.passwordHint, { color: theme.colors.textBody }]}>Use at least 4 characters.</Text>
+                                </View>
                             )}
 
                             <TouchableOpacity
@@ -369,6 +391,24 @@ const styles = StyleSheet.create({
         fontSize: 16,
         fontWeight: '700',
     },
+    resultActions: {
+        flexDirection: 'row',
+        gap: 12,
+    },
+    secondaryBtn: {
+        flex: 1,
+        height: 52,
+        borderRadius: 14,
+        justifyContent: 'center',
+        alignItems: 'center',
+        flexDirection: 'row',
+        gap: 8,
+        borderWidth: 1,
+    },
+    secondaryBtnText: {
+        fontSize: 15,
+        fontWeight: '600',
+    },
     resultContainer: {
         gap: 16,
     },
@@ -382,11 +422,15 @@ const styles = StyleSheet.create({
     },
     linkText: {
         flex: 1,
-        fontSize: 15,
+        fontSize: 14,
         fontWeight: '500',
     },
     copyBtn: {
         padding: 10,
         borderRadius: 10,
-    }
+    },
+    passwordHint: {
+        fontSize: 12,
+        marginTop: 8,
+    },
 });

@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export type ThemeMode = 'light' | 'dark';
+export const THEME_MODE_KEY = '@theme_mode';
 
 // ── Shared structural tokens (same for light/dark) ──
 const sharedTokens = {
@@ -34,6 +35,8 @@ export const lightTheme = {
     colors: {
         background: '#F7F8FC',
         card: '#FFFFFF',
+        surfaceMuted: '#F1F3F9',
+        surfaceElevated: '#FFFFFF',
         primary: '#3B82F6',
         primaryDark: '#2563EB',
         primaryLight: '#DBEAFE',
@@ -53,7 +56,13 @@ export const lightTheme = {
         border: '#E5E7EB',
         muted: '#94A3B8',
         overlay: 'rgba(0,0,0,0.4)',
+        overlaySoft: 'rgba(15,23,42,0.08)',
         inputBg: '#F7F8FC',
+        switchTrackOff: '#D1D5DB',
+        dangerSoft: 'rgba(239,68,68,0.08)',
+        warningSoft: 'rgba(245,158,11,0.12)',
+        successSoft: 'rgba(34,197,94,0.12)',
+        infoSoft: 'rgba(59,130,246,0.12)',
         purple: '#9333EA',
         neutral: {
             50: '#F7F8FC', 100: '#F1F3F9', 200: '#E5E7EB', 300: '#CBD5E1',
@@ -78,6 +87,8 @@ export const darkTheme: typeof lightTheme = {
     colors: {
         background: '#0D0F1A',
         card: '#1A1E2E',
+        surfaceMuted: '#141828',
+        surfaceElevated: '#20263A',
         primary: '#60A5FA',
         primaryDark: '#3B82F6',
         primaryLight: '#1E2540',
@@ -97,7 +108,13 @@ export const darkTheme: typeof lightTheme = {
         border: '#252A3E',
         muted: '#4F5B76',
         overlay: 'rgba(0,0,0,0.7)',
+        overlaySoft: 'rgba(148,163,184,0.12)',
         inputBg: '#141828',
+        switchTrackOff: '#334155',
+        dangerSoft: 'rgba(239,68,68,0.16)',
+        warningSoft: 'rgba(245,158,11,0.16)',
+        successSoft: 'rgba(34,197,94,0.16)',
+        infoSoft: 'rgba(96,165,250,0.16)',
         purple: '#A855F7',
         neutral: {
             50: '#0D0F1A', 100: '#141828', 200: '#252A3E', 300: '#353B52',
@@ -119,34 +136,50 @@ export const darkTheme: typeof lightTheme = {
 interface ThemeContextType {
     theme: typeof lightTheme;
     isDark: boolean;
-    toggleTheme: () => void;
+    themeReady: boolean;
+    toggleTheme: () => Promise<void>;
+    setThemeMode: (mode: ThemeMode) => Promise<void>;
 }
 
 const ThemeContext = createContext<ThemeContextType>({
     theme: lightTheme,
     isDark: false,
-    toggleTheme: () => { },
+    themeReady: false,
+    toggleTheme: async () => { },
+    setThemeMode: async () => { },
 });
 
 export const ThemeProvider = ({ children }: { children: ReactNode }) => {
     // Start with null to indicate loading state - prevents flash of wrong theme
     const [isDark, setIsDark] = useState<boolean | null>(null);
 
+    const setThemeMode = async (mode: ThemeMode) => {
+        const next = mode === 'dark';
+        setIsDark(next);
+        await AsyncStorage.setItem(THEME_MODE_KEY, mode);
+    };
+
     const toggleTheme = async () => {
         if (isDark === null) return;
-        const next = !isDark;
-        setIsDark(next);
-        await AsyncStorage.setItem('@theme_mode', next ? 'dark' : 'light');
+        await setThemeMode(isDark ? 'light' : 'dark');
     };
 
     // Load theme preference on mount
     React.useEffect(() => {
-        AsyncStorage.getItem('@theme_mode').then(mode => {
-            setIsDark(mode === 'dark');
+        let mounted = true;
+        AsyncStorage.getItem(THEME_MODE_KEY).then(mode => {
+            if (mounted) {
+                setIsDark(mode === 'dark');
+            }
         }).catch(() => {
-            // Default to light theme on error
-            setIsDark(false);
+            if (mounted) {
+                setIsDark(false);
+            }
         });
+
+        return () => {
+            mounted = false;
+        };
     }, []);
 
     // Wait for theme to load before rendering children
@@ -156,7 +189,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
     }
 
     return (
-        <ThemeContext.Provider value={{ theme: isDark ? darkTheme : lightTheme, isDark, toggleTheme }}>
+        <ThemeContext.Provider value={{ theme: isDark ? darkTheme : lightTheme, isDark, themeReady: true, toggleTheme, setThemeMode }}>
             {children}
         </ThemeContext.Provider>
     );

@@ -1,8 +1,7 @@
 import React, { useEffect } from 'react';
 import { SharedFile, ShareMeta } from './types';
-import { X, ChevronLeft, ChevronRight, Download, Info } from 'lucide-react';
-import { formatSize, getFileLabel, isImage, isVideo, supportsInlinePreview } from '../../lib/utils';
-import { API_URL as API_BASE } from '../../lib/urls';
+import { X, ChevronLeft, ChevronRight, Download, Info, Share2 } from 'lucide-react';
+import { formatSize, getFileLabel, isImage, isPdf, isVideo, supportsInlinePreview } from '../../lib/utils';
 
 interface PreviewModalProps {
     isOpen: boolean;
@@ -12,13 +11,15 @@ interface PreviewModalProps {
     onNext: () => void;
     onPrev: () => void;
     onDownload: (file: SharedFile) => void;
+    onShare?: (file: SharedFile) => void;
     share: ShareMeta;
     previewUrlMap: Record<string, string>;
+    previewErrors?: Record<string, string>;
     onLoadPreview: (file: SharedFile) => void;
 }
 
 export function PreviewModal({
-    isOpen, onClose, files, currentIndex, onNext, onPrev, onDownload, share, previewUrlMap, onLoadPreview
+    isOpen, onClose, files, currentIndex, onNext, onPrev, onDownload, onShare, share, previewUrlMap, previewErrors, onLoadPreview
 }: PreviewModalProps) {
 
     // Close on Escape key
@@ -43,8 +44,40 @@ export function PreviewModal({
     if (!isOpen || !files.length || currentIndex < 0 || currentIndex >= files.length) return null;
 
     const previewUrl = previewUrlMap[`${currentFile.id}:inline`];
+    const previewError = previewErrors?.[currentFile.id] || '';
+    const canInlinePreview = supportsInlinePreview(currentFile);
 
     const renderContent = () => {
+        if (!canInlinePreview) {
+            return (
+                <div className="bg-white p-12 rounded-2xl shadow-xl flex flex-col items-center gap-4 text-center">
+                    <div className="w-20 h-20 bg-brand-light rounded-2xl flex items-center justify-center text-brand-start">
+                        <Info className="w-10 h-10" />
+                    </div>
+                    <div>
+                        <h3 className="text-xl font-semibold text-brand-text mb-1">Preview not available</h3>
+                        <p className="text-brand-muted max-w-sm mx-auto">
+                            This file type cannot be previewed directly in the browser. Please download it to view.
+                        </p>
+                    </div>
+                </div>
+            );
+        }
+
+        if (previewError) {
+            return (
+                <div className="bg-white p-12 rounded-2xl shadow-xl flex flex-col items-center gap-4 text-center">
+                    <div className="w-20 h-20 bg-red-50 rounded-2xl flex items-center justify-center text-red-500">
+                        <Info className="w-10 h-10" />
+                    </div>
+                    <div>
+                        <h3 className="text-xl font-semibold text-brand-text mb-1">Preview unavailable</h3>
+                        <p className="text-brand-muted max-w-sm mx-auto">{previewError}</p>
+                    </div>
+                </div>
+            );
+        }
+
         if (!previewUrl) {
             return (
                 <div className="flex flex-col items-center justify-center p-12">
@@ -73,19 +106,16 @@ export function PreviewModal({
                 />
             );
         }
-        return (
-            <div className="bg-white p-12 rounded-2xl shadow-xl flex flex-col items-center gap-4 text-center">
-                <div className="w-20 h-20 bg-brand-light rounded-2xl flex items-center justify-center text-brand-start">
-                    <Info className="w-10 h-10" />
-                </div>
-                <div>
-                    <h3 className="text-xl font-semibold text-brand-text mb-1">Preview not available</h3>
-                    <p className="text-brand-muted max-w-sm mx-auto">
-                        This file type cannot be previewed directly in the browser. Please download it to view.
-                    </p>
-                </div>
-            </div>
-        );
+        if (isPdf(currentFile)) {
+            return (
+                <iframe
+                    src={previewUrl}
+                    title={getFileLabel(currentFile)}
+                    className="h-[85vh] w-[90vw] rounded-xl bg-white shadow-2xl"
+                />
+            );
+        }
+        return null;
     };
 
     return (
@@ -108,6 +138,15 @@ export function PreviewModal({
                 </div>
 
                 <div className="flex items-center gap-4">
+                    {onShare && (
+                        <button
+                            onClick={() => onShare(currentFile)}
+                            className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-white font-medium transition-colors"
+                        >
+                            <Share2 className="w-4 h-4" />
+                            <span>Share</span>
+                        </button>
+                    )}
                     {share.allowDownload && (
                         <button
                             onClick={() => onDownload(currentFile)}

@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, Platform, Animated, Dimensions } from 'react-native';
-import { CheckCircle, AlertCircle, Info, AlertTriangle, X } from 'lucide-react-native';
+import { CheckCircle, AlertCircle, Info, AlertTriangle } from 'lucide-react-native';
 import { useTheme } from './ThemeContext';
 
 const { width } = Dimensions.get('window');
@@ -25,11 +25,12 @@ const ToastItem = ({ toast, onHide }: { toast: Toast, onHide: (id: number) => vo
     const opacity = useRef(new Animated.Value(0)).current;
     const translateY = useRef(new Animated.Value(-20)).current;
     const { theme } = useTheme();
+    const useNativeDriver = Platform.OS !== 'web';
 
     useEffect(() => {
         Animated.parallel([
-            Animated.timing(opacity, { toValue: 1, duration: 400, useNativeDriver: true }),
-            Animated.spring(translateY, { toValue: 0, tension: 50, friction: 8, useNativeDriver: true }),
+            Animated.timing(opacity, { toValue: 1, duration: 400, useNativeDriver }),
+            Animated.spring(translateY, { toValue: 0, tension: 50, friction: 8, useNativeDriver }),
         ]).start();
 
         const timer = setTimeout(() => {
@@ -41,8 +42,8 @@ const ToastItem = ({ toast, onHide }: { toast: Toast, onHide: (id: number) => vo
 
     const hide = () => {
         Animated.parallel([
-            Animated.timing(opacity, { toValue: 0, duration: 300, useNativeDriver: true }),
-            Animated.timing(translateY, { toValue: -15, duration: 300, useNativeDriver: true }),
+            Animated.timing(opacity, { toValue: 0, duration: 300, useNativeDriver }),
+            Animated.timing(translateY, { toValue: -15, duration: 300, useNativeDriver }),
         ]).start(() => onHide(toast.id));
     };
 
@@ -75,10 +76,21 @@ const ToastItem = ({ toast, onHide }: { toast: Toast, onHide: (id: number) => vo
 export const ToastProvider = ({ children }: { children: React.ReactNode }) => {
     const [toasts, setToasts] = useState<Toast[]>([]);
     const counter = useRef(0);
+    const recentToastRef = useRef<{ message: string; type: ToastType; ts: number } | null>(null);
 
     const showToast = useCallback((message: string, type: ToastType = 'success') => {
+        const normalizedMessage = String(message || '').trim();
+        if (!normalizedMessage) return;
+
+        const now = Date.now();
+        const recent = recentToastRef.current;
+        if (recent && recent.message === normalizedMessage && recent.type === type && now - recent.ts < 1500) {
+            return;
+        }
+
+        recentToastRef.current = { message: normalizedMessage, type, ts: now };
         const id = ++counter.current;
-        setToasts(prev => [...prev, { id, message, type }]);
+        setToasts(prev => [...prev, { id, message: normalizedMessage, type }].slice(-3));
     }, []);
 
     const removeToast = useCallback((id: number) => {
@@ -88,7 +100,7 @@ export const ToastProvider = ({ children }: { children: React.ReactNode }) => {
     return (
         <ToastContext.Provider value={{ showToast }}>
             {children}
-            <View style={styles.container} pointerEvents="none">
+            <View style={[styles.container, styles.pointerPassthrough]}>
                 {toasts.map(t => (
                     <ToastItem key={t.id} toast={t} onHide={removeToast} />
                 ))}
@@ -107,6 +119,9 @@ const styles = StyleSheet.create({
         zIndex: 10000,
         gap: 12,
     },
+    pointerPassthrough: {
+        pointerEvents: 'none' as any,
+    },
     toast: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -116,11 +131,18 @@ const styles = StyleSheet.create({
         alignSelf: 'center',
         minWidth: 200,
         maxWidth: width - 40,
-        shadowColor: '#000',
-        shadowOpacity: 0.2,
-        shadowRadius: 16,
-        shadowOffset: { width: 0, height: 8 },
-        elevation: 8,
+        ...Platform.select({
+            web: {
+                boxShadow: '0 8px 16px rgba(0, 0, 0, 0.2)',
+            },
+            default: {
+                shadowColor: '#000',
+                shadowOpacity: 0.2,
+                shadowRadius: 16,
+                shadowOffset: { width: 0, height: 8 },
+                elevation: 8,
+            },
+        }),
         borderWidth: 1,
         borderColor: 'rgba(255,255,255,0.1)'
     },

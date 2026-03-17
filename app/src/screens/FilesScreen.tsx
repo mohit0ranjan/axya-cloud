@@ -18,6 +18,8 @@ import { FileCardSkeleton } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFileRefresh } from '../utils/events';
+import { formatFolderMeta } from '../utils/folderMeta';
+import { normalizeItems } from '../services/fileStateSync';
 
 const { width } = Dimensions.get('window');
 
@@ -121,7 +123,7 @@ export default function FilesScreen({ navigation }: any) {
         try {
             const res = await apiClient.get('/files/folders');
             if (mountedRef.current && res.data.success) {
-                setFolders(res.data.folders || []);
+                setFolders(normalizeItems(res.data.folders || [], 'created_at_DESC'));
             }
         } catch {
             if (mountedRef.current) showToast('Could not load folders', 'error');
@@ -167,7 +169,7 @@ export default function FilesScreen({ navigation }: any) {
             <View style={s.folderInfo}>
                 <Text style={s.folderName} numberOfLines={1}>{item.name}</Text>
                 <Text style={s.folderCount}>
-                    {item.file_count || 0} file{item.file_count !== 1 ? 's' : ''}
+                    {formatFolderMeta(item)}
                 </Text>
             </View>
             <MoreHorizontal color={C.muted} size={20} />

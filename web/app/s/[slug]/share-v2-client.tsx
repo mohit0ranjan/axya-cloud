@@ -105,16 +105,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
   const [zipState, setZipState] = useState<{ loading: boolean; message: string }>({ loading: false, message: '' });
 
   const [imageModal, setImageModal] = useState<ImageModalState>({ open: false, items: [], index: 0 });
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const swipeStartXRef = useRef<number | null>(null);
-  const dragRef = useRef<{ active: boolean; startX: number; startY: number; baseX: number; baseY: number }>({
-    active: false,
-    startX: 0,
-    startY: 0,
-    baseX: 0,
-    baseY: 0,
-  });
+  const [previewErrorMap, setPreviewErrorMap] = useState<Record<string, string>>({});
 
   const request = async (url: string, init?: RequestInit) => {
     const headers = new Headers(init?.headers || {});
@@ -142,6 +133,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       if (!res.ok) {
         const message = String(payload?.message || payload?.error || 'Unable to open share.');
         setError(message);
+        setSessionToken('');
         setRequiresPassword(message.toLowerCase().includes('password'));
         return;
       }
@@ -388,11 +380,8 @@ export default function ShareV2Client({ slug }: { slug: string }) {
   const activeImage = imageModal.items[imageModal.index];
 
   const openImageModal = (item: SharedFile) => {
-    const images = allLoadedFiles.filter(isImage);
-    const idx = Math.max(0, images.findIndex((x) => x.id === item.id));
-    setImageModal({ open: true, items: images, index: idx });
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
+    const idx = Math.max(0, allLoadedFiles.findIndex((x) => x.id === item.id));
+    setImageModal({ open: true, items: allLoadedFiles, index: idx });
   };
 
   const handleImageNav = (delta: number) => {
@@ -401,44 +390,26 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       const next = (curr.index + delta + curr.items.length) % curr.items.length;
       return { ...curr, index: next };
     });
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
   };
 
-  const onImagePointerDown = (event: React.PointerEvent<HTMLImageElement>) => {
-    dragRef.current = {
-      active: true,
-      startX: event.clientX,
-      startY: event.clientY,
-      baseX: pan.x,
-      baseY: pan.y,
-    };
-  };
-
-  const onImagePointerMove = (event: React.PointerEvent<HTMLImageElement>) => {
-    if (!dragRef.current.active || zoom <= 1) return;
-    const dx = event.clientX - dragRef.current.startX;
-    const dy = event.clientY - dragRef.current.startY;
-    setPan({ x: dragRef.current.baseX + dx, y: dragRef.current.baseY + dy });
-  };
-
-  const onImagePointerUp = () => {
-    dragRef.current.active = false;
-  };
-
-  const onTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
-    swipeStartXRef.current = event.touches[0]?.clientX ?? null;
-  };
-
-  const onTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
-    const start = swipeStartXRef.current;
-    const end = event.changedTouches[0]?.clientX ?? null;
-    swipeStartXRef.current = null;
-    if (start === null || end === null) return;
-    const delta = end - start;
-    if (Math.abs(delta) < 60) return;
-    if (delta < 0) handleImageNav(1);
-    else handleImageNav(-1);
+  const handleShareItem = async () => {
+    if (typeof window === 'undefined') return;
+    const shareUrl = window.location.href;
+    const nav = navigator as Navigator & { share?: (data: { title?: string; text?: string; url?: string }) => Promise<void> };
+    try {
+      if (typeof nav.share === 'function') {
+        await nav.share({
+          title: 'Shared files',
+          text: 'View this shared link',
+          url: shareUrl,
+        });
+        return;
+      }
+      await navigator.clipboard.writeText(shareUrl);
+      setError('Share link copied to clipboard.');
+    } catch {
+      setError('Unable to share link right now.');
+    }
   };
 
 
@@ -644,11 +615,17 @@ export default function ShareV2Client({ slug }: { slug: string }) {
         onNext={() => handleImageNav(1)}
         onPrev={() => handleImageNav(-1)}
         onDownload={handleDownloadItem}
+        onShare={handleShareItem}
         share={share as ShareMeta}
         previewUrlMap={previewUrlMap}
+        previewErrors={previewErrorMap}
         onLoadPreview={async (file) => {
+          if (!supportsInlinePreview(file)) return;
+          setPreviewErrorMap((curr) => ({ ...curr, [file.id]: '' }));
           const url = await getTicketUrl(file.id, 'inline');
-          if (!url) setError('Preview temporarily unavailable for this file.');
+          if (!url) {
+            setPreviewErrorMap((curr) => ({ ...curr, [file.id]: 'Preview temporarily unavailable for this file.' }));
+          }
         }}
       />
     </div>

@@ -14,6 +14,8 @@ import * as Sharing from 'expo-sharing';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { API_BASE } from './apiClient';
+import { buildApiFileUrl } from '../utils/fileSafety';
+import { getNotificationsEnabled } from '../utils/preferences';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -82,7 +84,7 @@ class DownloadManager {
     // ── Notifications ────────────────────────────────────────────────────────
 
     private async updateNotification() {
-        if (!this.notificationsEnabled) return;
+        if (!this.notificationsEnabled || !(await getNotificationsEnabled())) return;
         const active = this.tasks.filter(
             t => t.status === 'downloading' || t.status === 'queued'
         );
@@ -316,7 +318,7 @@ class DownloadManager {
 
         throwIfCancelled();
 
-        const downloadUrl = `${API_BASE}/files/${task.fileId}/download`;
+        const downloadUrl = buildApiFileUrl(API_BASE, task.fileId, 'download');
         const safeFileName = this.sanitizeFileName(task.fileName);
         const destFile = new File(Paths.document, safeFileName);
 
@@ -363,7 +365,31 @@ class DownloadManager {
         task.localPath = result.uri;
         this.notifyListeners();
 
-        // Offer share dialog
+        // ── Device Download Logic ──
+        if (Platform.OS === 'android') {
+            try {
+                const permissions = await LegacyFileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+                if (permissions.granted) {
+                    task.progress = 95;
+                    this.notifyListeners();
+                    const destUri = await LegacyFileSystem.StorageAccessFramework.createFileAsync(
+                        permissions.directoryUri,
+                        safeFileName,
+                        task.mimeType || 'application/octet-stream'
+                    );
+                    const base64Str = await LegacyFileSystem.readAsStringAsync(result.uri, { encoding: LegacyFileSystem.EncodingType.Base64 });
+                    await LegacyFileSystem.writeAsStringAsync(destUri, base64Str, { encoding: LegacyFileSystem.EncodingType.Base64 });
+                    
+                    task.progress = 100;
+                    this.notifyListeners();
+                    return;
+                }
+            } catch (safErr) {
+                console.warn('SAF error or cancelled:', safErr);
+            }
+        }
+
+        // Fallback to Share for iOS or if Android SAF fails/user cancels
         if (await Sharing.isAvailableAsync()) {
             throwIfCancelled();
             task.progress = 95;

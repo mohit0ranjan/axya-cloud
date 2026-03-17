@@ -1,86 +1,114 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
     View, Text, StyleSheet, SafeAreaView, ScrollView,
-    TouchableOpacity, Dimensions, RefreshControl,
+    TouchableOpacity, RefreshControl, Dimensions, Platform
 } from 'react-native';
-import { ArrowLeft, HardDrive, FileText, Image as ImageIcon, Film, Music, Archive } from 'lucide-react-native';
-import Svg, { G, Circle, Path } from 'react-native-svg';
+import {
+    ArrowLeft, MoreHorizontal, HardDrive, Image as ImageIcon,
+    Film, Music, FileText, Archive, Folder, Star, Trash2, CheckCircle2, AlertTriangle, Info
+} from 'lucide-react-native';
 import apiClient from '../services/apiClient';
 import { useTheme } from '../context/ThemeContext';
 import { formatSize, formatPct } from '../utils/format';
-import { StatCardSkeleton, SkeletonBlock } from '../ui/Skeleton';
+import { SkeletonBlock } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
+import Svg, { Circle, G, Defs, LinearGradient as SvgLinearGradient, Stop } from 'react-native-svg';
 
 const { width } = Dimensions.get('window');
 
 const CATEGORIES = [
-    { key: 'image', label: 'Images', color: '#F59E0B', icon: ImageIcon },
-    { key: 'video', label: 'Videos', color: '#9333EA', icon: Film },
-    { key: 'audio', label: 'Audio', color: '#1FD45A', icon: Music },
-    { key: 'pdf', label: 'Documents', color: '#EF4444', icon: FileText },
-    { key: 'archive', label: 'Archives', color: '#F97316', icon: Archive },
-    { key: 'other', label: 'Other', color: '#64748B', icon: HardDrive },
+    { key: 'image', label: 'Images', color: '#FF5A1F', icon: ImageIcon },
+    { key: 'video', label: 'Videos', color: '#3B82F6', icon: Film },
+    { key: 'pdf', label: 'Documents', color: '#10B981', icon: FileText },
+    { key: 'audio', label: 'Audio', color: '#F59E0B', icon: Music },
+    { key: 'archive', label: 'Archives', color: '#EC4899', icon: Archive },
+    { key: 'other', label: 'Others', color: '#8B5CF6', icon: HardDrive },
 ];
 
-// Mini Donut Chart using SVG
-function DonutChart({ data, total, bgColor }: { data: any[]; total: number; bgColor: string }) {
-    const size = width * 0.52;
-    const cx = size / 2, cy = size / 2;
-    const outerR = size * 0.42, innerR = size * 0.26;
-
-    let startAngle = -Math.PI / 2;
-    const slices = data
-        .filter(d => d.bytes > 0)
-        .map(d => {
-            const angle = (d.bytes / total) * 2 * Math.PI;
-            const x1 = cx + outerR * Math.cos(startAngle);
-            const y1 = cy + outerR * Math.sin(startAngle);
-            const x2 = cx + outerR * Math.cos(startAngle + angle);
-            const y2 = cy + outerR * Math.sin(startAngle + angle);
-            const ix1 = cx + innerR * Math.cos(startAngle + angle);
-            const iy1 = cy + innerR * Math.sin(startAngle + angle);
-            const ix2 = cx + innerR * Math.cos(startAngle);
-            const iy2 = cy + innerR * Math.sin(startAngle);
-            const large = angle > Math.PI ? 1 : 0;
-            const path = `M ${x1} ${y1} A ${outerR} ${outerR} 0 ${large} 1 ${x2} ${y2} L ${ix1} ${iy1} A ${innerR} ${innerR} 0 ${large} 0 ${ix2} ${iy2} Z`;
-            startAngle += angle;
-            return { path, color: d.color };
-        });
-
-    if (slices.length === 0) {
-        return (
-            <EmptyState
-                title="No data yet"
-                description="Upload files to see your storage breakdown"
-                iconType="file"
-                style={{ paddingVertical: 32, flex: 0 }}
-            />
-        );
-    }
+function CircularProgress({ usedGB, isUnlimited, themeColors, isDark }: any) {
+    const size = 120;
+    const strokeWidth = 12;
+    const radius = (size - strokeWidth) / 2;
+    const circumference = radius * 2 * Math.PI;
+    
+    // For unlimited, we'll cap the visual progress to 50GB for the circle animation
+    // Or just show a cool "breathing" full circle for unlimited power users.
+    const percentage = isUnlimited ? Math.min((usedGB / 50) * 100, 100) : 50; 
+    const strokeDashoffset = circumference - (percentage / 100) * circumference;
 
     return (
-        <Svg width={size} height={size}>
-            <G>
-                {slices.map((s, i) => <Path key={i} d={s.path} fill={s.color} />)}
-                {/* Use dynamic bgColor so donut hole matches dark/light background */}
-                <Circle cx={cx} cy={cy} r={innerR - 2} fill={bgColor} />
-            </G>
-        </Svg>
+        <View style={st.circularContainer}>
+            <Svg width={size} height={size}>
+                <Defs>
+                    <SvgLinearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <Stop offset="0%" stopColor="#FF5A1F" />
+                        <Stop offset="100%" stopColor="#FFA07A" />
+                    </SvgLinearGradient>
+                </Defs>
+                <G rotation={-90} originX={size / 2} originY={size / 2}>
+                    <Circle
+                        cx={size / 2} cy={size / 2} r={radius}
+                        stroke={isDark ? '#1E293B' : '#F1F5F9'}
+                        strokeWidth={strokeWidth} fill="transparent"
+                    />
+                    <Circle
+                        cx={size / 2} cy={size / 2} r={radius}
+                        stroke="url(#gradient)"
+                        strokeWidth={strokeWidth} fill="transparent"
+                        strokeDasharray={circumference}
+                        strokeDashoffset={strokeDashoffset}
+                        strokeLinecap="round"
+                    />
+                </G>
+            </Svg>
+            <View style={st.circularLabelWrap}>
+                {isUnlimited ? (
+                    <>
+                        <Text style={[st.circularLabelValue, { color: themeColors.textHeading }]}>∞</Text>
+                        <Text style={[st.circularLabelSub, { color: themeColors.primary }]}>Unlimited</Text>
+                    </>
+                ) : (
+                    <>
+                        <Text style={[st.circularLabelValue, { color: themeColors.textHeading }]}>{percentage.toFixed(0)}%</Text>
+                        <Text style={[st.circularLabelSub, { color: themeColors.textBody }]}>Used</Text>
+                    </>
+                )}
+            </View>
+        </View>
     );
 }
 
 export default function AnalyticsScreen({ navigation }: any) {
-    const { theme } = useTheme();
+    const { theme, isDark } = useTheme();
     const C = theme.colors;
+
+    // Tokens matching the requested minimal premium palette
+    const BG_COLOR = isDark ? '#0A0A0A' : '#FFFFFF';
+    const CARD_BG = isDark ? '#141414' : '#F5F7FB';
+    const BORDER = isDark ? '#262626' : '#E2E8F0';
+    const TEXT_MAIN = isDark ? '#F8FAFC' : '#0F172A';
+    const TEXT_SUB = isDark ? '#94A3B8' : '#64748B';
+    const PRIMARY_ACCENT = '#FF5A1F'; 
+
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
     const [stats, setStats] = useState<any>({});
 
-    useEffect(() => {
-        apiClient.get('/files/stats')
-            .then(res => { if (res.data.success) setStats(res.data); })
-            .catch(console.error)
-            .finally(() => setLoading(false));
+    const loadData = useCallback(async () => {
+        try {
+            const res = await apiClient.get('/files/stats');
+            if (res.data?.success) setStats(res.data);
+        } catch (error) {
+            console.error(error);
+        } finally {
+            setLoading(false);
+            setRefreshing(false);
+        }
     }, []);
+
+    useEffect(() => {
+        void loadData();
+    }, [loadData]);
 
     const byType: Record<string, { count: number; bytes: number }> = {};
     (stats.storageByType || []).forEach((row: any) => {
@@ -88,170 +116,208 @@ export default function AnalyticsScreen({ navigation }: any) {
     });
 
     const totalBytes = stats.totalBytes || 0;
-    // Axya supports unlimited storage - usage indicator only (not a quota)
-    // Visual reference: show usage level bar (not percentage of quota)
-    // For usage visualization: 0-50GB range (caps at 100% for visual purposes)
     const usedGB = totalBytes / (1024 ** 3);
-    const usagePct = Math.min((usedGB / 50) * 100, 100); // Reference: 50GB = 100%
-    
-    // Usage level colors: Green < 5GB, Yellow < 20GB, Orange < 50GB, Red >= 50GB
-    const getUsageColor = (gb: number) => {
-        if (gb < 5) return C.success;
-        if (gb < 20) return C.accent;
-        if (gb < 50) return '#F97316';
-        return C.danger;
-    };
-    const usageColor = getUsageColor(usedGB);
 
-    const chartData = CATEGORIES.map(cat => ({
-        ...cat,
-        bytes: byType[cat.key]?.bytes || 0,
-        count: byType[cat.key]?.count || 0,
-    })).filter(d => d.bytes > 0);
+    const chartData = useMemo(() => {
+        return CATEGORIES.map(cat => ({
+            ...cat,
+            bytes: byType[cat.key]?.bytes || 0,
+            count: byType[cat.key]?.count || 0,
+        })).filter(d => d.bytes > 0).sort((a, b) => b.bytes - a.bytes); // Sort by highest usage
+    }, [stats]);
+
+    // Derived Health Message
+    const getHealthState = () => {
+        if (usedGB < 5) return { msg: "You're using storage efficiently", color: '#10B981', icon: CheckCircle2 };
+        if (usedGB < 20) return { msg: "Your storage is healthy", color: '#3B82F6', icon: Info };
+        return { msg: "Action needed - consider cleanup", color: '#F59E0B', icon: AlertTriangle };
+    };
+    const health = getHealthState();
+    const HealthIcon = health.icon;
 
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
-            <View style={[styles.header, { backgroundColor: C.background }]}>
-                <TouchableOpacity style={styles.backBtn} onPress={() => navigation?.goBack()}>
-                    <ArrowLeft color={C.textHeading} size={24} />
+        <SafeAreaView style={[st.root, { backgroundColor: BG_COLOR }]}>
+            {/* 1. HEADER */}
+            <View style={[st.header, { backgroundColor: BG_COLOR }]}>
+                <TouchableOpacity style={st.iconBtn} onPress={() => navigation?.goBack()}>
+                    <ArrowLeft color={TEXT_MAIN} size={24} />
                 </TouchableOpacity>
-                <Text style={[styles.headerTitle, { color: C.textHeading }]}>Storage Analytics</Text>
-                <View style={{ width: 40 }} />
+                <Text style={[st.headerTitle, { color: TEXT_MAIN }]}>Storage Analytics</Text>
+                <TouchableOpacity style={st.iconBtn}>
+                    <MoreHorizontal color={TEXT_MAIN} size={24} />
+                </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 20 }}>
+            <ScrollView 
+                showsVerticalScrollIndicator={false} 
+                contentContainerStyle={st.scroll}
+                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void loadData(); }} tintColor={PRIMARY_ACCENT} />}
+            >
                 {loading ? (
-                    <>
-                        {/* Skeleton for quota card */}
-                        <View style={[styles.quotaCard, { backgroundColor: C.card }]}>
-                            <SkeletonBlock width={22} height={22} borderRadius={6} />
-                            <View style={{ flex: 1, marginLeft: 14, gap: 8 }}>
-                                <SkeletonBlock width="40%" height={13} borderRadius={6} />
-                                <SkeletonBlock width="60%" height={22} borderRadius={8} />
-                                <SkeletonBlock width="100%" height={8} borderRadius={4} />
-                            </View>
-                        </View>
-                        {/* Skeleton for stat cards */}
-                        <View style={styles.statsRow}>
-                            {[1, 2, 3, 4].map(i => <StatCardSkeleton key={i} />)}
-                        </View>
-                        {/* Skeleton for chart section */}
-                        <View style={[styles.chartSection, { backgroundColor: C.card }]}>
-                            <SkeletonBlock width="50%" height={16} borderRadius={8} />
-                            <View style={{ alignItems: 'center', marginVertical: 24 }}>
-                                <SkeletonBlock width={width * 0.52} height={width * 0.52} borderRadius={width * 0.26} />
-                            </View>
-                        </View>
-                    </>
+                    <View style={{ gap: 20 }}>
+                        <SkeletonBlock width="100%" height={240} borderRadius={24} />
+                        <View style={{ flexDirection: 'row', gap: 12 }}><SkeletonBlock width="48%" height={100} borderRadius={24} /><SkeletonBlock width="48%" height={100} borderRadius={24} /></View>
+                        <SkeletonBlock width="100%" height={300} borderRadius={24} />
+                    </View>
                 ) : (
                     <>
-                        {/* ── Storage Quota Card ── */}
-                        {/* Axya now supports unlimited storage - show usage level only */}
-                        <View style={[styles.quotaCard, { backgroundColor: C.card }]}>
-                            <HardDrive color={C.primary} size={22} />
-                            <View style={{ flex: 1, marginLeft: 14 }}>
-                                <Text style={[styles.quotaTitle, { color: C.textBody }]}>Storage Used</Text>
-                                <Text style={[styles.quotaValues, { color: C.textHeading }]}>
-                                    {formatSize(totalBytes)}{' '}
-                                    <Text style={{ color: C.textBody, fontWeight: '400', fontSize: 24 }}>· Unlimited</Text>
-                                </Text>
-                                <View style={[styles.quotaBarTrack, { backgroundColor: C.border }]}>
-                                    <View style={[styles.quotaBarFill, { width: `${usagePct.toFixed(0)}%` as any, backgroundColor: usageColor }]} />
+                        {/* 2. STORAGE OVERVIEW CARD */}
+                        <View style={[st.card, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
+                            <Text style={[st.cardTitle, { color: TEXT_MAIN }]}>Overview</Text>
+                            
+                            <View style={st.overviewRow}>
+                                <View style={st.overviewTextWrap}>
+                                    <Text style={[st.overviewLabel, { color: TEXT_SUB }]}>Total Used</Text>
+                                    <Text style={[st.overviewValue, { color: TEXT_MAIN }]}>{formatSize(totalBytes)}</Text>
+                                    <View style={st.unlimitedBadge}>
+                                        <Text style={st.unlimitedText}>Unlimited Plan</Text>
+                                    </View>
                                 </View>
+                                <CircularProgress usedGB={usedGB} isUnlimited={true} themeColors={C} isDark={isDark} />
                             </View>
-                            <Text style={[styles.quotaPct, { color: usageColor }]}>
-                                {usedGB < 1 ? `${Math.round(usedGB * 1000)} MB` : `${usedGB.toFixed(1)} GB`}
-                            </Text>
+
+                            {/* 4. HEALTH MESSAGE */}
+                            <View style={[st.healthBox, { backgroundColor: isDark ? '#1E293B' : '#EFF6FF' }]}>
+                                <HealthIcon color={health.color} size={18} />
+                                <Text style={[st.healthText, { color: TEXT_MAIN }]}>{health.msg}</Text>
+                            </View>
+
+                            {/* 3. STORAGE BAR (COMPOSITION) */}
+                            <Text style={[st.cardTitle, { color: TEXT_MAIN, marginTop: 24, marginBottom: 12, fontSize: 14 }]}>Composition</Text>
+                            <View style={[st.stackedBarTrack, { backgroundColor: isDark ? '#262626' : '#E2E8F0' }]}>
+                                {totalBytes === 0 ? (
+                                    <View style={[st.stackedBarSegment, { backgroundColor: BORDER, width: '100%' }]} />
+                                ) : (
+                                    chartData.map((d, idx) => (
+                                        <View 
+                                            key={idx} 
+                                            style={[st.stackedBarSegment, { 
+                                                backgroundColor: d.color, 
+                                                width: `${(d.bytes / totalBytes) * 100}%`,
+                                                borderTopLeftRadius: idx === 0 ? 8 : 0,
+                                                borderBottomLeftRadius: idx === 0 ? 8 : 0,
+                                                borderTopRightRadius: idx === chartData.length - 1 ? 8 : 0,
+                                                borderBottomRightRadius: idx === chartData.length - 1 ? 8 : 0,
+                                            }]} 
+                                        />
+                                    ))
+                                )}
+                            </View>
                         </View>
 
-                        {/* ── Quick Stats ── */}
-                        <View style={styles.statsRow}>
+                        {/* 5. STATS GRID */}
+                        <View style={st.statsGrid}>
                             {[
-                                { label: 'Files', value: stats.totalFiles ?? 0, color: C.primary },
-                                { label: 'Folders', value: stats.totalFolders ?? 0, color: '#F59E0B' },
-                                { label: 'Starred', value: stats.starredCount ?? 0, color: '#1FD45A' },
-                                { label: 'In Trash', value: stats.trashCount ?? 0, color: '#EF4444' },
-                            ].map((s, i) => (
-                                <View key={i} style={[styles.statCard, { backgroundColor: C.card }]}>
-                                    <Text style={[styles.statVal, { color: s.color }]}>{s.value}</Text>
-                                    <Text style={[styles.statLabel, { color: C.textBody }]}>{s.label}</Text>
-                                </View>
-                            ))}
+                                { label: 'Files', value: stats.totalFiles ?? 0, icon: FileText, color: '#3B82F6', nav: 'AllFiles' },
+                                { label: 'Folders', value: stats.totalFolders ?? 0, icon: Folder, color: '#10B981', nav: 'Folders' },
+                                { label: 'Starred', value: stats.starredCount ?? 0, icon: Star, color: '#F59E0B', nav: 'Starred' },
+                                { label: 'Trash', value: stats.trashCount ?? 0, icon: Trash2, color: '#EF4444', nav: 'Trash' },
+                            ].map((s, i) => {
+                                const IconNode = s.icon;
+                                return (
+                                    <TouchableOpacity 
+                                        key={i} 
+                                        style={[st.statCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}
+                                        activeOpacity={0.7}
+                                        onPress={() => navigation?.navigate(s.nav)}
+                                    >
+                                        <View style={[st.statIconBox, { backgroundColor: `${s.color}15` }]}>
+                                            <IconNode color={s.color} size={20} />
+                                        </View>
+                                        <Text style={[st.statVal, { color: TEXT_MAIN }]}>{s.value}</Text>
+                                        <Text style={[st.statLabel, { color: TEXT_SUB }]}>{s.label}</Text>
+                                    </TouchableOpacity>
+                                );
+                            })}
                         </View>
 
-                        {/* ── Donut Chart ── */}
-                        <View style={[styles.chartSection, { backgroundColor: C.card }]}>
-                            <Text style={[styles.sectionTitle, { color: C.textHeading }]}>Breakdown by Type</Text>
-                            <View style={{ alignItems: 'center', marginVertical: 16 }}>
-                                {/* Pass dynamic bgColor so donut hole works in dark mode */}
-                                <DonutChart data={chartData} total={totalBytes || 1} bgColor={C.card} />
-                            </View>
-
-                            {/* ── Legend ── */}
-                            {CATEGORIES.map(cat => {
-                                const d = byType[cat.key];
-                                if (!d || d.bytes === 0) return null;
-                                // ✅ FIX: guard against totalBytes=0 to prevent NaN%
-                                const pct = totalBytes > 0 ? formatPct(d.bytes, totalBytes) : '0';
-                                const CatIcon = cat.icon;
+                        {/* 6. COMPOSITION BREAKDOWN LIST */}
+                        <View style={[st.card, { backgroundColor: CARD_BG, borderColor: BORDER, marginBottom: 120 }]}>
+                            <Text style={[st.cardTitle, { color: TEXT_MAIN, marginBottom: 16 }]}>Detailed Breakdown</Text>
+                            
+                            {chartData.map((d, index) => {
+                                const pct = totalBytes > 0 ? ((d.bytes / totalBytes) * 100).toFixed(1) : '0';
+                                const CatIcon = d.icon;
                                 return (
-                                    <View key={cat.key} style={[styles.legendRow, { borderTopColor: C.border }]}>
-                                        <View style={[styles.legendDot, { backgroundColor: cat.color }]} />
-                                        <CatIcon color={cat.color} size={16} />
-                                        <Text style={[styles.legendLabel, { color: C.textHeading }]}>{cat.label}</Text>
-                                        <View style={{ flex: 1, marginHorizontal: 12 }}>
-                                            <View style={[styles.legendBarTrack, { backgroundColor: C.border }]}>
-                                                <View style={[styles.legendBarFill, { width: `${pct}%` as any, backgroundColor: cat.color }]} />
+                                    <View key={d.key}>
+                                        <TouchableOpacity style={st.breakdownRow} activeOpacity={0.7}>
+                                            <View style={st.breakdownRowLeft}>
+                                                <View style={[st.catIconBox, { backgroundColor: `${d.color}15` }]}>
+                                                    <CatIcon color={d.color} size={18} />
+                                                </View>
+                                                <View>
+                                                    <Text style={[st.breakdownText, { color: TEXT_MAIN }]}>{d.label}</Text>
+                                                    <Text style={[st.breakdownCount, { color: TEXT_SUB }]}>{d.count} files</Text>
+                                                </View>
                                             </View>
-                                        </View>
-                                        <Text style={[styles.legendSize, { color: C.textBody }]}>{formatSize(d.bytes)}</Text>
-                                        <Text style={[styles.legendPct, { color: C.textHeading }]}>{pct}%</Text>
+                                            <View style={st.breakdownRowRight}>
+                                                <Text style={[st.breakdownSize, { color: TEXT_MAIN }]}>{formatSize(d.bytes)}</Text>
+                                                <Text style={[st.breakdownPct, { backgroundColor: isDark ? '#262626' : '#E2E8F0', color: TEXT_SUB }]}>{pct}%</Text>
+                                            </View>
+                                        </TouchableOpacity>
+                                        {index < chartData.length - 1 && <View style={[st.breakdownDivider, { backgroundColor: BORDER }]} />}
                                     </View>
                                 );
                             })}
+
                             {chartData.length === 0 && (
                                 <EmptyState
-                                    title="No breakdown available"
-                                    description="Upload files to see your storage breakdown by type"
+                                    title="No Data"
+                                    description="Your storage is completely empty."
                                     iconType="file"
-                                    style={{ paddingVertical: 16, flex: 0 }}
+                                    style={{ paddingVertical: 20, flex: 0 }}
                                 />
                             )}
                         </View>
                     </>
                 )}
-                <View style={{ height: 40 }} />
             </ScrollView>
+
         </SafeAreaView>
     );
 }
 
-const styles = StyleSheet.create({
-    container: { flex: 1 },
-    header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 16 },
-    backBtn: { padding: 4 },
-    headerTitle: { fontSize: 20, fontWeight: '700' },
+const st = StyleSheet.create({
+    root: { flex: 1 },
+    header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, zIndex: 10 },
+    iconBtn: { padding: 8 },
+    headerTitle: { fontSize: 20, fontWeight: '700', letterSpacing: 0.2 },
+    scroll: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40 },
 
-    quotaCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 16, padding: 18, marginBottom: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.07, shadowRadius: 12, elevation: 3 },
-    quotaTitle: { fontSize: 13, marginBottom: 4 },
-    quotaValues: { fontSize: 22, fontWeight: '700', marginBottom: 8 },
-    quotaBarTrack: { width: '100%', height: 8, borderRadius: 4 },
-    quotaBarFill: { height: '100%', borderRadius: 4 },
-    quotaPct: { fontSize: 18, fontWeight: '800', marginLeft: 10 },
+    card: { borderRadius: 24, padding: 20, marginBottom: 20, borderWidth: 1, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.03, shadowRadius: 10, elevation: 2 },
+    cardTitle: { fontSize: 16, fontWeight: '700', marginBottom: 20 },
+    
+    overviewRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
+    overviewTextWrap: { flex: 1 },
+    overviewLabel: { fontSize: 14, fontWeight: '500', marginBottom: 4 },
+    overviewValue: { fontSize: 34, fontWeight: '800', marginBottom: 8, letterSpacing: 0.1 },
+    unlimitedBadge: { alignSelf: 'flex-start', backgroundColor: '#FF5A1F15', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+    unlimitedText: { color: '#FF5A1F', fontSize: 12, fontWeight: '600' },
 
-    statsRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
-    statCard: { flex: 1, borderRadius: 16, padding: 14, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2 },
-    statVal: { fontSize: 22, fontWeight: '800', marginBottom: 4 },
-    statLabel: { fontSize: 11, fontWeight: '600' },
+    circularContainer: { width: 120, height: 120, justifyContent: 'center', alignItems: 'center' },
+    circularLabelWrap: { position: 'absolute', alignItems: 'center', justifyContent: 'center' },
+    circularLabelValue: { fontSize: 24, fontWeight: '800', marginBottom: -2 },
+    circularLabelSub: { fontSize: 11, fontWeight: '600' },
 
-    chartSection: { borderRadius: 16, padding: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2 },
-    sectionTitle: { fontSize: 16, fontWeight: '700' },
+    healthBox: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 12, gap: 10 },
+    healthText: { fontSize: 14, fontWeight: '500', flex: 1 },
 
-    legendRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 8, borderTopWidth: 1 },
-    legendDot: { width: 10, height: 10, borderRadius: 5 },
-    legendLabel: { fontSize: 13, fontWeight: '600', width: 80 },
-    legendBarTrack: { height: 6, borderRadius: 3, overflow: 'hidden' },
-    legendBarFill: { height: '100%', borderRadius: 3 },
-    legendSize: { fontSize: 12, width: 58, textAlign: 'right' },
-    legendPct: { fontSize: 12, fontWeight: '700', width: 38, textAlign: 'right' },
+    stackedBarTrack: { height: 16, borderRadius: 8, flexDirection: 'row', width: '100%', overflow: 'hidden' },
+    stackedBarSegment: { height: '100%' },
+
+    statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 20 },
+    statCard: { width: '48%', borderRadius: 20, padding: 16, borderWidth: 1 },
+    statIconBox: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
+    statVal: { fontSize: 34, fontWeight: '700', marginBottom: 2, letterSpacing: 0.1 },
+    statLabel: { fontSize: 14, fontWeight: '500' },
+
+    breakdownRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12 },
+    breakdownRowLeft: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+    catIconBox: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+    breakdownText: { fontSize: 15, fontWeight: '600', marginBottom: 2 },
+    breakdownCount: { fontSize: 12, fontWeight: '500' },
+    breakdownRowRight: { alignItems: 'flex-end', gap: 6 },
+    breakdownSize: { fontSize: 15, fontWeight: '700' },
+    breakdownPct: { fontSize: 12, fontWeight: '600', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, overflow: 'hidden' },
+    breakdownDivider: { height: StyleSheet.hairlineWidth, marginLeft: 54 },
 });

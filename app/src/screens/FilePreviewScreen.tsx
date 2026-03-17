@@ -2,17 +2,17 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
     View, Text, TouchableOpacity, StyleSheet, SafeAreaView, ActivityIndicator,
     Dimensions, Platform, FlatList, ViewToken, Modal, TextInput,
-    Alert, Share, KeyboardAvoidingView, Vibration
+    Alert, KeyboardAvoidingView, Vibration
 } from 'react-native';
 import {
     ArrowLeft, Download, Star, Share2, MoreHorizontal,
     FolderInput, Trash2, Pencil,
-    FileText, X, Copy
+    FileText, X, Image as ImageIcon
 } from 'lucide-react-native';
-import * as Clipboard from 'expo-clipboard';
 import { Image } from '../components/AppImage';
 import VideoPlayer from '../components/VideoPlayer';
 import PreviewSkeleton from '../components/PreviewSkeleton';
+import ShareFolderModal from '../components/ShareFolderModal';
 import { WebView } from 'react-native-webview';
 
 import apiClient, { API_BASE } from '../services/apiClient';
@@ -20,7 +20,6 @@ import { useToast } from '../context/ToastContext';
 import { useDownload } from '../context/DownloadContext';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { normalizeExternalShareUrl } from '../utils/shareUrls';
 import { syncAfterFileMutation } from '../services/fileStateSync';
 import { emitFileDeleted, emitFileUpdated } from '../utils/events';
 import { buildApiFileUrl, sanitizeDisplayName, sanitizeFileName } from '../utils/fileSafety';
@@ -42,15 +41,15 @@ const IMG_H = height * 0.55;
 const SPRING_CFG = { damping: 20, stiffness: 200 };
 
 function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD_BG }: any) {
-    const { isDark } = useTheme();
     const [loading, setLoading] = useState(true);
     const [useFallback, setUseFallback] = useState(false);
+    const [previewFailed, setPreviewFailed] = useState(false);
     
     // File URLs
     const thumbUrl = buildApiFileUrl(API_BASE, item.id, 'thumbnail');
     const downloadUrl = buildApiFileUrl(API_BASE, item.id, 'download');
-    const headers = { Authorization: `Bearer ${jwt}` };
-    const src = useFallback ? downloadUrl : thumbUrl;
+    const headers = useMemo(() => ({ Authorization: `Bearer ${jwt}` }), [jwt]);
+    const imageSource = useMemo(() => ({ uri: useFallback ? downloadUrl : thumbUrl, headers }), [downloadUrl, headers, thumbUrl, useFallback]);
 
     const scale = useSharedValue(1);
     const savedScale = useSharedValue(1);
@@ -61,7 +60,7 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
     const imageOpacity = useSharedValue(0);
 
     useEffect(() => {
-        setLoading(true); setUseFallback(false);
+        setLoading(true); setUseFallback(false); setPreviewFailed(false);
         scale.value = 1; savedScale.value = 1;
         translateX.value = 0; translateY.value = 0;
         savedTransX.value = 0; savedTransY.value = 0;
@@ -172,25 +171,33 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
                             <PreviewSkeleton />
                         )}
                         <Animated.View style={[{ width: '100%', height: '100%' }, imageFadeStyle]}>
-                            <Image
-                                source={{ uri: src, headers }}
-                                style={{ width: '100%', height: '100%' }}
-                                contentFit="contain"
-                                onLoad={() => {
-                                    setLoading(false);
-                                    imageOpacity.value = withTiming(1, { duration: 240 });
-                                }}
-                                onError={() => {
-                                    if (!useFallback) {
-                                        setUseFallback(true);
-                                        setLoading(true);
-                                        imageOpacity.value = 0;
-                                    } else {
+                            {previewFailed ? (
+                                <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                                    <ImageIcon color="#F59E0B" size={48} style={{ marginBottom: 16 }} />
+                                    <Text style={{ color: '#F59E0B', fontSize: 16 }}>Preview unavailable</Text>
+                                </View>
+                            ) : (
+                                <Image
+                                    source={imageSource}
+                                    style={{ width: '100%', height: '100%' }}
+                                    contentFit="contain"
+                                    onLoad={() => {
+                                        setLoading(false);
+                                        imageOpacity.value = withTiming(1, { duration: 240 });
+                                    }}
+                                    onError={() => {
+                                        if (!useFallback) {
+                                            setUseFallback(true);
+                                            setLoading(true);
+                                            imageOpacity.value = 0;
+                                            return;
+                                        }
+                                        setPreviewFailed(true);
                                         setLoading(false);
                                         imageOpacity.value = withTiming(1, { duration: 180 });
-                                    }
-                                }}
-                            />
+                                    }}
+                                />
+                            )}
                         </Animated.View>
                     </Animated.View>
                 </Animated.View>
@@ -204,7 +211,7 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
 // --------------------------------------------------------------------------
 
 export default function FilePreviewScreen({ route, navigation }: any) {
-    const { isDark } = useTheme();
+    const { theme, isDark } = useTheme();
     const { token: jwt } = useAuth();
     const { addDownload, tasks } = useDownload();
     const { showToast } = useToast();
@@ -219,15 +226,19 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const deepLinkedFileId = String(route?.params?.fileId || '').trim();
     const [deepLinkedFile, setDeepLinkedFile] = useState<any>(null);
 
-    const previewData = allFiles.length > 0 ? allFiles : (fallbackFile ? [fallbackFile] : (deepLinkedFile ? [deepLinkedFile] : []));
-    const listRef = useRef<FlatList<any>>(null);
+    const previewData = useMemo(() => {
+        if (allFiles.length > 0) return allFiles;
+        if (fallbackFile) return [fallbackFile];
+        if (deepLinkedFile) return [deepLinkedFile];
+        return [];
+    }, [allFiles, fallbackFile, deepLinkedFile]);
 
     useEffect(() => {
         if (!deepLinkedFileId || allFiles.length > 0 || fallbackFile) return;
-        apiClient.get(`/files/${deepLinkedFileId}`)
-            .then(res => setDeepLinkedFile(res.data))
+        apiClient.get(`/files/${deepLinkedFileId}/details`)
+            .then(res => setDeepLinkedFile(res.data?.file || res.data))
             .catch(() => showToast('Could not load shared file', 'error'));
-    }, [deepLinkedFileId]);
+    }, [allFiles.length, deepLinkedFileId, fallbackFile, showToast]);
 
     // Local State
     const [filesState, setFilesState] = useState<any[]>(previewData);
@@ -238,8 +249,6 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const [downloadTaskId, setDownloadTaskId] = useState<string | null>(null);
 
     const [isShareModalVisible, setShareModalVisible] = useState(false);
-    const [isGeneratingShare, setGeneratingShare] = useState(false);
-    const [shareLink, setShareLink] = useState('');
 
     const [isOptionsVisible, setOptionsVisible] = useState(false);
 
@@ -250,21 +259,59 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const [isMoveModalVisible, setMoveModalVisible] = useState(false);
     const [allFolders, setAllFolders] = useState<any[]>([]);
     const [isMoving, setIsMoving] = useState(false);
+    const mutationPendingRef = useRef<Set<string>>(new Set());
 
     const file = filesState[currentIndex] || null;
 
     useEffect(() => {
-        setFilesState(previewData);
+        setFilesState((prev) => {
+            if (prev.length === previewData.length && prev.every((entry, index) => entry?.id === previewData[index]?.id)) {
+                return prev;
+            }
+            return previewData;
+        });
         if (previewData.length === 0) {
-            setCurrentIndex(0);
+            setCurrentIndex((prev) => (prev === 0 ? prev : 0));
             return;
         }
         const safeIndex = Math.min(Math.max(initialIndex, 0), previewData.length - 1);
-        setCurrentIndex(safeIndex);
-        requestAnimationFrame(() => {
-            listRef.current?.scrollToIndex({ index: safeIndex, animated: false });
-        });
+        setCurrentIndex((prev) => (prev === safeIndex ? prev : safeIndex));
+        // Removed FlatList scrolling logic
     }, [previewData, initialIndex]);
+
+    const handleNext = useCallback(() => {
+        setCurrentIndex((prev) => Math.min(prev + 1, Math.max(0, filesState.length - 1)));
+    }, [filesState.length]);
+
+    const handlePrev = useCallback(() => {
+        setCurrentIndex((prev) => Math.max(0, prev - 1));
+    }, []);
+
+    const beginFileMutation = useCallback((fileId?: string | null) => {
+        const id = String(fileId || '').trim();
+        if (!id) return false;
+        if (mutationPendingRef.current.has(id)) return false;
+        mutationPendingRef.current.add(id);
+        return true;
+    }, []);
+
+    const endFileMutation = useCallback((fileId?: string | null) => {
+        const id = String(fileId || '').trim();
+        if (!id) return;
+        mutationPendingRef.current.delete(id);
+    }, []);
+
+    const swipePan = useMemo(() => Gesture.Pan()
+        .enabled(!isZoomed && Platform.OS !== 'web')
+        .activeOffsetX([-30, 30])
+        .onEnd((e) => {
+            'worklet';
+            if (e.translationX < -60) {
+                runOnJS(handleNext)();
+            } else if (e.translationX > 60) {
+                runOnJS(handlePrev)();
+            }
+        }), [isZoomed, handleNext, handlePrev]);
 
     useEffect(() => {
         if (!downloadTaskId) return;
@@ -321,67 +368,34 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         }
     }, [file, jwt, addDownload, showToast]);
 
-    const generateShareLink = useCallback(async () => {
-        if (!file?.id) return;
-        setGeneratingShare(true);
-        setShareLink('');
-        try {
-            const res = await apiClient.post('/api/v2/shares', {
-                resource_type: 'file',
-                root_file_id: file.id,
-                expires_at: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
-            });
-            const link = normalizeExternalShareUrl(String(res.data?.share_url || res.data?.shareUrl || ''));
-            if (!link) {
-                showToast('Share link not returned', 'error');
-                return;
-            }
-            setShareLink(link);
-            showToast('Link generated');
-        } catch {
-            showToast('Share failed', 'error');
-        } finally {
-            setGeneratingShare(false);
-        }
-    }, [file?.id, showToast]);
-
     const handleOpenShare = useCallback(() => {
         if (!file?.id) return;
         triggerHaptic();
         setOptionsVisible(false);
         setShareModalVisible(true);
-        void generateShareLink();
-    }, [file?.id, generateShareLink, triggerHaptic]);
-
-    const handleCopyShareLink = useCallback(async () => {
-        if (!shareLink) return;
-        await Clipboard.setStringAsync(shareLink);
-        showToast('Link copied');
-    }, [shareLink, showToast]);
-
-    const handleNativeShareLink = useCallback(async () => {
-        if (!shareLink) return;
-        try {
-            await Share.share({ message: shareLink, url: shareLink });
-        } catch {
-            showToast('System share unavailable', 'error');
-        }
-    }, [shareLink, showToast]);
+    }, [file?.id, triggerHaptic]);
 
     const handleToggleStar = useCallback(async () => {
         if (!file?.id) return;
+        if (!beginFileMutation(file.id)) {
+            showToast('Action already in progress');
+            return;
+        }
         triggerHaptic();
         setOptionsVisible(false);
         try {
-            await apiClient.patch(`/files/${file.id}/star`);
-            updateCurrentFile((f) => ({ ...f, is_starred: !f?.is_starred }));
-            emitFileUpdated(file.id, { is_starred: !file.is_starred });
-            showToast(file?.is_starred ? 'Removed from favorites' : 'Added to favorites');
+            const response = await apiClient.patch(`/files/${file.id}/star`);
+            const nextStarState = Boolean(response?.data?.is_starred);
+            updateCurrentFile((f) => ({ ...f, is_starred: nextStarState }));
+            emitFileUpdated(file.id, { is_starred: nextStarState });
+            showToast(nextStarState ? 'Added to favorites' : 'Removed from favorites');
             syncAfterFileMutation({ clearCache: true });
         } catch {
             showToast('Could not update favorite', 'error');
+        } finally {
+            endFileMutation(file.id);
         }
-    }, [file?.id, file?.is_starred, showToast, updateCurrentFile, triggerHaptic]);
+    }, [file?.id, beginFileMutation, endFileMutation, showToast, updateCurrentFile, triggerHaptic]);
 
     const openRenameModal = useCallback(() => {
         if (!file) return;
@@ -394,6 +408,10 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const handleRename = useCallback(async () => {
         const trimmed = sanitizeFileName(renameValue, 'file');
         if (!file?.id || !trimmed || isRenaming) return;
+        if (!beginFileMutation(file.id)) {
+            showToast('Action already in progress');
+            return;
+        }
         setIsRenaming(true);
         try {
             await apiClient.patch(`/files/${file.id}`, { name: trimmed, file_name: trimmed });
@@ -406,8 +424,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
             showToast('Rename failed', 'error');
         } finally {
             setIsRenaming(false);
+            endFileMutation(file.id);
         }
-    }, [file?.id, renameValue, isRenaming, showToast, updateCurrentFile]);
+    }, [file?.id, renameValue, isRenaming, beginFileMutation, endFileMutation, showToast, updateCurrentFile]);
 
     const handleDelete = useCallback(() => {
         if (!file?.id) return;
@@ -421,20 +440,32 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     text: 'Move to Trash',
                     style: 'destructive',
                     onPress: async () => {
+                        if (!beginFileMutation(file.id)) {
+                            showToast('Action already in progress');
+                            return;
+                        }
                         try {
+                            const indexToDelete = currentIndex;
                             await apiClient.patch(`/files/${file.id}/trash`);
-                            setFilesState(prev => prev.filter((f, idx) => idx !== currentIndex));
+                            setFilesState((prev) => {
+                                const nextFiles = prev.filter((_, idx) => idx !== indexToDelete);
+                                const nextIndex = Math.min(indexToDelete, Math.max(0, nextFiles.length - 1));
+                                setCurrentIndex(nextIndex);
+                                return nextFiles;
+                            });
                             emitFileDeleted(file.id);
                             showToast('Moved to trash');
                             syncAfterFileMutation();
                         } catch {
                             showToast('Could not move to trash', 'error');
+                        } finally {
+                            endFileMutation(file.id);
                         }
                     },
                 },
             ]
         );
-    }, [file, currentIndex, showToast]);
+    }, [file, currentIndex, beginFileMutation, endFileMutation, showToast]);
 
     const openMoveModal = useCallback(async () => {
         if (!file?.id) return;
@@ -452,6 +483,10 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
     const handleMove = useCallback(async (targetFolderId: string | null) => {
         if (!file?.id || isMoving) return;
+        if (!beginFileMutation(file.id)) {
+            showToast('Action already in progress');
+            return;
+        }
         setIsMoving(true);
         try {
             await apiClient.post('/files/bulk', { ids: [file.id], action: 'move', folder_id: targetFolderId });
@@ -463,16 +498,19 @@ export default function FilePreviewScreen({ route, navigation }: any) {
             showToast('Could not move file', 'error');
         } finally {
             setIsMoving(false);
+            endFileMutation(file.id);
         }
-    }, [file?.id, isMoving, showToast]);
+    }, [file?.id, isMoving, beginFileMutation, endFileMutation, showToast]);
 
     // Design System
-    const BG_COLOR = isDark ? '#050505' : '#FFFFFF';
-    const CARD_BG = isDark ? '#141414' : '#F5F7FB';
-    const TEXT_MAIN = isDark ? '#FFFFFF' : '#111827';
-    const TEXT_SUB = isDark ? '#A0A0A0' : '#6B7280';
-    const ACCENT = '#3B82F6'; // Axya Blue (can adapt to primary accent)
-    const BORDER = isDark ? '#222222' : '#EBEEF2';
+    const BG_COLOR = theme.colors.background;
+    const CARD_BG = theme.colors.card;
+    const TEXT_MAIN = theme.colors.textHeading;
+    const TEXT_SUB = theme.colors.textBody;
+    const ACCENT = theme.colors.primary;
+    const BORDER = theme.colors.border;
+    const INPUT_BG = theme.colors.inputBg;
+    const DANGER = theme.colors.danger;
 
     const renderFileItem = ({ item }: { item: any }) => {
         const mime = item?.mime_type || '';
@@ -501,15 +539,29 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                 </View>
             );
         }
-        if (mime === 'application/pdf') {
+        if (mime === 'application/pdf' || item?.type === 'pdf') {
             const pdfUrl = buildApiFileUrl(API_BASE, item.id, 'download');
             return (
                 <View style={styles.previewCardContainer}>
                     <View style={[styles.previewCard, { backgroundColor: CARD_BG }]}>
                         {Platform.OS === 'web' ? (
                             <iframe src={pdfUrl} style={{ width: '100%', height: '100%', border: 'none', borderRadius: 16 }} />
+                        ) : Platform.OS === 'android' ? (
+                            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+                                <FileText color={TEXT_SUB} size={64} style={{ marginBottom: 16 }} />
+                                <Text style={{ color: TEXT_MAIN, fontSize: 18, fontWeight: '600', marginBottom: 8 }}>PDF Document</Text>
+                                <Text style={{ color: TEXT_SUB, fontSize: 14, textAlign: 'center', marginBottom: 24 }}>
+                                    Android does not support inline PDF preview securely. Please download or open it in a native viewer.
+                                </Text>
+                                <TouchableOpacity 
+                                    style={{ backgroundColor: ACCENT, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12 }}
+                                    onPress={handleDownload}
+                                >
+                                    <Text style={{ color: '#FFF', fontWeight: 'bold' }}>Download to View</Text>
+                                </TouchableOpacity>
+                            </View>
                         ) : (
-                            <WebView source={{ uri: pdfUrl }} style={{ flex: 1, backgroundColor: 'transparent' }} />
+                            <WebView source={{ uri: pdfUrl, headers: { Authorization: `Bearer ${jwt}` } }} style={{ flex: 1, backgroundColor: 'transparent' }} />
                         )}
                     </View>
                 </View>
@@ -544,13 +596,8 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         }
         if (currentIndex > filesState.length - 1) {
             setCurrentIndex(filesState.length - 1);
-            requestAnimationFrame(() => {
-                listRef.current?.scrollToIndex({ index: filesState.length - 1, animated: true });
-            });
         }
     }, [filesState.length, currentIndex, navigation]);
-    
-    const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 50 }).current;
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: BG_COLOR }]}>
@@ -585,32 +632,15 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
             {/* Swiper */}
             <View style={styles.swiperArea}>
-                {filesState.length > 0 ? (
-                    <FlatList
-                        ref={listRef}
-                        data={filesState}
-                        keyExtractor={(item, idx) => `${item?.id || idx}`}
-                        initialScrollIndex={Math.min(Math.max(initialIndex, 0), Math.max(filesState.length - 1, 0))}
-                        horizontal
-                        pagingEnabled
-                        showsHorizontalScrollIndicator={false}
-                        scrollEnabled={Platform.OS === 'web' ? true : !isZoomed}
-                        bounces={false}
-                        overScrollMode="never"
-                        onViewableItemsChanged={handleViewableItemsChanged}
-                        viewabilityConfig={viewabilityConfig}
-                        renderItem={renderFileItem}
-                        onScrollToIndexFailed={(info) => {
-                            setTimeout(() => {
-                                listRef.current?.scrollToIndex({ index: info.index, animated: false });
-                            }, 120);
-                        }}
-                        getItemLayout={(data, index) => ({ length: width, offset: width * index, index })}
-                        contentContainerStyle={{ flexGrow: 1 }}
-                    />
+                {filesState.length > 0 && file ? (
+                    <GestureDetector gesture={swipePan}>
+                        <Animated.View style={{ flex: 1 }} key={file.id}>
+                            {renderFileItem({ item: file })}
+                        </Animated.View>
+                    </GestureDetector>
                 ) : (
                     <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                        <ActivityIndicator size="large" color="#3B82F6" />
+                        <ActivityIndicator size="large" color={ACCENT} />
                     </View>
                 )}
             </View>
@@ -622,7 +652,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                 <View style={styles.infoRow}>
                     <View style={styles.infoCol}>
                         <Text style={[styles.infoLabel, { color: TEXT_SUB }]}>Size</Text>
-                        <Text style={[styles.infoValue, { color: TEXT_MAIN }]}>{formatBytes(file?.size)}</Text>
+                        <Text style={[styles.infoValue, { color: TEXT_MAIN }]}>{formatBytes(file?.size ?? file?.file_size)}</Text>
                     </View>
                     <View style={styles.infoCol}>
                         <Text style={[styles.infoLabel, { color: TEXT_SUB }]}>Modified</Text>
@@ -661,59 +691,6 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
             </Animated.View>
 
-            <Modal visible={isShareModalVisible} transparent animationType="slide" onRequestClose={() => setShareModalVisible(false)}>
-                <TouchableOpacity
-                    style={styles.sheetOverlay}
-                    activeOpacity={1}
-                    onPress={() => setShareModalVisible(false)}
-                >
-                    <Animated.View entering={FadeIn.duration(180)} style={[styles.sheetCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
-                        <View style={[styles.sheetHandle, { backgroundColor: BORDER }]} />
-                        <Text style={[styles.sheetTitle, { color: TEXT_MAIN }]}>Share File</Text>
-                        <Text style={[styles.sheetSub, { color: TEXT_SUB }]}>Generate and copy a public share link.</Text>
-
-                        <View style={[styles.linkBox, { borderColor: BORDER, backgroundColor: isDark ? '#0B1220' : '#FFFFFF' }]}>
-                            {isGeneratingShare ? (
-                                <View style={styles.linkLoadingRow}>
-                                    <ActivityIndicator color={ACCENT} />
-                                    <Text style={[styles.linkText, { color: TEXT_SUB }]}>Generating link...</Text>
-                                </View>
-                            ) : (
-                                <Text style={[styles.linkText, { color: shareLink ? TEXT_MAIN : TEXT_SUB }]} numberOfLines={1}>
-                                    {shareLink || 'No link yet'}
-                                </Text>
-                            )}
-                        </View>
-
-                        <View style={styles.sheetActionRow}>
-                            <TouchableOpacity
-                                style={[styles.sheetActionBtn, { backgroundColor: isDark ? '#1E293B' : '#E5E7EB' }]}
-                                onPress={() => { triggerHaptic(); void generateShareLink(); }}
-                                disabled={isGeneratingShare}
-                            >
-                                <Text style={[styles.sheetActionText, { color: TEXT_MAIN }]}>Regenerate</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                style={[styles.sheetActionBtn, { backgroundColor: isDark ? '#1E293B' : '#E5E7EB' }]}
-                                onPress={() => { triggerHaptic(); void handleCopyShareLink(); }}
-                                disabled={!shareLink}
-                            >
-                                <Copy color={TEXT_MAIN} size={16} />
-                                <Text style={[styles.sheetActionText, { color: TEXT_MAIN }]}>Copy</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                style={[styles.sheetActionBtn, { backgroundColor: ACCENT }]}
-                                onPress={() => { triggerHaptic(); void handleNativeShareLink(); }}
-                                disabled={!shareLink}
-                            >
-                                <Share2 color="#FFFFFF" size={16} />
-                                <Text style={[styles.sheetActionText, { color: '#FFFFFF' }]}>Share</Text>
-                            </TouchableOpacity>
-                        </View>
-                    </Animated.View>
-                </TouchableOpacity>
-            </Modal>
-
             <Modal visible={isOptionsVisible} transparent animationType="slide" onRequestClose={() => setOptionsVisible(false)}>
                 <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setOptionsVisible(false)}>
                     <Animated.View entering={FadeIn.duration(180)} style={[styles.sheetCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
@@ -738,8 +715,8 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                             <Text style={[styles.optionText, { color: TEXT_MAIN }]}>Move</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={styles.optionRow} onPress={handleDelete}>
-                            <Trash2 color="#EF4444" size={20} />
-                            <Text style={[styles.optionText, { color: '#EF4444', fontWeight: '700' }]}>Delete</Text>
+                            <Trash2 color={DANGER} size={20} />
+                            <Text style={[styles.optionText, { color: DANGER, fontWeight: '700' }]}>Delete</Text>
                         </TouchableOpacity>
                     </Animated.View>
                 </TouchableOpacity>
@@ -750,7 +727,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     <Animated.View entering={FadeIn.duration(150)} style={[styles.renameCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
                         <Text style={[styles.renameTitle, { color: TEXT_MAIN }]}>Rename File</Text>
                         <TextInput
-                            style={[styles.renameInput, { borderColor: BORDER, color: TEXT_MAIN, backgroundColor: isDark ? '#0B1220' : '#FFFFFF' }]}
+                            style={[styles.renameInput, { borderColor: BORDER, color: TEXT_MAIN, backgroundColor: INPUT_BG }]}
                             value={renameValue}
                             onChangeText={setRenameValue}
                             autoFocus
@@ -759,7 +736,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                             onSubmitEditing={handleRename}
                         />
                         <View style={styles.renameActions}>
-                            <TouchableOpacity style={[styles.renameBtn, { backgroundColor: isDark ? '#1E293B' : '#E5E7EB' }]} onPress={() => setRenameModalVisible(false)}>
+                            <TouchableOpacity style={[styles.renameBtn, { backgroundColor: INPUT_BG }]} onPress={() => setRenameModalVisible(false)}>
                                 <Text style={[styles.renameBtnText, { color: TEXT_MAIN }]}>Cancel</Text>
                             </TouchableOpacity>
                             <TouchableOpacity style={[styles.renameBtn, { backgroundColor: ACCENT }]} onPress={handleRename} disabled={isRenaming || !sanitizeFileName(renameValue, '').trim()}>
@@ -791,6 +768,12 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     </Animated.View>
                 </TouchableOpacity>
             </Modal>
+
+            <ShareFolderModal
+                visible={isShareModalVisible}
+                onClose={() => setShareModalVisible(false)}
+                targetItem={file}
+            />
         </SafeAreaView>
     );
 }

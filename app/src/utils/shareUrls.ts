@@ -35,3 +35,12 @@ export const buildExternalShareUrl = (slug: string, secret?: string | null): str
     const query = cleanSecret ? `?k=${encodeURIComponent(cleanSecret)}` : '';
     return `${PUBLIC_SHARE_BASE_URL}/s/${cleanSlug}${query}`;
 };
+
+export const resolveShareUrl = (payload: any): string => {
+    const directUrl = normalizeExternalShareUrl(String(payload?.share_url || payload?.shareUrl || ''));
+    if (directUrl) return directUrl;
+
+    const slug = String(payload?.slug || payload?.share?.slug || '').trim();
+    const secret = String(payload?.secret || payload?.share?.secret || '').trim();
+    return buildExternalShareUrl(slug, secret);
+};

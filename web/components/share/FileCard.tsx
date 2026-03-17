@@ -5,7 +5,6 @@ import { File, FileText, Film, Image as ImageIcon, Download, Maximize2 } from 'l
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 import Skeleton from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
-import { API_URL as API_BASE } from '../../lib/urls';
 
 interface FileCardProps {
     file: SharedFile;
@@ -22,25 +21,23 @@ export const FileCard = React.memo(({ file, share, onClick, onDownload, ticketMa
     const isVid = isVideo(file);
     const isDoc = isPdf(file);
     const isDownloading = ticketMap[`${file.id}:attachment`];
+    const [thumbFailed, setThumbFailed] = React.useState(false);
 
     const previewUrl = previewUrlMap[`${file.id}:thumbnail`] || previewUrlMap[`${file.id}:inline`];
     const fetchAttempted = React.useRef(false);
 
     useEffect(() => {
-        if (isImg && !previewUrl && !fetchAttempted.current) {
+        if ((isImg || isDoc) && !previewUrl && !fetchAttempted.current) {
             fetchAttempted.current = true;
             onLoadThumbnail(file);
         }
-    }, [isImg, file, previewUrl, onLoadThumbnail]);
+    }, [isDoc, isImg, file, previewUrl, onLoadThumbnail]);
 
     // Decide which icon to show
     let Icon = File;
     if (isImg) Icon = ImageIcon;
     if (isVid) Icon = Film;
     if (isDoc) Icon = FileText;
-
-    const previewThumbnailUrl = `${API_BASE}/api/v2/shares/${share.slug}/f/${file.id}/preview?k=${share.id.split('-')[0] /* Usually secret is needed, but we handle via proxy/API in the parent anyway. We'll rely on the parent's generic preview fetch or just use a generic thumbnail endpoing if available.*/}`;
-    // NOTE: For pure UI purposes, if there is a preview available we could use an <img> but the backend handles streams. Let's use generic beautiful icons for now and add a blurred background image effect if it's an image.
 
     return (
         <div
@@ -53,15 +50,16 @@ export const FileCard = React.memo(({ file, share, onClick, onDownload, ticketMa
             >
                 <div className="absolute inset-0 bg-gradient-to-t from-black/5 to-transparent z-0 opacity-0 group-hover:opacity-100 transition-opacity" />
 
-                {isImg && ticketMap[`${file.id}:thumbnail`] ? (
+                {(isImg || isDoc) && ticketMap[`${file.id}:thumbnail`] ? (
                     <Skeleton className="absolute inset-0 w-full h-full" containerClassName="w-full h-full leading-none" />
-                ) : previewUrl ? (
+                ) : previewUrl && !thumbFailed ? (
                     <LazyLoadImage
                         src={previewUrl}
                         alt={getFileLabel(file)}
                         className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
                         wrapperClassName="w-full h-full absolute inset-0"
                         effect="opacity"
+                        onError={() => setThumbFailed(true)}
                     />
                 ) : (
                     <Icon className={cn(
@@ -72,7 +70,14 @@ export const FileCard = React.memo(({ file, share, onClick, onDownload, ticketMa
 
                 {/* Hover Actions: Center */}
                 <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/10 backdrop-blur-[2px] z-20">
-                    <button className="flex items-center gap-2 px-4 py-2 bg-white/90 rounded-full text-brand-text text-sm font-medium shadow-sm hover:bg-white hover:scale-105 transition-transform">
+                    <button
+                        type="button"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onClick();
+                        }}
+                        className="flex items-center gap-2 px-4 py-2 bg-white/90 rounded-full text-brand-text text-sm font-medium shadow-sm hover:bg-white hover:scale-105 transition-transform"
+                    >
                         <Maximize2 className="w-4 h-4" /> Preview
                     </button>
                 </div>

@@ -21,8 +21,9 @@ export const FileIcon = ({ item = {}, size = 46, token, apiBase, themeColors = {
     const [imgError, setImgError] = useState(itemId ? failedThumbnailIds.has(itemId) : false);
 
     const isFolder = item?.result_type === 'folder' || item?.mime_type === 'inode/directory';
-    const isImage = String(item?.mime_type || '').startsWith('image/');
-    const canLoadThumb = isImage && !isFolder && !!token && !!apiBase && !!itemId && !imgError;
+    const mimeType = String(item?.mime_type || '').toLowerCase();
+    const canPreviewThumb = mimeType.startsWith('image/') || mimeType.startsWith('video/') || mimeType === 'application/pdf';
+    const canLoadThumb = canPreviewThumb && !isFolder && !!token && !!apiBase && !!itemId && !imgError;
 
     const { color, bg, Icon } = getIconConfig(item?.mime_type || '', themeColors);
 

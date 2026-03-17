@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import {
     View, Text, StyleSheet, TouchableOpacity,
-    SafeAreaView, Animated, Easing, Dimensions, StatusBar,
+    SafeAreaView, Animated, Easing, Dimensions, StatusBar, Platform,
 } from 'react-native';
 import { Image } from '../components/AppImage';
 import { ArrowRight, ArrowLeft } from 'lucide-react-native';
@@ -21,6 +21,7 @@ const DOTS = [
 ];
 
 export default function WelcomeScreen({ navigation }: any) {
+    const useNativeDriver = Platform.OS !== 'web';
     const heroOpacity = useRef(new Animated.Value(0)).current;
     const heroScale = useRef(new Animated.Value(0.72)).current;
     const sheetY = useRef(new Animated.Value(180)).current;
@@ -31,26 +32,26 @@ export default function WelcomeScreen({ navigation }: any) {
     useEffect(() => {
         // --- 1. Hero icon entrance
         Animated.parallel([
-            Animated.spring(heroScale, { toValue: 1, tension: 52, friction: 7, useNativeDriver: true }),
-            Animated.timing(heroOpacity, { toValue: 1, duration: 550, useNativeDriver: true }),
+            Animated.spring(heroScale, { toValue: 1, tension: 52, friction: 7, useNativeDriver }),
+            Animated.timing(heroOpacity, { toValue: 1, duration: 550, useNativeDriver }),
         ]).start();
 
         // --- 2. Floating card slides up
         Animated.parallel([
-            Animated.spring(sheetY, { toValue: 0, tension: 44, friction: 9, delay: 250, useNativeDriver: true }),
-            Animated.timing(sheetOpacity, { toValue: 1, duration: 450, delay: 250, useNativeDriver: true }),
+            Animated.spring(sheetY, { toValue: 0, tension: 44, friction: 9, delay: 250, useNativeDriver }),
+            Animated.timing(sheetOpacity, { toValue: 1, duration: 450, delay: 250, useNativeDriver }),
         ]).start();
 
         // --- 3. Dots stagger in
         Animated.stagger(70, dotAnims.map(a =>
-            Animated.timing(a, { toValue: 1, duration: 400, useNativeDriver: true })
+            Animated.timing(a, { toValue: 1, duration: 400, useNativeDriver })
         )).start();
 
         // --- 4. Hero float loop
         const float = Animated.loop(
             Animated.sequence([
-                Animated.timing(floatAnim, { toValue: 1, duration: 2200, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-                Animated.timing(floatAnim, { toValue: 0, duration: 2200, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+                Animated.timing(floatAnim, { toValue: 1, duration: 2200, easing: Easing.inOut(Easing.ease), useNativeDriver }),
+                Animated.timing(floatAnim, { toValue: 0, duration: 2200, easing: Easing.inOut(Easing.ease), useNativeDriver }),
             ])
         );
         const t = setTimeout(() => float.start(), 700);

@@ -20,7 +20,6 @@ import AuthScreen from './src/screens/AuthScreen';
 import FolderFilesScreen from './src/screens/FolderFilesScreen';
 import FilePreviewScreen from './src/screens/FilePreviewScreen';
 import TrashScreen from './src/screens/TrashScreen';
-import SettingsScreen from './src/screens/SettingsScreen';
 import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import FilesScreen from './src/screens/FilesScreen';
 import AllFilesScreen from './src/screens/AllFilesScreen';
@@ -78,7 +77,6 @@ function RootNavigator() {
                             <Stack.Screen name="FolderFiles" component={FolderFilesScreen} />
                             <Stack.Screen name="FilePreview" component={FilePreviewScreen} />
                             <Stack.Screen name="Trash" component={TrashScreen} />
-                            <Stack.Screen name="Settings" component={SettingsScreen} />
                             <Stack.Screen name="Analytics" component={AnalyticsScreen} />
                             <Stack.Screen name="Files" component={FilesScreen} />
                             <Stack.Screen name="AllFiles" component={AllFilesScreen} />

@@ -17,18 +17,21 @@ import { useTheme } from '../context/ThemeContext';
 import { FileCardSkeleton } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
 import FileListItem from '../components/FileListItem';
+import FileQuickActions from '../components/FileQuickActions';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFileRefresh, useOptimisticFiles } from '../utils/events';
+import { dedupeFilesById, sortFilesLatestFirst } from '../services/fileStateSync';
 
 const { width } = Dimensions.get('window');
 
 const createStyles = (C: any) => StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#FFFFFF' },
+    container: { flex: 1, backgroundColor: C.bg },
     header: {
         flexDirection: 'row',
         alignItems: 'center',
         paddingHorizontal: 20,
         paddingVertical: 16,
-        backgroundColor: '#FFFFFF',
+        backgroundColor: C.bg,
         borderBottomWidth: 1,
         borderBottomColor: C.border,
         gap: 12,
@@ -59,7 +62,7 @@ const createStyles = (C: any) => StyleSheet.create({
         fontSize: 15,
         color: C.text,
     },
-    listPad: { paddingVertical: 12 },
+    listPad: { paddingVertical: 12, paddingHorizontal: 20 },
 });
 
 export default function AllFilesScreen({ navigation }: any) {
@@ -83,6 +86,7 @@ export default function AllFilesScreen({ navigation }: any) {
     const [refreshing, setRefreshing] = useState(false);
     const [files, setFiles] = useState<any[]>([]);
     const [searchQuery, setSearchQuery] = useState('');
+    const [optionsTarget, setOptionsTarget] = useState<any>(null);
     const mountedRef = useRef(true);
 
     const fetchFiles = useCallback(async () => {
@@ -90,7 +94,7 @@ export default function AllFilesScreen({ navigation }: any) {
         try {
             const res = await apiClient.get('/files?limit=1000&sort=created_at&order=DESC');
             if (mountedRef.current && res.data.success) {
-                setFiles(res.data.files || []);
+                setFiles(sortFilesLatestFirst(dedupeFilesById(res.data.files || [])));
             }
         } catch {
             if (mountedRef.current) showToast('Could not load files', 'error');
@@ -108,6 +112,12 @@ export default function AllFilesScreen({ navigation }: any) {
             mountedRef.current = false;
         };
     }, [fetchFiles]);
+
+    useFileRefresh(() => {
+        fetchFiles();
+    });
+
+    useOptimisticFiles(setFiles);
 
     const filteredFiles = useMemo(() => {
         if (!searchQuery.trim()) return files;
@@ -131,6 +141,7 @@ export default function AllFilesScreen({ navigation }: any) {
                 const idx = filteredFiles.findIndex(f => f.id === item.id);
                 navigation.navigate('FilePreview', { files: filteredFiles, initialIndex: idx === -1 ? 0 : idx });
             }}
+            onOptionsPress={(item) => setOptionsTarget(item)}
         />
     ), [filteredFiles, navigation, theme, isDark, token]);
 
@@ -143,7 +154,7 @@ export default function AllFilesScreen({ navigation }: any) {
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
                     <Text style={[s.headerSub, { marginTop: 0, marginBottom: -2 }]}>
-                        {filteredFiles.length} items
+                        {files.length} items
                     </Text>
                 </View>
             </View>
@@ -188,6 +199,15 @@ export default function AllFilesScreen({ navigation }: any) {
                     contentContainerStyle={{ paddingHorizontal: 0 }}
                 />
             )}
+
+            {/* File Quick Actions Modal */}
+            <FileQuickActions 
+                item={optionsTarget} 
+                visible={!!optionsTarget} 
+                onClose={() => setOptionsTarget(null)} 
+                onRefresh={fetchFiles} 
+            />
+
         </SafeAreaView>
     );
 }

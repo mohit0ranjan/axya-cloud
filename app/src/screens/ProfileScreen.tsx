@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useContext, useRef, useCallback } from 'react';
 import {
     View, Text, StyleSheet, SafeAreaView,
-    TouchableOpacity, Alert, Platform, Animated, Pressable, Switch,
+    TouchableOpacity, Alert, Animated, Switch, Platform, Pressable
 } from 'react-native';
 import {
-    ArrowLeft, Trash2,
-    Settings, Edit2, Sparkles, UploadCloud, Moon
+    ArrowLeft, Trash2, Edit2, LogOut, BarChart2, Link as LinkIcon, ChevronRight, Moon, Bell
 } from 'lucide-react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthContext } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useTheme } from '../context/ThemeContext';
@@ -14,32 +15,40 @@ import apiClient from '../services/apiClient';
 import { SkeletonBlock } from '../ui/Skeleton';
 import Constants from 'expo-constants';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFileRefresh } from '../utils/events';
 
 export default function ProfileScreen({ navigation }: any) {
     const authCtx = useContext(AuthContext);
     const { showToast } = useToast();
-    const { theme, isDark, toggleTheme } = useTheme();
+    const { isDark, toggleTheme } = useTheme();
     const insets = useSafeAreaInsets();
 
     const [loading, setLoading] = useState(true);
-    const [isSigningOut, setIsSigningOut] = useState(false);
     const [stats, setStats] = useState<any>({});
+    const [isSigningOut, setIsSigningOut] = useState(false);
     
-    // Preferences state
-    const [uploadNotifs, setUploadNotifs] = useState(true);
-    
+    // Moved settings
+    const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+
     const appVersion = Constants.expoConfig?.version || '1.0.0';
 
     const fadeAnim = useRef(new Animated.Value(0)).current;
-    const slideAnim = useRef(new Animated.Value(20)).current;
+    const storageFillAnim = useRef(new Animated.Value(0)).current;
 
     useEffect(() => {
         fetchAll();
+        AsyncStorage.getItem('notificationsEnabled').then(val => {
+            if (val !== null) setNotificationsEnabled(val === 'true');
+        });
         Animated.parallel([
             Animated.timing(fadeAnim, { toValue: 1, duration: 420, useNativeDriver: true }),
-            Animated.timing(slideAnim, { toValue: 0, duration: 420, useNativeDriver: true }),
+            Animated.timing(storageFillAnim, { toValue: 1, duration: 850, useNativeDriver: true }),
         ]).start();
     }, []);
+
+    useFileRefresh(() => {
+        fetchAll();
+    });
 
     const fetchAll = async () => {
         setLoading(true);
@@ -51,6 +60,11 @@ export default function ProfileScreen({ navigation }: any) {
         } finally {
             setLoading(false);
         }
+    };
+
+    const toggleNotifications = (val: boolean) => {
+        setNotificationsEnabled(val);
+        AsyncStorage.setItem('notificationsEnabled', String(val));
     };
 
     const confirmLogout = useCallback(async () => {
@@ -72,63 +86,107 @@ export default function ProfileScreen({ navigation }: any) {
         ]);
     }, [confirmLogout]);
 
-    const formatStorageSplit = (bytes: number): { value: string; unit: string } => {
-        if (!bytes) return { value: '0', unit: 'B' };
-        const mb = bytes / (1024 * 1024);
-        if (mb >= 1024) {
-            const gb = mb / 1024;
-            return { value: gb >= 10 ? Math.round(gb).toString() : gb.toFixed(2), unit: 'GB' };
-        }
-        return { value: Math.round(mb).toString(), unit: 'MB' };
+    const formatBytes = (bytes: number) => {
+        if (!bytes) return '0 B';
+        const k = 1024, s = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + s[i];
     };
 
     const userName = authCtx.user?.name || authCtx.user?.username || 'Axya User';
     const userPhone = authCtx.user?.phone || '';
     const avatarLetter = (userName[0] || '?').toUpperCase();
-
-    const storage = loading ? { value: '-', unit: '' } : formatStorageSplit(stats.totalBytes || 0);
+    const usedBytes = Number(stats.totalBytes || stats.total_size || 0);
+    const quotaBytes = Number(stats.totalQuotaBytes || stats.quotaBytes || stats.total_quota || 0);
+    const hasQuota = quotaBytes > 0;
+    const storageUsed = formatBytes(usedBytes);
+    const storageProgress = hasQuota
+        ? Math.max(0, Math.min(usedBytes / quotaBytes, 1))
+        : Math.max(0.02, Math.min(1, Math.log10(usedBytes + 1) / 6));
 
     const handleBack = () => {
-        if (navigation?.canGoBack?.()) {
-            navigation.goBack();
-            return;
-        }
-        navigation?.navigate?.('MainTabs', { screen: 'Home' });
+        if (navigation?.canGoBack?.()) navigation.goBack();
+        else navigation?.navigate?.('MainTabs', { screen: 'Home' });
     };
 
-    // Premium minimal styling values
-    const BG_COLOR = isDark ? '#0A0A0F' : '#F9FBFF';
-    const CARD_BG = isDark ? '#14141E' : '#FFFFFF';
-    const TEXT_MAIN = isDark ? '#FFFFFF' : '#0F172A';
-    const TEXT_SUB = isDark ? '#94A3B8' : '#64748B';
-    const BORDER_COLOR = isDark ? '#1F1F2E' : '#E2E8F0';
+    // Design System Values
+    const BG_COLOR = isDark ? '#0F172A' : '#F6F8FA';
+    const CARD_BG = isDark ? '#111827' : '#FFFFFF';
+    const BORDER = isDark ? '#1F2937' : '#EBEEF2';
+    const TEXT_MAIN = isDark ? '#FFFFFF' : '#1A1A1A';
+    const TEXT_SUB = isDark ? '#94A3B8' : '#6B7280';
+    const ACCENT = '#FF5A1F'; 
+    const BLUE = '#3B82F6';
+
+    const renderMenuItem = (
+        icon: React.ReactNode, 
+        iconBg: string, 
+        title: string, 
+        onPress?: () => void, 
+        RightElement?: React.ReactNode,
+        isLast: boolean = false
+    ) => (
+        <Pressable
+            style={({ pressed }) => [
+                st.menuRow,
+                {
+                    borderBottomColor: BORDER,
+                    borderBottomWidth: isLast ? 0 : 1,
+                    backgroundColor: pressed ? (isDark ? 'rgba(148,163,184,0.08)' : 'rgba(148,163,184,0.10)') : 'transparent',
+                    transform: [{ scale: pressed ? 0.97 : 1 }],
+                },
+            ]}
+            onPress={onPress}
+        >
+            <View style={[st.actionIconBox, { backgroundColor: iconBg }]}>
+                {icon}
+            </View>
+            <View style={st.menuRowContent}>
+                <Text style={[st.actionCardTitle, { color: TEXT_MAIN }]}>{title}</Text>
+            </View>
+            {RightElement || <ChevronRight color={TEXT_SUB} size={17} />}
+        </Pressable>
+    );
 
     return (
         <SafeAreaView style={[st.root, { backgroundColor: BG_COLOR }]}>
-            {/* STICKY HEADER */}
-            <View style={[st.header, { backgroundColor: BG_COLOR, paddingTop: Math.max(insets.top + 8, 16) }]}>
+            {/* Header */}
+            <View style={[st.header, { paddingTop: Math.max(insets.top + 8, 16) }]}>
                 <TouchableOpacity style={st.headerBtn} onPress={handleBack} activeOpacity={0.7}>
                     <ArrowLeft color={TEXT_MAIN} size={24} strokeWidth={2.5} />
                 </TouchableOpacity>
-                <TouchableOpacity style={st.headerBtnRight} onPress={() => navigation.navigate('Settings')} activeOpacity={0.7}>
-                    <Sparkles color="#4B6EF5" size={24} strokeWidth={2} />
-                </TouchableOpacity>
+                <Text style={[st.headerTitle, { color: TEXT_MAIN }]}>Profile</Text>
+                <View style={{ width: 44 }} />
             </View>
 
             <Animated.ScrollView
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={st.scroll}
-                style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
+                style={{ opacity: fadeAnim }}
             >
-                {/* PROFILE SECTION */}
+                {/* 1. PROFILE OVERVIEW */}
                 <View style={st.profileCenterCol}>
                     <View style={st.avatarWrap}>
-                        <View style={st.avatarCircle}>
+                        <LinearGradient
+                            colors={isDark ? ['#FB923C', '#F97316'] : ['#FF8A5B', '#FF5A1F']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}
+                            style={st.avatarCircle}
+                        >
                             <Text style={st.avatarLetter}>{avatarLetter}</Text>
-                        </View>
-                        <TouchableOpacity style={st.editIconBadge} activeOpacity={0.8}>
-                            <Edit2 color="#FFF" size={14} strokeWidth={2.5} />
-                        </TouchableOpacity>
+                        </LinearGradient>
+                        <Pressable
+                            style={({ pressed }) => [
+                                st.editIconBadge,
+                                {
+                                    backgroundColor: CARD_BG,
+                                    borderColor: BG_COLOR,
+                                    transform: [{ scale: pressed ? 0.96 : 1 }],
+                                },
+                            ]}
+                        >
+                            <Edit2 color={TEXT_MAIN} size={14} strokeWidth={2.5} />
+                        </Pressable>
                     </View>
 
                     {loading ? (
@@ -139,107 +197,147 @@ export default function ProfileScreen({ navigation }: any) {
                     ) : (
                         <View style={st.profileInfoCol}>
                             <Text style={[st.userNameText, { color: TEXT_MAIN }]}>{userName}</Text>
-                            <View style={st.phoneProRow}>
-                                <Text style={[st.userPhoneText, { color: TEXT_SUB }]}>{userPhone || '+91XXXXXXXXXX'}</Text>
-                                <View style={st.proBadge}>
-                                    <Text style={st.proBadgeText}>PRO</Text>
-                                </View>
-                            </View>
-                            
-                            <View style={st.syncBadge}>
-                                <View style={st.syncDot} />
-                                <Text style={st.syncBadgeText}>Telegram Cloud Sync Enabled</Text>
-                            </View>
+                            <Text style={[st.userPhoneText, { color: TEXT_SUB }]}>{userPhone || 'No phone linked'}</Text>
                         </View>
                     )}
                 </View>
 
-                {/* PREMIUM STORAGE CARD */}
-                <View style={[st.storageCard, { backgroundColor: CARD_BG, borderColor: BORDER_COLOR }]}>
-                    <Text style={[st.storageCardTitle, { color: TEXT_MAIN }]}>Cloud Storage</Text>
-                    <Text style={[st.storageCardUsage, { color: TEXT_SUB }]}>
-                         {storage.value} {storage.unit} used · Unlimited Storage
-                    </Text>
-
-                    {/* STORAGE ACTION MINI CARDS */}
-                    <View style={st.actionCardsGrid}>
-                        <TouchableOpacity 
-                            style={[st.actionCardSmall, { backgroundColor: isDark ? '#1C1C2A' : '#FAFAFA', borderColor: BORDER_COLOR }]} 
-                            onPress={() => navigation.navigate('Settings')}
-                            activeOpacity={0.7}
+                {/* 2. CLOUD STORAGE PREVIEW */}
+                <Text style={[st.sectionLabel, { color: TEXT_SUB }]}>STORAGE</Text>
+                <View style={[
+                    st.card,
+                    {
+                        backgroundColor: CARD_BG,
+                        borderColor: BORDER,
+                        shadowColor: isDark ? '#020617' : '#0F172A',
+                    },
+                ]}>
+                    <Pressable
+                        style={({ pressed }) => [
+                            st.storageFlexRow,
+                            { transform: [{ scale: pressed ? 0.97 : 1 }] },
+                        ]}
+                        onPress={() => navigation.navigate('Analytics')}
+                    >
+                        <View style={[st.storageIconBlock, { backgroundColor: 'rgba(59, 130, 246, 0.1)' }]}>
+                            <BarChart2 color={BLUE} size={22} />
+                        </View>
+                        <View style={{ flex: 1, paddingLeft: 12 }}>
+                            <Text style={[st.storageLabel, { color: TEXT_MAIN }]}>Drive Analytics</Text>
+                            <Text style={[st.storageSub, { color: TEXT_SUB }]}>
+                                {loading
+                                    ? 'Checking...'
+                                    : hasQuota
+                                        ? `${storageUsed} used of ${formatBytes(quotaBytes)}`
+                                        : `${storageUsed} used`}
+                            </Text>
+                        </View>
+                        <ChevronRight color={TEXT_SUB} size={18} style={{ opacity: 0.65 }} />
+                    </Pressable>
+                    <View style={[st.progressTrack, { backgroundColor: isDark ? '#1E293B' : '#E5E7EB' }]}>
+                        <Animated.View
+                            style={{
+                                width: `${Math.max(storageProgress * 100, 2)}%`,
+                                transform: [{ scaleX: storageFillAnim }],
+                            }}
                         >
-                            <View style={[st.actionIconBox, { backgroundColor: isDark ? 'rgba(75,110,245,0.1)' : '#EEF2FF' }]}>
-                                <Settings color="#4B6EF5" size={20} />
-                            </View>
-                            <View>
-                                <Text style={[st.actionCardTitle, { color: TEXT_MAIN }]}>Preferences</Text>
-                                <Text style={[st.actionCardSub, { color: TEXT_SUB }]}>Manage app settings</Text>
-                            </View>
-                        </TouchableOpacity>
-                        
-                        <TouchableOpacity 
-                            style={[st.actionCardSmall, { backgroundColor: isDark ? '#1C1C2A' : '#FAFAFA', borderColor: BORDER_COLOR }]} 
-                            onPress={() => navigation.navigate('Trash')}
-                            activeOpacity={0.7}
-                        >
-                            <View style={[st.actionIconBox, { backgroundColor: isDark ? 'rgba(16,185,129,0.1)' : '#F0FDF4' }]}>
-                                <Trash2 color="#10B981" size={20} />
-                            </View>
-                            <View>
-                                <Text style={[st.actionCardTitle, { color: TEXT_MAIN }]}>Trash</Text>
-                                <Text style={[st.actionCardSub, { color: TEXT_SUB }]}>Restore or delete files</Text>
-                            </View>
-                        </TouchableOpacity>
+                            <LinearGradient
+                                colors={['#60A5FA', '#3B82F6']}
+                                start={{ x: 0, y: 0.5 }}
+                                end={{ x: 1, y: 0.5 }}
+                                style={st.progressFill}
+                            />
+                        </Animated.View>
                     </View>
                 </View>
 
-                {/* PREFERENCES SECTION */}
-                <View style={[st.listCard, { backgroundColor: CARD_BG, borderColor: BORDER_COLOR }]}>
-                    <View style={st.settingRow}>
-                        <View style={[st.settingIconContainer, { backgroundColor: isDark ? '#1C1C2A' : '#F8FAFC' }]}>
-                            <UploadCloud color={TEXT_MAIN} size={20} />
-                        </View>
-                        <Text style={[st.settingLabel, { color: TEXT_MAIN }]}>Upload Notifications</Text>
-                        <Switch 
-                            value={uploadNotifs} 
-                            onValueChange={setUploadNotifs} 
-                            trackColor={{ false: isDark ? '#333' : '#E2E8F0', true: '#4B6EF5' }} 
-                            thumbColor="#FFF"
+                {/* 3. PREFERENCES & SETTINGS */}
+                <Text style={[st.sectionLabel, { color: TEXT_SUB }]}>PREFERENCES</Text>
+                <View style={[
+                    st.card,
+                    {
+                        backgroundColor: CARD_BG,
+                        borderColor: BORDER,
+                        shadowColor: isDark ? '#020617' : '#0F172A',
+                    },
+                ]}>
+                    {renderMenuItem(
+                        <Bell color="#F59E0B" size={20} />, 
+                        isDark ? 'rgba(245,158,11,0.1)' : '#FEF3C7',
+                        "Upload Notifications",
+                        () => toggleNotifications(!notificationsEnabled),
+                        <Switch
+                            value={notificationsEnabled}
+                            onValueChange={toggleNotifications}
+                            trackColor={{ true: '#F59E0B', false: isDark ? '#334155' : '#D1D5DB' }}
+                            thumbColor="#FFFFFF"
+                            ios_backgroundColor={isDark ? '#334155' : '#D1D5DB'}
                         />
-                    </View>
-                    
-                    <View style={[st.divider, { backgroundColor: BORDER_COLOR }]} />
-                    
-                    <View style={[st.settingRow, { paddingBottom: 16 }]}>
-                        <View style={[st.settingIconContainer, { backgroundColor: isDark ? '#1C1C2A' : '#F8FAFC' }]}>
-                            <Moon color={TEXT_MAIN} size={20} />
-                        </View>
-                        <Text style={[st.settingLabel, { color: TEXT_MAIN }]}>Dark Mode</Text>
-                        <Switch 
-                            value={isDark} 
-                            onValueChange={toggleTheme} 
-                            trackColor={{ false: isDark ? '#333' : '#E2E8F0', true: '#4B6EF5' }} 
-                            thumbColor="#FFF"
-                        />
-                    </View>
+                    )}
+                    {renderMenuItem(
+                        <Moon color="#A855F7" size={20} />, 
+                        isDark ? 'rgba(168,85,247,0.1)' : '#F3E8FF',
+                        "Dark Mode",
+                        toggleTheme,
+                        <Switch
+                            value={isDark}
+                            onValueChange={toggleTheme}
+                            trackColor={{ true: '#A855F7', false: isDark ? '#334155' : '#D1D5DB' }}
+                            thumbColor="#FFFFFF"
+                            ios_backgroundColor={isDark ? '#334155' : '#D1D5DB'}
+                        />,
+                        true // last item
+                    )}
                 </View>
 
+                {/* 4. UTILITIES */}
+                <Text style={[st.sectionLabel, { color: TEXT_SUB }]}>UTILITIES</Text>
+                <View style={[
+                    st.card,
+                    {
+                        backgroundColor: CARD_BG,
+                        borderColor: BORDER,
+                        shadowColor: isDark ? '#020617' : '#0F172A',
+                    },
+                ]}>
+                    {renderMenuItem(
+                        <LinkIcon color="#10B981" size={20} />, 
+                        isDark ? 'rgba(16,185,129,0.1)' : '#D1FAE5',
+                        "Shared Links",
+                        () => navigation.navigate('SharedLinks'),
+                    )}
+                    {renderMenuItem(
+                        <Trash2 color="#EF4444" size={20} />, 
+                        isDark ? 'rgba(239,68,68,0.1)' : '#FEE2E2',
+                        "Trash",
+                        () => navigation.navigate('Trash'),
+                        undefined,
+                        true
+                    )}
+                </View>
 
-
-                {/* LOGOUT BUTTON */}
-                <TouchableOpacity
+                {/* 5. LOGOUT */}
+                <Pressable
                     onPress={handleLogout}
-                    activeOpacity={0.85}
                     disabled={isSigningOut}
-                    style={[
+                    style={({ pressed }) => [
                         st.logoutBtn,
-                        { opacity: isSigningOut ? 0.65 : 1 },
+                        {
+                            borderColor: isDark ? '#7F1D1D' : '#FECACA',
+                            backgroundColor: isDark ? 'rgba(239,68,68,0.12)' : 'rgba(239,68,68,0.08)',
+                            transform: [{ scale: pressed ? 0.98 : 1 }],
+                        },
                     ]}
                 >
-                    <Text style={st.logoutText}>
+                    <LogOut color="#EF4444" size={20} strokeWidth={2.5} />
+                    <Text style={st.logoutBtnText}>
                         {isSigningOut ? 'Signing out...' : 'Sign Out'}
                     </Text>
-                </TouchableOpacity>
+                </Pressable>
+
+                <View style={st.versionRow}>
+                    <Text style={[st.versionText, { color: TEXT_SUB }]}>Axya v{appVersion}</Text>
+                </View>
 
                 <View style={{height: 60}} />
             </Animated.ScrollView>
@@ -248,228 +346,104 @@ export default function ProfileScreen({ navigation }: any) {
 }
 
 const st = StyleSheet.create({
-    root: {
-        flex: 1,
-    },
+    root: { flex: 1 },
     header: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: 20,
-        paddingBottom: 8,
-        zIndex: 10,
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        paddingHorizontal: 20, paddingBottom: 16,
     },
-    headerBtn: {
-        width: 44,
-        height: 44,
-        justifyContent: 'center',
-        alignItems: 'flex-start',
-    },
-    headerBtnRight: {
-        width: 44,
-        height: 44,
-        justifyContent: 'center',
-        alignItems: 'flex-end',
-    },
-    scroll: {
-        paddingHorizontal: 20,
-        paddingTop: 8,
-        paddingBottom: 24,
-    },
+    headerBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'flex-start' },
+    headerTitle: { fontSize: 18, fontWeight: '700', letterSpacing: -0.3 },
+    
+    scroll: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 24 },
 
-    /* Profile Header */
-    profileCenterCol: {
-        alignItems: 'center',
-        marginBottom: 32,
-    },
-    avatarWrap: {
-        position: 'relative',
-        marginBottom: 16,
-    },
+    /* Profile Center */
+    profileCenterCol: { alignItems: 'center', marginBottom: 40 },
+    avatarWrap: { position: 'relative', marginBottom: 14 },
     avatarCircle: {
-        width: 100,
-        height: 100,
-        borderRadius: 50,
-        backgroundColor: '#4B6EF5',
-        justifyContent: 'center',
-        alignItems: 'center',
-        shadowColor: '#4B6EF5',
+        width: 116, height: 116, borderRadius: 58,
+        justifyContent: 'center', alignItems: 'center',
+        shadowColor: '#0F172A',
         shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.2,
+        shadowOpacity: 0.18,
         shadowRadius: 16,
         elevation: 6,
     },
-    avatarLetter: {
-        color: '#FFF',
-        fontSize: 38,
-        fontWeight: '700',
-    },
+    avatarLetter: { color: '#FFF', fontSize: 40, fontWeight: '700' },
     editIconBadge: {
-        position: 'absolute',
-        bottom: 0,
-        right: 0,
-        backgroundColor: '#111827',
-        width: 32,
-        height: 32,
-        borderRadius: 16,
-        justifyContent: 'center',
-        alignItems: 'center',
+        position: 'absolute', bottom: 2, right: 2,
+        width: 30, height: 30, borderRadius: 15,
+        justifyContent: 'center', alignItems: 'center',
         borderWidth: 2,
-        borderColor: '#FFF',
-    },
-    profileInfoCol: {
-        alignItems: 'center',
-    },
-    userNameText: {
-        fontSize: 24,
-        fontWeight: '700',
-        letterSpacing: -0.5,
-        marginBottom: 4,
-    },
-    phoneProRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        marginBottom: 16,
-    },
-    userPhoneText: {
-        fontSize: 15,
-        fontWeight: '500',
-    },
-    proBadge: {
-        backgroundColor: '#EEF2FF',
-        paddingHorizontal: 6,
-        paddingVertical: 2,
-        borderRadius: 6,
-    },
-    proBadgeText: {
-        color: '#4B6EF5',
-        fontSize: 10,
-        fontWeight: '800',
-        letterSpacing: 0.5,
-    },
-    syncBadge: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: 'rgba(16, 185, 129, 0.1)',
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 20,
-        gap: 6,
-    },
-    syncDot: {
-        width: 6,
-        height: 6,
-        borderRadius: 3,
-        backgroundColor: '#10B981',
-    },
-    syncBadgeText: {
-        fontSize: 12,
-        fontWeight: '600',
-        color: '#10B981',
-    },
-
-    /* Premium Storage Card */
-    storageCard: {
-        borderRadius: 24,
-        padding: 20,
-        marginBottom: 24,
-        borderWidth: 1,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.03,
-        shadowRadius: 12,
+        shadowColor: '#0F172A',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.18,
+        shadowRadius: 6,
         elevation: 2,
     },
-    storageCardTitle: {
-        fontSize: 18,
-        fontWeight: '700',
-        marginBottom: 4,
-        letterSpacing: -0.3,
-    },
-    storageCardUsage: {
-        fontSize: 14,
-        marginBottom: 20,
-        fontWeight: '500',
-    },
+    profileInfoCol: { alignItems: 'center' },
+    userNameText: { fontSize: 22, fontWeight: '600', marginBottom: 4, letterSpacing: 0.2 },
+    userPhoneText: { fontSize: 14, fontWeight: '500', opacity: 0.85 },
 
-
-    actionCardsGrid: {
-        flexDirection: 'column',
-        gap: 12,
+    /* Sections */
+    sectionLabel: {
+        fontSize: 12, fontWeight: '700', letterSpacing: 1.2,
+        marginBottom: 10, paddingLeft: 6,
     },
-    actionCardSmall: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        borderRadius: 16,
-        padding: 14,
-        borderWidth: 1,
-        gap: 14,
+    card: {
+        borderRadius: 18,
+        borderWidth: StyleSheet.hairlineWidth,
+        marginBottom: 28,
+        overflow: 'hidden',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.08,
+        shadowRadius: 14,
+        elevation: 3,
+    },
+    
+    /* Storage Row */
+    storageFlexRow: {
+        flexDirection: 'row', alignItems: 'center',
+        padding: 20,
+    },
+    storageIconBlock: {
+        width: 44, height: 44, borderRadius: 12,
+        justifyContent: 'center', alignItems: 'center'
+    },
+    storageLabel: { fontSize: 16, fontWeight: '600', marginBottom: 2, letterSpacing: 0.2 },
+    storageSub: { fontSize: 13, fontWeight: '500' },
+    progressTrack: {
+        height: 6,
+        borderRadius: 6,
+        marginHorizontal: 20,
+        marginBottom: 18,
+        overflow: 'hidden',
+    },
+    progressFill: { height: 6, borderRadius: 6 },
+
+    /* Menu Items */
+    menuRow: {
+        flexDirection: 'row', alignItems: 'center',
+        paddingVertical: 16, paddingHorizontal: 20,
     },
     actionIconBox: {
-        width: 44,
-        height: 44,
-        borderRadius: 12,
-        justifyContent: 'center',
-        alignItems: 'center',
+        width: 38, height: 38, borderRadius: 10,
+        justifyContent: 'center', alignItems: 'center',
+        marginRight: 12,
+        opacity: 0.92,
     },
-    actionCardTitle: {
-        fontSize: 15,
-        fontWeight: '600',
-        marginBottom: 2,
-    },
-    actionCardSub: {
-        fontSize: 13,
-    },
-
-    /* Settings & Trash Cards */
-    listCard: {
-        borderRadius: 24,
-        borderWidth: 1,
-        marginBottom: 24,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.02,
-        shadowRadius: 8,
-        elevation: 1,
-    },
-    settingRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingVertical: 16,
-        paddingHorizontal: 20,
-    },
-    settingIconContainer: {
-        width: 36,
-        height: 36,
-        borderRadius: 10,
-        justifyContent: 'center',
-        alignItems: 'center',
-        marginRight: 14,
-    },
-    settingLabel: {
-        flex: 1,
-        fontSize: 16,
-        fontWeight: '500',
-    },
-    divider: {
-        height: 1,
-        marginLeft: 70,
-        marginRight: 20,
-    },
+    menuRowContent: { flex: 1 },
+    actionCardTitle: { fontSize: 16, fontWeight: '500' },
 
     /* Logout */
     logoutBtn: {
-        height: 56,
-        borderRadius: 24,
-        backgroundColor: 'rgba(239, 68, 68, 0.1)',
-        justifyContent: 'center',
-        alignItems: 'center',
-        marginTop: 8,
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+        paddingVertical: 16, borderRadius: 18, borderWidth: 1,
+        marginTop: 12, gap: 10,
     },
-    logoutText: {
-        fontSize: 16,
-        fontWeight: '600',
-        color: '#EF4444',
+    logoutBtnText: {
+        color: '#EF4444', fontSize: 16, fontWeight: '600'
     },
+
+    versionRow: { alignItems: 'center', marginTop: 24 },
+    versionText: { fontSize: 13, fontWeight: '500' },
 });

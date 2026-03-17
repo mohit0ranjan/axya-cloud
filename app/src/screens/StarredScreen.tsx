@@ -15,6 +15,9 @@ import { useTheme } from '../context/ThemeContext';
 import FileCard from '../components/FileCard';
 import { FileCardSkeleton } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
+import { useFileRefresh, useOptimisticFiles } from '../utils/events';
+import { dedupeFilesById, sortFilesLatestFirst, syncAfterFileMutation } from '../services/fileStateSync';
+import { sanitizeDisplayName } from '../utils/fileSafety';
 
 const SORT_OPTIONS = [
     { key: 'created_at_DESC', label: 'Newest First', icon: SortDesc },
@@ -57,12 +60,16 @@ export default function StarredScreen({ navigation }: any) {
     const lastAccessedRef = useRef<Map<string, number>>(new Map());
 
     useEffect(() => { fetchStarred(); }, []);
+    useFileRefresh(() => { fetchStarred(); });
+    useOptimisticFiles(setFiles);
 
     const fetchStarred = async () => {
         setIsLoading(true);
         try {
             const res = await apiClient.get('/files/starred');
-            if (res.data.success) setFiles(res.data.files);
+            if (res.data.success) {
+                setFiles(sortFilesLatestFirst(dedupeFilesById(res.data.files || [])));
+            }
         } catch { showToast('Could not load starred files', 'error'); }
         finally { setIsLoading(false); setRefreshing(false); }
     };
@@ -81,6 +88,7 @@ export default function StarredScreen({ navigation }: any) {
         try {
             await apiClient.patch(`/files/${id}/star`);
             setFiles(prev => prev.filter(f => f.id !== id));
+            syncAfterFileMutation({ clearCache: true });
             showToast('Removed from starred');
         } catch { showToast('Failed to update star', 'error'); }
     };
@@ -94,6 +102,7 @@ export default function StarredScreen({ navigation }: any) {
                         await apiClient.patch(`/files/${id}/trash`);
                         showToast('Moved to trash');
                         setFiles(prev => prev.filter(f => f.id !== id));
+                        syncAfterFileMutation();
                     } catch { showToast('Failed', 'error'); }
                 }
             }

@@ -1,8 +1,9 @@
-import React, { memo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image as RNImage } from 'react-native';
+import React, { memo, useRef, useEffect, useState, useCallback } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Image as RNImage, Animated } from 'react-native';
 import { Folder, Star, FileText, Image as ImageIcon, Film, Music, Archive, MoreHorizontal } from 'lucide-react-native';
 import { lightTheme } from '../context/ThemeContext';
 import { formatFolderMeta } from '../utils/folderMeta';
+import { buildApiFileUrl, sanitizeDisplayName } from '../utils/fileSafety';
 
 type Theme = typeof lightTheme;
 
@@ -27,6 +28,7 @@ interface FileListItemProps {
     theme: Theme;
     isDark: boolean;
     onPress: (item: FileItem, isFolder: boolean) => void;
+    onOptionsPress?: (item: FileItem) => void;
     variant?: 'default' | 'card';
 }
 
@@ -62,8 +64,8 @@ const createStyles = (theme: Theme) => StyleSheet.create({
         paddingHorizontal: 0,
     },
     fileRowCard: {
-        borderRadius: 0,
-        paddingHorizontal: 20,
+        borderRadius: 20,
+        paddingHorizontal: 16,
         paddingVertical: 14,
         backgroundColor: theme.colors.card,
         borderBottomWidth: 0,
@@ -71,20 +73,21 @@ const createStyles = (theme: Theme) => StyleSheet.create({
         elevation: 0,
     },
     fileIcon: {
-        width: 42,
-        height: 42,
+        width: 44,
+        height: 44,
         justifyContent: 'center',
         alignItems: 'center',
-        marginRight: 16,
+        marginRight: 14,
     },
     fileIconCard: {
-        width: 54,
-        height: 54,
-        marginRight: 16,
+        width: 44,
+        height: 44,
+        marginRight: 14,
     },
     fileInfo: {
         flex: 1,
         justifyContent: 'center',
+        marginRight: 8,
     },
     fileName: {
         fontSize: 16,
@@ -99,25 +102,34 @@ const createStyles = (theme: Theme) => StyleSheet.create({
     },
 });
 
-const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress, variant = 'default' }: FileListItemProps) => {
+const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress, onOptionsPress, variant = 'default' }: FileListItemProps) => {
     const styles = React.useMemo(() => createStyles(theme), [theme]);
+
+    // ── Fade-in animation ─────────────────────────────────────────────────
+    const fadeAnim = useRef(new Animated.Value(0)).current;
+    useEffect(() => {
+        Animated.timing(fadeAnim, {
+            toValue: 1,
+            duration: 250,
+            useNativeDriver: true,
+        }).start();
+    }, []);
+
+    // ── Thumbnail error state ─────────────────────────────────────────────
+    const [thumbFailed, setThumbFailed] = useState(false);
+    const handleThumbError = useCallback(() => setThumbFailed(true), []);
+
+    // ── Options button press animation ────────────────────────────────────
+    const optionsScale = useRef(new Animated.Value(1)).current;
+    const handleOptionsIn = useCallback(() => {
+        Animated.spring(optionsScale, { toValue: 0.8, useNativeDriver: true, speed: 50, bounciness: 4 }).start();
+    }, []);
+    const handleOptionsOut = useCallback(() => {
+        Animated.spring(optionsScale, { toValue: 1, useNativeDriver: true, speed: 50, bounciness: 4 }).start();
+    }, []);
+
     const C = {
-        card: theme.colors.card,
-        text: theme.colors.textHeading,
-        muted: theme.colors.textBody,
-        primary: theme.colors.primary,
         accent: theme.colors.accent,
-        purple: isDark ? '#A855F7' : '#9B59B6',
-        success: theme.colors.success,
-        warning: '#F59E0B',
-        danger: theme.colors.danger,
-        orange: '#F97316',
-        softPrimary: isDark ? 'rgba(88,117,255,0.18)' : '#EEF1FD',
-        softWarning: isDark ? 'rgba(245,158,11,0.18)' : '#FEF3C7',
-        softPurple: isDark ? 'rgba(168,85,247,0.18)' : '#F3E8FF',
-        softSuccess: isDark ? 'rgba(16,185,129,0.18)' : '#DCFCE7',
-        softDanger: isDark ? 'rgba(239,68,68,0.18)' : '#FEE2E2',
-        softOrange: isDark ? 'rgba(249,115,22,0.18)' : '#FFEDD5',
     };
 
     const isFolder = item.mime_type === 'inode/directory' || item.result_type === 'folder';
@@ -126,53 +138,65 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress, variant
         : getIconConfig(item.mime_type || '', isDark);
     const { Icon, color, bg } = cfg;
 
+    const canShowThumb = !isFolder && !thumbFailed && (item.mime_type?.includes('image') || item.mime_type?.includes('video'));
+
     const handlePress = () => {
         onPress(item, isFolder);
     };
 
     return (
-        <TouchableOpacity
-            style={[styles.fileRow, variant === 'card' && styles.fileRowCard]}
-            activeOpacity={0.7}
-            onPress={handlePress}
-        >
-            <View style={[
-                styles.fileIcon,
-                { backgroundColor: bg, overflow: 'hidden' },
-                !isFolder ? { borderRadius: 16 } : null,
-                variant === 'card' && styles.fileIconCard,
-                variant === 'card' && !isFolder ? { borderRadius: 16 } : null
-            ]}>
-                {!isFolder && (item.mime_type?.includes('image') || item.mime_type?.includes('video')) ? (
-                    <RNImage
-                        source={{
-                            uri: `${apiBaseUrl}/files/${item.id}/thumbnail`,
-                            headers: { Authorization: `Bearer ${token}` },
-                        }}
-                        style={{ width: '100%', height: '100%' }}
-                        resizeMode="cover"
-                        // fallback to just the background box if no thumbnail is generated yet
-                        defaultSource={undefined}
-                    />
-                ) : (
-                    <Icon color={color} size={isFolder ? 38 : (variant === 'card' ? 24 : 22)} fill={isFolder ? color : 'none'} />
+        <Animated.View style={{ opacity: fadeAnim }}>
+            <TouchableOpacity
+                style={[styles.fileRow, variant === 'card' && styles.fileRowCard]}
+                activeOpacity={0.7}
+                onPress={handlePress}
+            >
+                <View style={[
+                    styles.fileIcon,
+                    { backgroundColor: bg, overflow: 'hidden' },
+                    !isFolder ? { borderRadius: 16 } : null,
+                    variant === 'card' && styles.fileIconCard,
+                    variant === 'card' && !isFolder ? { borderRadius: 16 } : null
+                ]}>
+                    {canShowThumb ? (
+                        <RNImage
+                            source={{
+                                uri: buildApiFileUrl(apiBaseUrl, item.id, 'thumbnail'),
+                                headers: { Authorization: `Bearer ${token}` },
+                            }}
+                            style={{ width: '100%', height: '100%' }}
+                            resizeMode="cover"
+                            onError={handleThumbError}
+                        />
+                    ) : (
+                        <Icon color={color} size={isFolder ? 40 : 24} fill={isFolder ? color : 'none'} />
+                    )}
+                </View>
+                <View style={styles.fileInfo}>
+                    <Text style={styles.fileName} numberOfLines={1}>
+                        {sanitizeDisplayName(item.name || item.file_name || '', 'File')}
+                    </Text>
+                    <Text style={styles.fileMeta} numberOfLines={1}>
+                        {isFolder
+                            ? formatFolderMeta(item)
+                            : [formatSize(item.size), formatDate(item.created_at)].filter(Boolean).join(' • ')}
+                    </Text>
+                </View>
+                {item.is_starred && (
+                    <Star color={C.accent} size={14} fill={C.accent} style={{ marginRight: 8 }} />
                 )}
-            </View>
-            <View style={styles.fileInfo}>
-                <Text style={styles.fileName} numberOfLines={1}>
-                    {item.name || item.file_name}
-                </Text>
-                <Text style={styles.fileMeta}>
-                    {isFolder
-                        ? formatFolderMeta(item)
-                        : [formatSize(item.size), formatDate(item.created_at)].filter(Boolean).join(' • ')}
-                </Text>
-            </View>
-            {item.is_starred && (
-                <Star color={C.accent} size={14} fill={C.accent} style={{ marginRight: 8 }} />
-            )}
-            <MoreHorizontal color={theme.colors.border} size={20} />
-        </TouchableOpacity>
+                <Animated.View style={{ transform: [{ scale: optionsScale }] }}>
+                    <TouchableOpacity
+                        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                        onPress={() => onOptionsPress && onOptionsPress(item)}
+                        onPressIn={handleOptionsIn}
+                        onPressOut={handleOptionsOut}
+                    >
+                        <MoreHorizontal color={theme.colors.border} size={20} />
+                    </TouchableOpacity>
+                </Animated.View>
+            </TouchableOpacity>
+        </Animated.View>
     );
 };
 

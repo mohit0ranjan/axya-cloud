@@ -23,6 +23,8 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { Buffer } from 'buffer';
 import apiClient, { uploadClient } from './apiClient';
+import { syncAfterFileMutation } from './fileStateSync';
+import { sanitizeFileName } from '../utils/fileSafety';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -73,7 +75,8 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
 
 /** Generate a fingerprint for deduplication */
 function makeFingerprint(file: FileAsset): string {
-    return `${file.uri}|${file.name}|${file.size}`;
+    const safeName = sanitizeFileName(file.name, 'file');
+    return `${file.uri}|${safeName}|${file.size}`;
 }
 
 /**
@@ -558,15 +561,16 @@ class UploadManager {
 
         const newTasks: UploadTask[] = [];
         for (const file of files) {
+            const safeName = sanitizeFileName(file.name, 'file');
             const fp = makeFingerprint(file);
             if (existingFingerprints.has(fp)) {
-                console.log(`[UploadManager] Skipped duplicate: "${file.name}"`);
+                console.log(`[UploadManager] Skipped duplicate: "${safeName}"`);
                 continue;
             }
             existingFingerprints.add(fp);
             newTasks.push({
                 id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                file,
+                file: { ...file, name: safeName },
                 folderId,
                 chatTarget,
                 progress: 0,
@@ -726,6 +730,7 @@ class UploadManager {
                 progress: 100,
                 bytesUploaded: nextTask.file.size
             });
+            syncAfterFileMutation();
             this.scheduleTaskClearing(nextTask);
         } catch (e: any) {
             const status = nextTask.status as UploadStatus;
@@ -848,7 +853,7 @@ class UploadManager {
         const initRes = await uploadClient.post(
             '/files/upload/init',
             {
-                originalname: file.name,
+                originalname: sanitizeFileName(file.name, 'file'),
                 size: file.size,
                 mimetype: file.mimeType || 'application/octet-stream',
                 telegram_chat_id: chatTarget,
@@ -887,7 +892,7 @@ class UploadManager {
                 const formData = new FormData();
                 formData.append('uploadId', uploadId);
                 formData.append('chunkIndex', String(chunkIndex));
-                formData.append('chunk', new globalThis.File([chunk], file.name, { type: file.mimeType }));
+                formData.append('chunk', new globalThis.File([chunk], sanitizeFileName(file.name, 'file'), { type: file.mimeType }));
 
                 await uploadClient.post('/files/upload/chunk', formData, {
                     signal: abort.signal,

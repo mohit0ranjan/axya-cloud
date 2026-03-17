@@ -87,7 +87,12 @@ router.post('/upload/complete', uploadLimiter, completeUpload);
 router.post('/upload/cancel', uploadLimiter, cancelUpload);
 router.get('/upload/status/:uploadId', checkUploadStatus);
 
-router.post('/upload', upload.single('file'), uploadFile); // Legacy fallback
+router.post('/upload', upload.single('file'), (req, res, next) => {
+    res.set('Deprecation', 'true');
+    res.set('Sunset', '2026-06-01');
+    res.set('X-Deprecated-Message', 'Use /upload/init + /upload/chunk + /upload/complete instead');
+    next();
+}, uploadFile); // Legacy fallback — deprecated
 router.get('/', fetchFiles);
 
 // ── Bulk Actions ─────────────────────────────────────────────────────────────

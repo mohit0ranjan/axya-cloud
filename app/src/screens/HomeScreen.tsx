@@ -27,10 +27,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 
 import FileListItem from '../components/FileListItem';
+import FileQuickActions from '../components/FileQuickActions';
 import { useServerKeepAlive } from '../hooks/useServerKeepAlive';
 import AppButton from '../components/AppButton';
 import IconButton from '../components/IconButton';
 import { formatFolderMeta } from '../utils/folderMeta';
+import { useFileRefresh, useOptimisticFiles } from '../utils/events';
+import { dedupeFilesById, sortFilesLatestFirst, syncAfterFileMutation } from '../services/fileStateSync';
 
 const { width } = Dimensions.get('window');
 const HOME_RECENT_FILES_PREVIEW_LIMIT = 3;
@@ -426,13 +429,19 @@ export default function HomeScreen({ navigation, route }: any) {
     useEffect(() => {
         if (homeData) { // Instantiate instantly from cache to prevent empty screen flashes
             setStats(homeData.stats);
-            setRecentFiles(asArray(homeData.files));
+            setRecentFiles(sortFilesLatestFirst(dedupeFilesById(asArray(homeData.files))));
             setAllFolders(asArray(homeData.folders));
             setLoading(false);
         }
         void hydratePinnedFolderIds();
         load();
     }, []);
+
+    useFileRefresh(() => {
+        load(true);
+    });
+
+    useOptimisticFiles(setRecentFiles);
 
     useEffect(() => {
         if (!route?.params?.openFabAt) return;
@@ -463,7 +472,7 @@ export default function HomeScreen({ navigation, route }: any) {
                 // Cache warm — parallel is fine, user already sees content
                 [statsRes, filesRes, foldersRes] = await Promise.all([
                     apiClient.get('/files/stats'),
-                    apiClient.get('/files?limit=10&sort=created_at&order=DESC'),
+                    apiClient.get(`/files?limit=${HOME_RECENT_FILES_PREVIEW_LIMIT}&sort=created_at&order=DESC`),
                     apiClient.get('/files/folders'),
                 ]);
             } else {
@@ -471,13 +480,15 @@ export default function HomeScreen({ navigation, route }: any) {
                 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
                 statsRes = await apiClient.get('/files/stats');
                 await delay(150);
-                filesRes = await apiClient.get('/files?limit=10&sort=created_at&order=DESC');
+                filesRes = await apiClient.get(`/files?limit=${HOME_RECENT_FILES_PREVIEW_LIMIT}&sort=created_at&order=DESC`);
                 await delay(150);
                 foldersRes = await apiClient.get('/files/folders');
             }
 
             const newStats = statsRes.data.success ? statsRes.data : {};
-            const newFiles = filesRes.data.success ? asArray(filesRes.data.files) : [];
+            const newFiles = filesRes.data.success
+                ? sortFilesLatestFirst(dedupeFilesById(asArray(filesRes.data.files)))
+                : [];
             const newFolders = foldersRes.data.success ? asArray(foldersRes.data.folders) : [];
 
             if (!mountedRef.current) return;
@@ -614,6 +625,7 @@ export default function HomeScreen({ navigation, route }: any) {
                 setFolderName('');
                 setFolderModal(false);
                 load();
+                syncAfterFileMutation();
             }
         } catch (e: any) {
             showToast(e.response?.data?.error || 'Could not create folder', 'error');
@@ -632,6 +644,7 @@ export default function HomeScreen({ navigation, route }: any) {
                 setRenameFolderModal(false);
                 setRenameFolderTarget(null);
                 load();
+                syncAfterFileMutation();
             }
         } catch (e: any) {
             showToast(e.response?.data?.error || 'Could not rename folder', 'error');
@@ -793,15 +806,15 @@ export default function HomeScreen({ navigation, route }: any) {
                             <View style={s.storagePillsRow}>
                                 <View style={s.storagePill}>
                                     <View style={[s.storagePillDot, { backgroundColor: C.storageImages }]} />
-                                    <Text style={s.storagePillText}>{stats.image_count || 0} IMAGES</Text>
+                                    <Text style={s.storagePillText} numberOfLines={1}>{stats.image_count || 0} IMAGES</Text>
                                 </View>
                                 <View style={s.storagePill}>
                                     <View style={[s.storagePillDot, { backgroundColor: C.storageVideos }]} />
-                                    <Text style={s.storagePillText}>{stats.video_count || 0} VIDEOS</Text>
+                                    <Text style={s.storagePillText} numberOfLines={1}>{stats.video_count || 0} VIDEOS</Text>
                                 </View>
                                 <View style={s.storagePill}>
                                     <View style={[s.storagePillDot, { backgroundColor: C.storageFiles }]} />
-                                    <Text style={s.storagePillText}>{stats.totalFiles || 0} FILES</Text>
+                                    <Text style={s.storagePillText} numberOfLines={1}>{stats.totalFiles || 0} FILES</Text>
                                 </View>
                             </View>
                         </LinearGradient>
@@ -866,7 +879,7 @@ export default function HomeScreen({ navigation, route }: any) {
                                         <TouchableOpacity
                                             key={folder.id}
                                             style={s.folderGridCard}
-                                            activeOpacity={0.75}
+                                            activeOpacity={0.7}
                                             onPress={() => navigation.navigate('FolderFiles', { folderId: folder.id, folderName: folder.name })}
                                         >
                                             <View style={s.folderGridTop}>
@@ -908,6 +921,7 @@ export default function HomeScreen({ navigation, route }: any) {
                                                                                 if (res.data.success) {
                                                                                     showToast('Folder moved to trash');
                                                                                     load();
+                                                                                    syncAfterFileMutation();
                                                                                 }
                                                                             } catch (e: any) {
                                                                                 showToast(e.response?.data?.error || 'Could not delete folder', 'error');
@@ -974,7 +988,8 @@ export default function HomeScreen({ navigation, route }: any) {
                                 apiBaseUrl={apiClient.defaults.baseURL || ''}
                                 theme={theme}
                                 isDark={isDark}
-                                onPress={handleFileItemPress}
+                                onPress={(item) => handleFileItemPress(item, false)}
+                                onOptionsPress={(item) => setOptionsTarget(item)}
                             />
                         ))}
                     </View>
@@ -1141,8 +1156,9 @@ export default function HomeScreen({ navigation, route }: any) {
                 </KeyboardAvoidingView>
             </Modal>
 
-            {/* -- Options Modal (Web Fallback) -- */}
-            <Modal visible={!!optionsTarget} transparent animationType="slide">
+            {/* -- Folder Options Modal -- */}
+            {(optionsTarget?.result_type === 'folder' || optionsTarget?.mime_type === 'inode/directory') && (
+            <Modal visible={true} transparent animationType="slide">
                 <TouchableOpacity
                     style={s.overlay}
                     activeOpacity={1}
@@ -1171,6 +1187,7 @@ export default function HomeScreen({ navigation, route }: any) {
                                     if (res.data.success) {
                                         showToast('Folder moved to trash');
                                         load();
+                                        syncAfterFileMutation();
                                     }
                                 } catch (e: any) {
                                     showToast(e.response?.data?.error || 'Could not delete folder', 'error');
@@ -1183,6 +1200,17 @@ export default function HomeScreen({ navigation, route }: any) {
                     </View>
                 </TouchableOpacity>
             </Modal>
+            )}
+
+            {/* -- File Quick Actions -- */}
+            {optionsTarget && !(optionsTarget.result_type === 'folder' || optionsTarget.mime_type === 'inode/directory') && (
+                <FileQuickActions 
+                    item={optionsTarget} 
+                    visible={true} 
+                    onClose={() => setOptionsTarget(null)} 
+                    onRefresh={() => load(true)} 
+                />
+            )}
 
         </SafeAreaView>
     );

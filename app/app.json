@@ -16,12 +16,15 @@
       "bundleIdentifier": "com.mohit.axya",
       "associatedDomains": [
         "applinks:axyzcloud.com",
+        "applinks:axya-web.onrender.com",
+        "applinks:axyzcloud.com",
         "applinks:axya-web.onrender.com"
       ],
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Axya needs access to save files to your library.",
         "NSPhotoLibraryAddUsageDescription": "Axya saves downloaded files to your Photos.",
-        "NSDocumentPickerUsageDescription": "Axya needs to access files you want to upload."
+        "NSDocumentPickerUsageDescription": "Axya needs to access files you want to upload.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -68,8 +71,7 @@
     "updates": {
       "enabled": true,
       "checkAutomatically": "ON_LOAD",
-      "fallbackToCacheTimeout": 0,
-      "url": "https://u.expo.dev/48ec9ee9-c4e5-498b-b432-fd6981dc80d4"
+      "fallbackToCacheTimeout": 0
     },
     "plugins": [
       "expo-updates",
@@ -101,9 +103,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "48ec9ee9-c4e5-498b-b432-fd6981dc80d4"
+        "projectId": "18c6dd87-42e5-4943-93f1-5bbdf96a808b"
       }
     },
-    "owner": "mohit2344"
+    "owner": "mohit3030"
   }
 }

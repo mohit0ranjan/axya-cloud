@@ -25,6 +25,9 @@ import ShareFolderModal from '../components/ShareFolderModal';
 import { FileIcon } from '../components/FileIcon';
 import { normalizeExternalShareUrl } from '../utils/shareUrls';
 import { formatFolderMeta } from '../utils/folderMeta';
+import { useFileRefresh, useOptimisticFiles } from '../utils/events';
+import { dedupeFilesById, sortFilesLatestFirst, syncAfterFileMutation } from '../services/fileStateSync';
+import { sanitizeDisplayName, sanitizeFileName } from '../utils/fileSafety';
 
 
 const { width } = Dimensions.get('window');
@@ -79,7 +82,7 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
                         <FileIcon item={item} size={GRID_SIZE * 0.75} token={token} apiBase={apiClient.defaults.baseURL} themeColors={theme.colors} style={{ borderRadius: 0, width: '100%', height: '100%' }} />
                     </View>
                     <View style={styles.gridLabel}>
-                        <Text style={[styles.gridName, { color: theme.colors.textHeading }]} numberOfLines={1}>{item.name || item.file_name}</Text>
+                        <Text style={[styles.gridName, { color: theme.colors.textHeading }]} numberOfLines={1}>{sanitizeDisplayName(item.name || item.file_name || 'File', 'File')}</Text>
                         <Text style={[styles.gridMeta, { color: theme.colors.textBody }]} numberOfLines={1}>
                             {isFolder
                                 ? formatFolderMeta(item)
@@ -96,7 +99,7 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
                 <View style={styles.fileCardInner}>
                     <FileIcon item={item} size={42} token={token} apiBase={apiClient.defaults.baseURL} themeColors={theme.colors} style={{ marginRight: 16 }} />
                     <View style={styles.fileDetails}>
-                        <Text style={[styles.fileName, { color: theme.colors.textHeading }]} numberOfLines={1}>{item.name || item.file_name}</Text>
+                        <Text style={[styles.fileName, { color: theme.colors.textHeading }]} numberOfLines={1}>{sanitizeDisplayName(item.name || item.file_name || 'File', 'File')}</Text>
                         <Text style={[styles.fileMeta, { color: theme.colors.textBody }]}>
                             {isFolder
                                 ? formatFolderMeta(item)
@@ -204,6 +207,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
 
     useEffect(() => { fetchFolderFiles(); }, [folderId, sortKey]);
 
+    useFileRefresh(() => { fetchFolderFiles(); });
+    useOptimisticFiles(setFiles);
+
     // Reset display limit when filter/search changes
     useEffect(() => { setDisplayLimit(PAGE_SIZE); }, [filterTab, searchQuery]);
 
@@ -255,7 +261,10 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 return 0;
             });
 
-            setFiles(merged);
+            const foldersOnly = merged.filter((x) => x.result_type === 'folder' || x.mime_type === 'inode/directory');
+            const filesOnly = merged.filter((x) => x.result_type !== 'folder' && x.mime_type !== 'inode/directory');
+            const normalized = [...dedupeFilesById(foldersOnly), ...sortFilesLatestFirst(dedupeFilesById(filesOnly))];
+            setFiles(normalized);
         } catch (e) {
             setLoadError('Could not load folder contents.');
             showToast('Could not load folder contents', 'error');
@@ -289,9 +298,11 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             if (action === 'trash') {
                 await apiClient.post('/files/bulk', { ids, action: 'trash' });
                 fetchFolderFiles();
+                syncAfterFileMutation();
             } else if (action === 'star') {
                 await apiClient.post('/files/bulk', { ids, action: 'star' });
                 fetchFolderFiles();
+                syncAfterFileMutation({ clearCache: true });
             } else if (action === 'move') {
                 // Fetch all root-level folders so the Move modal is populated
                 try {
@@ -315,6 +326,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             setSelectMode(false);
             setSelectedIds(new Set());
             fetchFolderFiles();
+            syncAfterFileMutation();
         } catch (e) { Alert.alert('Error', 'Could not move files'); }
     };
 
@@ -339,6 +351,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                                 await apiClient.patch(`/files/${item.id}/trash`);
                             }
                             fetchFolderFiles();
+                            syncAfterFileMutation();
                         } catch (e: any) {
                             Alert.alert('Error', e.response?.data?.error || 'Could not move to trash');
                         }
@@ -361,6 +374,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     onPress: async () => {
                         try {
                             await apiClient.delete(`/files/folder/${folderId}`);
+                            syncAfterFileMutation();
                             navigation.goBack();
                         } catch (e: any) {
                             Alert.alert('Error', e.response?.data?.error || 'Could not delete folder');
@@ -377,19 +391,23 @@ export default function FolderFilesScreen({ route, navigation }: any) {
 
 
     const handleCreateFolder = async () => {
-        if (!newFolderName.trim()) return;
+        const nextFolderName = sanitizeFileName(newFolderName, 'New Folder');
+        if (!nextFolderName) return;
         try {
-            await apiClient.post('/files/folder', { name: newFolderName.trim(), parent_id: folderId, color: folderColor });
+            await apiClient.post('/files/folder', { name: nextFolderName, parent_id: folderId, color: folderColor });
             setNewFolderName(''); setCreateModalVisible(false); fetchFolderFiles();
+            syncAfterFileMutation();
         } catch (e: any) { Alert.alert('Error', e.response?.data?.error || 'Failed'); }
     };
 
     const handleRename = async () => {
-        if (!renameValue.trim() || !renameTarget) return;
+        const nextName = sanitizeFileName(renameValue, 'file');
+        if (!nextName || !renameTarget) return;
         try {
             const endpoint = renameTarget.result_type === 'folder' ? `/files/folder/${renameTarget.id}` : `/files/${renameTarget.id}`;
-            await apiClient.patch(endpoint, { name: renameValue.trim(), file_name: renameValue.trim() });
+            await apiClient.patch(endpoint, { name: nextName, file_name: nextName });
             setRenameTarget(null); setRenameModalVisible(false); fetchFolderFiles();
+            syncAfterFileMutation();
         } catch (e: any) { Alert.alert('Error', e.response?.data?.error || 'Failed'); }
     };
 
@@ -479,7 +497,13 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             setShareTarget(item);
             setShareModalVisible(true);
         } else if (action === 'star') {
-            apiClient.patch(`/files/${item.id}/star`).then(fetchFolderFiles).catch(() => Alert.alert('Error', 'Could not update star'));
+            apiClient
+                .patch(`/files/${item.id}/star`)
+                .then(() => {
+                    fetchFolderFiles();
+                    syncAfterFileMutation({ clearCache: true });
+                })
+                .catch(() => Alert.alert('Error', 'Could not update star'));
         } else if (action === 'move') {
             apiClient.get('/files/folders').then((res: any) => {
                 if (res.data.success) {

@@ -14,6 +14,7 @@ import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Platform }
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { Play, Pause, Volume2, VolumeX, RotateCcw, Wifi, HardDrive } from 'lucide-react-native';
 import apiClient from '../services/apiClient';
+import { sanitizeRemoteUri } from '../utils/fileSafety';
 
 interface VideoPlayerProps {
     url: string;
@@ -35,9 +36,10 @@ export default function VideoPlayer({ url, token, width: w, fileId, onError }: V
     const [downloadProgress, setDownloadProgress] = useState(0);
     const loadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const statusInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+    const safeUrl = sanitizeRemoteUri(url);
 
     const player = useVideoPlayer(
-        { uri: url, headers: { Authorization: `Bearer ${token}` } },
+        { uri: safeUrl, headers: { Authorization: `Bearer ${token}` } },
         (p) => {
             p.loop = false;
             p.muted = muted;
@@ -154,9 +156,9 @@ export default function VideoPlayer({ url, token, width: w, fileId, onError }: V
         setLoadError(null);
         setLoading(true);
         setLoadingMsg('Retrying…');
-        player.replace({ uri: url, headers: { Authorization: `Bearer ${token}` } });
+        player.replace({ uri: safeUrl, headers: { Authorization: `Bearer ${token}` } });
         player.play();
-    }, [player, url, token]);
+    }, [player, safeUrl, token]);
 
     return (
         <View style={[s.container, { width: w, height: w * 0.5625 }]}>

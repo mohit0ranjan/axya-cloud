@@ -39,9 +39,9 @@ const CustomTabBar = ({ state, descriptors, navigation }: any) => {
         <View style={[
             styles.navBar,
             {
-                backgroundColor: isDark ? 'rgba(18,20,32,0.88)' : 'rgba(255,255,255,0.92)',
-                borderColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
-                shadowColor: isDark ? '#000' : '#64748B',
+                backgroundColor: isDark ? 'rgba(15,23,42,0.92)' : 'rgba(255,255,255,0.95)',
+                borderColor: isDark ? 'rgba(148,163,184,0.16)' : 'rgba(15,23,42,0.08)',
+                shadowColor: isDark ? '#020617' : '#475569',
             },
         ]}>
             {state.routes.map((route: any, index: number) => {
@@ -110,12 +110,14 @@ const CustomTabBar = ({ state, descriptors, navigation }: any) => {
                         onPress={onPress}
                         onLongPress={onLongPress}
                         style={styles.navItem}
+                        activeOpacity={0.86}
                     >
                         <View
                             style={[
                                 styles.navItemInner,
                                 isFocused && {
-                                    backgroundColor: isDark ? 'rgba(59,130,246,0.15)' : 'rgba(59,130,246,0.08)',
+                                    backgroundColor: isDark ? 'rgba(59,130,246,0.20)' : 'rgba(59,130,246,0.12)',
+                                    transform: [{ scale: 1.06 }],
                                 },
                             ]}
                         >
@@ -163,10 +165,10 @@ const styles = StyleSheet.create({
         paddingBottom: Platform.OS === 'ios' ? 20 : 0,
         borderTopLeftRadius: 24,
         borderTopRightRadius: 24,
-        shadowOffset: { width: 0, height: -4 },
-        shadowOpacity: 0.08,
-        shadowRadius: 16,
-        elevation: 12,
+        shadowOffset: { width: 0, height: -6 },
+        shadowOpacity: 0.14,
+        shadowRadius: 22,
+        elevation: 16,
         borderTopWidth: 1,
     },
     navItem: {
@@ -199,10 +201,10 @@ const styles = StyleSheet.create({
         borderRadius: 32,
         justifyContent: 'center',
         alignItems: 'center',
-        shadowColor: '#4F46E5',
+        shadowColor: '#3B82F6',
         shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.38,
-        shadowRadius: 20,
-        elevation: 10,
+        shadowOpacity: 0.42,
+        shadowRadius: 24,
+        elevation: 12,
     },
 });

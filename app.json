@@ -4,9 +4,7 @@
       "package": "com.mohit010.teledrive"
     },
     "extra": {
-      "eas": {
-        "projectId": "e905ac7b-cef0-45d1-83ca-ce3656bde3bb"
-      }
+      "eas": {}
     }
   }
 }

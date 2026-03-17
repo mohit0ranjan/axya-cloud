@@ -229,6 +229,8 @@ export const initSchema = async () => {
     `ALTER TABLE files ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`,
     `ALTER TABLE files ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT DEFAULT 'me'`,
     `ALTER TABLE files ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMP`,
+    `ALTER TABLE files ADD COLUMN IF NOT EXISTS blurhash TEXT`,
+    `ALTER TABLE files ADD COLUMN IF NOT EXISTS thumbnail_failed_count INT DEFAULT 0`,
     `ALTER TABLE folders ADD COLUMN IF NOT EXISTS is_trashed BOOLEAN DEFAULT false`,
     `ALTER TABLE folders ADD COLUMN IF NOT EXISTS trashed_at TIMESTAMP`,
     `ALTER TABLE folders ADD COLUMN IF NOT EXISTS color TEXT DEFAULT '#3174ff'`,

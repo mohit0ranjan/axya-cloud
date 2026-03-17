@@ -11,6 +11,7 @@ import sharp from 'sharp';
 import { logger } from '../utils/logger';
 import { sendApiError } from '../utils/apiError';
 import { mapTelegramError } from '../utils/telegramErrors';
+import { formatFileRow, extractTelegramNativeMeta } from '../utils/formatters';
 import { getMessageCacheState } from '../services/share-v2/telegram-read-cache.service';
 
 // ── Allowed MIME types ─────────────────────────────────────────────────────
@@ -143,46 +144,7 @@ const logActivity = async (userId: string, action: string, fileId?: string, fold
     } catch (e) { /* Non-critical, don't block main op */ }
 };
 
-const formatFileRow = (row: any) => ({
-    id: row.id,
-    name: row.file_name,
-    folder_id: row.folder_id,
-    size: row.file_size,
-    mime_type: row.mime_type,
-    telegram_chat_id: row.telegram_chat_id,
-    is_starred: row.is_starred,
-    is_trashed: row.is_trashed,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-    blurhash: row.blurhash || null,
-    pointer_health: row.pointer_health || null,
-    cache_state: row.cache_state || getMessageCacheState(String(row.telegram_chat_id || ''), Number(row.telegram_message_id || 0)),
-    segment_mode_enabled: Boolean(row.segment_mode_enabled),
-    thumbnail_url: row.mime_type?.startsWith('image/') || row.mime_type?.startsWith('video/')
-        ? `${process.env.SERVER_BASE_URL || ''}/api/files/${row.id}/thumbnail`
-        : null,
-});
-
-const extractTelegramNativeMeta = (uploadedMessage: any) => {
-    const media = uploadedMessage?.document || uploadedMessage?.photo || null;
-    const attrs = Array.isArray(uploadedMessage?.document?.attributes) ? uploadedMessage.document.attributes : [];
-    const videoAttr = attrs.find((a: any) => a?.className === 'DocumentAttributeVideo' || a?.duration || a?.w || a?.h) || null;
-    const audioAttr = attrs.find((a: any) => a?.className === 'DocumentAttributeAudio' || a?.duration || a?.title || a?.performer) || null;
-    const imageAttr = attrs.find((a: any) => a?.className === 'DocumentAttributeImageSize' || a?.w || a?.h) || null;
-
-    return {
-        mediaMeta: {
-            dc_id: media?.dcId || null,
-            mime_type: uploadedMessage?.document?.mimeType || null,
-            has_photo: Boolean(uploadedMessage?.photo),
-            has_document: Boolean(uploadedMessage?.document),
-        },
-        durationSec: Number(videoAttr?.duration || audioAttr?.duration || 0) || null,
-        width: Number(videoAttr?.w || imageAttr?.w || 0) || null,
-        height: Number(videoAttr?.h || imageAttr?.h || 0) || null,
-        caption: String(uploadedMessage?.message || '').trim() || null,
-    };
-};
+// formatFileRow and extractTelegramNativeMeta imported from ../utils/formatters
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UPLOAD
@@ -289,8 +251,21 @@ export const fetchFiles = async (req: AuthRequest, res: Response) => {
     query += ` OFFSET $${params.length}`;
 
     try {
-        const result = await pool.query(query, params);
-        res.json({ success: true, files: result.rows.map(formatFileRow) });
+        // Build count query with safe parameterization
+        let countQuery = `SELECT COUNT(*)::int as total FROM files WHERE user_id = $1 AND is_trashed = false`;
+        const countParams: any[] = [req.user.id];
+        if (folder_id === 'root' || folder_id === 'null') {
+            countQuery += ` AND folder_id IS NULL`;
+        } else if (folder_id !== undefined) {
+            countParams.push(folder_id);
+            countQuery += ` AND folder_id = $${countParams.length}`;
+        }
+
+        const [result, countResult] = await Promise.all([
+            pool.query(query, params),
+            pool.query(countQuery, countParams),
+        ]);
+        res.json({ success: true, files: result.rows.map(formatFileRow), total_count: countResult.rows[0]?.total || 0 });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
     }

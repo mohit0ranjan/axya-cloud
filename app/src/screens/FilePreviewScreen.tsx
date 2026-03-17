@@ -1,106 +1,80 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
     View, Text, TouchableOpacity, StyleSheet, SafeAreaView, ActivityIndicator,
-    Alert, Dimensions, Platform, Modal, KeyboardAvoidingView, ScrollView, TextInput,
-    FlatList,
+    Dimensions, Platform, FlatList, ViewToken, Modal, TextInput,
+    Alert, Share, KeyboardAvoidingView, Vibration
 } from 'react-native';
-import { WebView } from 'react-native-webview';
-import { Paths } from 'expo-file-system';
-import * as LegacyFileSystem from 'expo-file-system/legacy';
-import * as IntentLauncher from 'expo-intent-launcher';
-import * as Sharing from 'expo-sharing';
-import { ArrowLeft, Download, Trash2, FileText, FolderInput, Star, Link, CheckCircle, X, MoreHorizontal, Share2, Pencil, Move, Shield, Clock3, Lock, ChevronUp } from 'lucide-react-native';
-
+import {
+    ArrowLeft, Download, Star, Share2, MoreHorizontal,
+    FolderInput, Trash2, Pencil,
+    FileText, X, Copy
+} from 'lucide-react-native';
+import * as Clipboard from 'expo-clipboard';
 import { Image } from '../components/AppImage';
 import VideoPlayer from '../components/VideoPlayer';
-import * as Clipboard from 'expo-clipboard';
+import PreviewSkeleton from '../components/PreviewSkeleton';
+import { WebView } from 'react-native-webview';
+
 import apiClient, { API_BASE } from '../services/apiClient';
 import { useToast } from '../context/ToastContext';
 import { useDownload } from '../context/DownloadContext';
 import { useAuth } from '../context/AuthContext';
-import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
 import { normalizeExternalShareUrl } from '../utils/shareUrls';
+import { syncAfterFileMutation } from '../services/fileStateSync';
+import { emitFileDeleted, emitFileUpdated } from '../utils/events';
+import { buildApiFileUrl, sanitizeDisplayName, sanitizeFileName } from '../utils/fileSafety';
 
-// react-native-reanimated v3/v4 — import as `Animated` (standard naming)
-import Animated2, {
-    useSharedValue,
-    useAnimatedStyle,
-    withSpring,
-    withTiming,
-    runOnJS,
+import Animated, {
+    useSharedValue, useAnimatedStyle, withSpring, withTiming, runOnJS, FadeIn, FadeOut
 } from 'react-native-reanimated';
-
-// react-native-gesture-handler v2
-// GestureHandlerRootView is now in App.tsx — do NOT import here
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 
 const { width, height } = Dimensions.get('window');
 
-// ─────────────────────────────────────────────────────────────
-// Module-level constants (safe to capture inside worklets)
-// ─────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
+// Gestures & Preview Item
+// --------------------------------------------------------------------------
+
 const MIN_SCALE = 1;
 const MAX_SCALE = 4;
-const IMG_H = height * 0.65;   // module-level — worklets can safely reference this
+const IMG_H = height * 0.55; 
 const SPRING_CFG = { damping: 20, stiffness: 200 };
-const SHEET_COLLAPSED_OFFSET = 250;
-const SHEET_HANDLE_HEIGHT = 88;
 
-// ─────────────────────────────────────────────────────────────
-// ImagePreviewItem — pinch-zoom, pan, double-tap reset
-// GestureHandlerRootView is at App.tsx root, not needed here.
-// ─────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────
-// ImagePreviewItem — pinch-zoom, pan, double-tap reset
-// GestureHandlerRootView is at App.tsx root, not needed here.
-// ─────────────────────────────────────────────────────────────
-function ImagePreviewItem({
-    item,
-    jwt,
-    isZoomed,
-    onZoomChange,
-    onSingleTap,
-}: { item: any; jwt: string; isZoomed: boolean; onZoomChange?: (zoomed: boolean) => void; onSingleTap?: () => void }) {
-    const { theme } = useTheme();
+function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD_BG }: any) {
+    const { isDark } = useTheme();
     const [loading, setLoading] = useState(true);
     const [useFallback, setUseFallback] = useState(false);
-    const [errored, setErrored] = useState(false);
-
-    const thumbUrl = `${API_BASE}/files/${item.id}/thumbnail`;
-    const downloadUrl = `${API_BASE}/files/${item.id}/download`;
+    
+    // File URLs
+    const thumbUrl = buildApiFileUrl(API_BASE, item.id, 'thumbnail');
+    const downloadUrl = buildApiFileUrl(API_BASE, item.id, 'download');
     const headers = { Authorization: `Bearer ${jwt}` };
     const src = useFallback ? downloadUrl : thumbUrl;
 
-    // ── Gesture shared values ────────────────────────────────────────
     const scale = useSharedValue(1);
     const savedScale = useSharedValue(1);
     const translateX = useSharedValue(0);
     const translateY = useSharedValue(0);
     const savedTransX = useSharedValue(0);
     const savedTransY = useSharedValue(0);
+    const imageOpacity = useSharedValue(0);
 
     useEffect(() => {
-        setLoading(true);
-        setUseFallback(false);
-        setErrored(false);
-        scale.value = 1;
-        savedScale.value = 1;
-        translateX.value = 0;
-        translateY.value = 0;
-        savedTransX.value = 0;
-        savedTransY.value = 0;
+        setLoading(true); setUseFallback(false);
+        scale.value = 1; savedScale.value = 1;
+        translateX.value = 0; translateY.value = 0;
+        savedTransX.value = 0; savedTransY.value = 0;
+        imageOpacity.value = 0;
         onZoomChange?.(false);
     }, [item?.id, onZoomChange]);
 
-    // ── Pinch ────────────────────────────────────────────────────────
     const pinch = Gesture.Pinch()
+        .enabled(Platform.OS !== 'web')
         .onUpdate(e => {
             'worklet';
             scale.value = Math.max(MIN_SCALE, Math.min(MAX_SCALE, savedScale.value * e.scale));
-            if (onZoomChange) {
-                runOnJS(onZoomChange)(scale.value > 1.02);
-            }
+            if (onZoomChange) runOnJS(onZoomChange)(scale.value > 1.02);
         })
         .onEnd(() => {
             'worklet';
@@ -109,34 +83,23 @@ function ImagePreviewItem({
                 translateX.value = withSpring(0, SPRING_CFG);
                 translateY.value = withSpring(0, SPRING_CFG);
                 savedScale.value = 1;
-                savedTransX.value = 0;
-                savedTransY.value = 0;
+                savedTransX.value = 0; savedTransY.value = 0;
             } else {
                 savedScale.value = scale.value;
-                // clamp inline — module-level IMG_H is safe here
                 const maxX = (width * (scale.value - 1)) / 2;
                 const maxY = (IMG_H * (scale.value - 1)) / 2;
                 const cx = Math.max(-maxX, Math.min(maxX, translateX.value));
                 const cy = Math.max(-maxY, Math.min(maxY, translateY.value));
-                translateX.value = cx;
-                translateY.value = cy;
-                savedTransX.value = cx;
-                savedTransY.value = cy;
+                translateX.value = cx; translateY.value = cy;
+                savedTransX.value = cx; savedTransY.value = cy;
             }
-            // Notify parent when zoom state changes (must use runOnJS from worklet)
-            if (onZoomChange) {
-                runOnJS(onZoomChange)(scale.value > 1.05);
-            }
+            if (onZoomChange) runOnJS(onZoomChange)(scale.value > 1.05);
         });
 
-    // ── Pan (completely disabled at 1× — lets FlatList handle swipe freely) ──
-    // Using .enabled(isZoomed) prevents the Pan recognizer from even competing
-    // with FlatList's scroll gesture. activeOffsetX/Y set a high distance
-    // threshold so even if enabled, it doesn't fire on casual swipes.
     const pan = Gesture.Pan()
-        .enabled(true)
+        .enabled(Platform.OS !== 'web' && isZoomed)
         .averageTouches(true)
-        .activeOffsetX([-20, 20])         // must move 20px before activating
+        .activeOffsetX([-20, 20])
         .activeOffsetY([-10, 10])
         .onUpdate(e => {
             'worklet';
@@ -152,15 +115,13 @@ function ImagePreviewItem({
             savedTransY.value = translateY.value;
         });
 
-    // ── Double-tap to zoom in/out ───────────────────────────────────
     const doubleTap = Gesture.Tap()
         .numberOfTaps(2)
-        .maxDelay(250)               // maxDelay not maxDuration (RNGH v2 API)
+        .maxDelay(250)
         .onEnd(e => {
             'worklet';
             if (scale.value <= 1.02) {
-                // Zoom in to 2x and bias translation toward tap point.
-                const targetScale = 2;
+                const targetScale = 2.5;
                 const maxX = (width * (targetScale - 1)) / 2;
                 const maxY = (IMG_H * (targetScale - 1)) / 2;
                 const dx = (e.x - width / 2) * -0.35;
@@ -171,1048 +132,859 @@ function ImagePreviewItem({
                 translateX.value = withSpring(tx, SPRING_CFG);
                 translateY.value = withSpring(ty, SPRING_CFG);
                 savedScale.value = targetScale;
-                savedTransX.value = tx;
-                savedTransY.value = ty;
+                savedTransX.value = tx; savedTransY.value = ty;
                 if (onZoomChange) runOnJS(onZoomChange)(true);
                 return;
             }
-
-            // Reset back to 1x.
             scale.value = withSpring(1, SPRING_CFG);
             translateX.value = withSpring(0, SPRING_CFG);
             translateY.value = withSpring(0, SPRING_CFG);
-            savedScale.value = 1;
-            savedTransX.value = 0;
-            savedTransY.value = 0;
-            if (onZoomChange) {
-                runOnJS(onZoomChange)(false);
-            }
+            savedScale.value = 1; savedTransX.value = 0; savedTransY.value = 0;
+            if (onZoomChange) runOnJS(onZoomChange)(false);
         });
 
-    const singleTap = Gesture.Tap()
-        .numberOfTaps(1)
-        .maxDuration(220)
-        .onEnd(() => {
-            'worklet';
-            if (onSingleTap) runOnJS(onSingleTap)();
-        });
+    const singleTap = Gesture.Tap().numberOfTaps(1).maxDuration(220).onEnd(() => {
+        'worklet';
+        if (onSingleTap) runOnJS(onSingleTap)();
+    });
 
-    // Single-tap toggles chrome; double-tap handles zoom.
     const taps = Gesture.Exclusive(doubleTap, singleTap);
-    const composed = Gesture.Simultaneous(pinch, pan, taps);
+    const composed = Platform.OS === 'web' ? taps : Gesture.Simultaneous(pinch, pan, taps);
 
     const animStyle = useAnimatedStyle(() => ({
         transform: [
             { scale: scale.value as number },
             { translateX: translateX.value as number },
             { translateY: translateY.value as number },
-        ] as any,   // Reanimated v4 strict transform types — `as any` is safe here
+        ] as any,
     }));
 
-    if (Platform.OS === 'web') {
-        return (
-            <View style={{ width, flex: 1, backgroundColor: '#0a0a0f' }}>
-                {loading && (
-                    <View style={StyleSheet.absoluteFillObject as any}>
-                        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                            <ActivityIndicator size="large" color={theme.colors.primary} />
-                            <Text style={{ color: 'rgba(255,255,255,0.6)', marginTop: 14, fontSize: 13, fontWeight: '500' }}>
-                                {useFallback ? 'Loading image...' : 'Loading preview...'}
-                            </Text>
-                        </View>
-                    </View>
-                )}
-                <Image
-                    source={{ uri: src, headers }}
-                    style={{ width, height: IMG_H }}
-                    contentFit="contain"
-                    transition={200}
-                    cachePolicy="disk"
-                    onLoad={() => setLoading(false)}
-                    onError={() => {
-                        if (!useFallback) {
-                            setUseFallback(true);
-                            setLoading(true);
-                        } else {
-                            setLoading(false);
-                            setErrored(true);
-                        }
-                    }}
-                />
-                {errored ? (
-                    <View style={[StyleSheet.absoluteFillObject, { justifyContent: 'center', alignItems: 'center', padding: 24 }]}>
-                        <FileText color="rgba(255,255,255,0.35)" size={64} strokeWidth={1} />
-                        <Text style={{ color: 'rgba(255,255,255,0.65)', marginTop: 12 }}>Could not load image</Text>
-                    </View>
-                ) : null}
-            </View>
-        );
-    }
+    const imageFadeStyle = useAnimatedStyle(() => ({
+        opacity: imageOpacity.value,
+    }));
 
     return (
-        <View style={{ width, flex: 1, backgroundColor: '#0a0a0f' }}>
-            {/* Loading spinner */}
-            {loading && (
-                <View style={StyleSheet.absoluteFillObject as any}>
-                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                        <ActivityIndicator size="large" color={theme.colors.primary} />
-                        <Text style={{ color: 'rgba(255,255,255,0.6)', marginTop: 14, fontSize: 13, fontWeight: '500' }}>
-                            {useFallback ? 'Loading image...' : 'Loading preview...'}
-                        </Text>
-                    </View>
-                </View>
-            )}
-
-            {errored ? (
-                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 }}>
-                    <FileText color="rgba(255,255,255,0.3)" size={72} strokeWidth={1} />
-                    <Text style={{ color: 'rgba(255,255,255,0.5)', marginTop: 16, fontSize: 14 }}>
-                        Could not load image
-                    </Text>
-                </View>
-            ) : (
-                <GestureDetector gesture={composed}>
-                    <Animated2.View
-                        style={[{ width, height: IMG_H, justifyContent: 'center', alignItems: 'center' }, animStyle]}
-                    >
-                        <Image
-                            source={{ uri: src, headers }}
-                            style={{ width, height: IMG_H }}
-                            contentFit="contain"
-                            transition={300}
-                            cachePolicy="disk"
-                            onLoad={() => setLoading(false)}
-                            onError={() => {
-                                if (!useFallback) {
-                                    setUseFallback(true);
-                                    setLoading(true);
-                                } else {
+        <View style={styles.previewCardContainer}>
+            <GestureDetector gesture={composed}>
+                <Animated.View style={[styles.previewCard, { backgroundColor: CARD_BG }]}>
+                    <Animated.View style={[{ flex: 1, overflow: 'hidden', borderRadius: 16, justifyContent: 'center', alignItems: 'center' }, animStyle]}>
+                        {loading && (
+                            <PreviewSkeleton />
+                        )}
+                        <Animated.View style={[{ width: '100%', height: '100%' }, imageFadeStyle]}>
+                            <Image
+                                source={{ uri: src, headers }}
+                                style={{ width: '100%', height: '100%' }}
+                                contentFit="contain"
+                                onLoad={() => {
                                     setLoading(false);
-                                    setErrored(true);
-                                }
-                            }}
-                        />
-                    </Animated2.View>
-                </GestureDetector>
-            )}
+                                    imageOpacity.value = withTiming(1, { duration: 240 });
+                                }}
+                                onError={() => {
+                                    if (!useFallback) {
+                                        setUseFallback(true);
+                                        setLoading(true);
+                                        imageOpacity.value = 0;
+                                    } else {
+                                        setLoading(false);
+                                        imageOpacity.value = withTiming(1, { duration: 180 });
+                                    }
+                                }}
+                            />
+                        </Animated.View>
+                    </Animated.View>
+                </Animated.View>
+            </GestureDetector>
         </View>
     );
 }
 
-// ─────────────────────────────────────────────────────────────
-// PdfOpenButton — downloads PDF to cache, opens with system app
-// Works in Expo Go (no native modules needed)
-// ─────────────────────────────────────────────────────────────
-function PdfOpenButton({ url, jwt, fileName }: { url: string; jwt: string; fileName: string }) {
-    const { theme } = useTheme();
-    const [downloading, setDownloading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-
-    const openPdfExternally = async () => {
-        setDownloading(true);
-        setError(null);
-        try {
-            // Sanitize filename for filesystem
-            const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-            const localUri = `${Paths.cache.uri}${safeName}`;
-
-            // Download PDF with auth header using legacy API (proven pattern in this project)
-            const downloadResult = await LegacyFileSystem.downloadAsync(url, localUri, {
-                headers: { Authorization: `Bearer ${jwt}` },
-            });
-
-            if (downloadResult.status !== 200) {
-                throw new Error(`Download failed with status ${downloadResult.status}`);
-            }
-
-            if (Platform.OS === 'android') {
-                // Convert file:// URI to content:// URI for Android intent
-                const contentUri = await LegacyFileSystem.getContentUriAsync(downloadResult.uri);
-                await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-                    data: contentUri,
-                    type: 'application/pdf',
-                    flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
-                });
-            } else {
-                // iOS: use sharing sheet as fallback
-                if (await Sharing.isAvailableAsync()) {
-                    await Sharing.shareAsync(downloadResult.uri, {
-                        mimeType: 'application/pdf',
-                        UTI: 'com.adobe.pdf',
-                    });
-                } else {
-                    throw new Error('Sharing is not available on this device');
-                }
-            }
-        } catch (err: any) {
-            console.warn('PDF open error:', err);
-            // Don't show error for user-cancelled intents
-            if (!err?.message?.includes('cancel') && !err?.message?.includes('Cancel')) {
-                setError(err?.message || 'Could not open PDF');
-            }
-        } finally {
-            setDownloading(false);
-        }
-    };
-
-    return (
-        <View style={{ width, flex: 1, backgroundColor: '#0a0a0f', justifyContent: 'center', alignItems: 'center', padding: 32 }}>
-            <FileText color="rgba(255,255,255,0.35)" size={80} strokeWidth={1} />
-            <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700', marginTop: 20, textAlign: 'center' }} numberOfLines={2}>
-                {fileName}
-            </Text>
-            <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13, marginTop: 8, textAlign: 'center' }}>
-                PDF files open in your preferred viewer app
-            </Text>
-
-            <TouchableOpacity
-                style={{
-                    marginTop: 28,
-                    backgroundColor: theme.colors.primary,
-                    paddingHorizontal: 36,
-                    paddingVertical: 16,
-                    borderRadius: theme.radius.card,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 10,
-                    opacity: downloading ? 0.7 : 1,
-                }}
-                onPress={openPdfExternally}
-                disabled={downloading}
-                activeOpacity={0.8}
-            >
-                {downloading ? (
-                    <>
-                        <ActivityIndicator color="#fff" size="small" />
-                        <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Downloading…</Text>
-                    </>
-                ) : (
-                    <>
-                        <FileText color="#fff" size={20} />
-                        <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Open PDF</Text>
-                    </>
-                )}
-            </TouchableOpacity>
-
-            {error && (
-                <Text style={{ color: theme.colors.danger, fontSize: 13, marginTop: 16, textAlign: 'center' }}>
-                    {error}
-                </Text>
-            )}
-        </View>
-    );
-}
-
-// ─────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 // Main Screen
-// ─────────────────────────────────────────────────────────────
-export default function FilePreviewScreen({ route, navigation }: any) {
-    const { theme } = useTheme();
-    const { token: authToken } = useAuth();
-    const deepLinkedFileId = String(route?.params?.fileId || '').trim();
-    const routeFiles = Array.isArray(route?.params?.files) ? route.params.files : [];
-    const fallbackFile = route?.params?.file ?? null;
-    const initialIndex: number = Number.isInteger(route?.params?.initialIndex) ? route.params.initialIndex : 0;
-    const allFiles: any[] = useMemo(
-        () => routeFiles.filter((f: any) => f?.mime_type !== 'inode/directory'),
-        [routeFiles]
-    );
-    const hasInlinePreviewPayload = allFiles.length > 0 || Boolean(fallbackFile);
-    const [deepLinkedFile, setDeepLinkedFile] = useState<any>(null);
-    const [loadingDeepLinkedFile, setLoadingDeepLinkedFile] = useState(false);
-    const previewData = allFiles.length > 0
-        ? allFiles
-        : (fallbackFile ? [fallbackFile] : (deepLinkedFile ? [deepLinkedFile] : []));
+// --------------------------------------------------------------------------
 
+export default function FilePreviewScreen({ route, navigation }: any) {
+    const { isDark } = useTheme();
+    const { token: jwt } = useAuth();
+    const { addDownload, tasks } = useDownload();
     const { showToast } = useToast();
 
+    // Data Maps
+    const routeFiles = Array.isArray(route?.params?.files) ? route.params.files : [];
+    const allFiles = routeFiles.filter((f: any) => f?.mime_type !== 'inode/directory');
+    const fallbackFile = route?.params?.file ?? null;
+    const initialIndex = Number.isInteger(route?.params?.initialIndex) ? route.params.initialIndex : 0;
+    
+    // Deep Linking support via standard hook
+    const deepLinkedFileId = String(route?.params?.fileId || '').trim();
+    const [deepLinkedFile, setDeepLinkedFile] = useState<any>(null);
+
+    const previewData = allFiles.length > 0 ? allFiles : (fallbackFile ? [fallbackFile] : (deepLinkedFile ? [deepLinkedFile] : []));
+    const listRef = useRef<FlatList<any>>(null);
+
+    useEffect(() => {
+        if (!deepLinkedFileId || allFiles.length > 0 || fallbackFile) return;
+        apiClient.get(`/files/${deepLinkedFileId}`)
+            .then(res => setDeepLinkedFile(res.data))
+            .catch(() => showToast('Could not load shared file', 'error'));
+    }, [deepLinkedFileId]);
+
+    // Local State
+    const [filesState, setFilesState] = useState<any[]>(previewData);
     const [currentIndex, setCurrentIndex] = useState(initialIndex);
-    const [isZoomed, setIsZoomed] = useState(false); // ✅ track zoom to toggle FlatList scroll
+    const [isZoomed, setIsZoomed] = useState(false);
     const [uiVisible, setUiVisible] = useState(true);
-    const [sheetExpanded, setSheetExpanded] = useState(false);
-    const [activeTab, setActiveTab] = useState<'details' | 'actions' | 'activity' | 'permissions'>('details');
-    const file = useMemo(
-        () => previewData[currentIndex] || previewData[0] || null,
-        [currentIndex, previewData]
-    );
-    const [jwt, setJwt] = useState('');
-    const [downloading, setDownloading] = useState(false);
-    const { addDownload, hasActive: hasActiveDownloads } = useDownload();
-    const [isStarred, setIsStarred] = useState(false);
+    const [isDownloadSubmitting, setIsDownloadSubmitting] = useState(false);
+    const [downloadTaskId, setDownloadTaskId] = useState<string | null>(null);
 
-    // Share link
-    const [shareModalVisible, setShareModalVisible] = useState(false);
-    const [shareToken, setShareToken] = useState('');
-    const [isCreatingShare, setIsCreatingShare] = useState(false);
-    const [shareError, setShareError] = useState('');
+    const [isShareModalVisible, setShareModalVisible] = useState(false);
+    const [isGeneratingShare, setGeneratingShare] = useState(false);
+    const [shareLink, setShareLink] = useState('');
 
-    // Move file
-    const [moveModalVisible, setMoveModalVisible] = useState(false);
-    const [folders, setFolders] = useState<any[]>([]);
-    const [loadingFolders, setLoadingFolders] = useState(false);
-    const goBackSafe = useCallback(() => {
-        if (navigation?.canGoBack?.()) {
-            navigation.goBack();
+    const [isOptionsVisible, setOptionsVisible] = useState(false);
+
+    const [isRenameModalVisible, setRenameModalVisible] = useState(false);
+    const [renameValue, setRenameValue] = useState('');
+    const [isRenaming, setIsRenaming] = useState(false);
+
+    const [isMoveModalVisible, setMoveModalVisible] = useState(false);
+    const [allFolders, setAllFolders] = useState<any[]>([]);
+    const [isMoving, setIsMoving] = useState(false);
+
+    const file = filesState[currentIndex] || null;
+
+    useEffect(() => {
+        setFilesState(previewData);
+        if (previewData.length === 0) {
+            setCurrentIndex(0);
             return;
         }
-        navigation.navigate('MainTabs');
-    }, [navigation]);
+        const safeIndex = Math.min(Math.max(initialIndex, 0), previewData.length - 1);
+        setCurrentIndex(safeIndex);
+        requestAnimationFrame(() => {
+            listRef.current?.scrollToIndex({ index: safeIndex, animated: false });
+        });
+    }, [previewData, initialIndex]);
+
+    useEffect(() => {
+        if (!downloadTaskId) return;
+        const task = tasks.find(t => t.id === downloadTaskId);
+        if (!task) return;
+        if (task.status === 'queued' || task.status === 'downloading') {
+            setIsDownloadSubmitting(true);
+            return;
+        }
+        if (task.status === 'completed') {
+            showToast('Download completed');
+        } else if (task.status === 'failed') {
+            showToast(task.error || 'Download failed', 'error');
+        } else if (task.status === 'cancelled') {
+            showToast('Download cancelled', 'error');
+        }
+        setIsDownloadSubmitting(false);
+        setDownloadTaskId(null);
+    }, [downloadTaskId, tasks, showToast]);
+    
+    const uiOpacity = useSharedValue(1);
+    const triggerHaptic = useCallback((ms: number = 8) => {
+        if (Platform.OS === 'web') return;
+        Vibration.vibrate(ms);
+    }, []);
+    const toggleUI = () => {
+        setUiVisible(!uiVisible);
+        uiOpacity.value = withTiming(uiVisible ? 0 : 1, { duration: 250 });
+    };
+    const uiAnimStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
+
+    const updateCurrentFile = useCallback((updater: (f: any) => any) => {
+        setFilesState(prev => {
+            if (!prev[currentIndex]) return prev;
+            const next = [...prev];
+            next[currentIndex] = updater(next[currentIndex]);
+            return next;
+        });
+    }, [currentIndex]);
+
+    const handleDownload = useCallback(() => {
+        if (!file?.id || !jwt) {
+            showToast('Missing file or session', 'error');
+            return;
+        }
+        try {
+            const id = addDownload(file.id, sanitizeFileName(file.name || file.file_name || 'download', 'download'), jwt, file.mime_type);
+            setDownloadTaskId(id);
+            setIsDownloadSubmitting(true);
+            showToast('Download queued');
+        } catch {
+            setIsDownloadSubmitting(false);
+            showToast('Could not start download', 'error');
+        }
+    }, [file, jwt, addDownload, showToast]);
+
+    const generateShareLink = useCallback(async () => {
+        if (!file?.id) return;
+        setGeneratingShare(true);
+        setShareLink('');
+        try {
+            const res = await apiClient.post('/api/v2/shares', {
+                resource_type: 'file',
+                root_file_id: file.id,
+                expires_at: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+            });
+            const link = normalizeExternalShareUrl(String(res.data?.share_url || res.data?.shareUrl || ''));
+            if (!link) {
+                showToast('Share link not returned', 'error');
+                return;
+            }
+            setShareLink(link);
+            showToast('Link generated');
+        } catch {
+            showToast('Share failed', 'error');
+        } finally {
+            setGeneratingShare(false);
+        }
+    }, [file?.id, showToast]);
+
+    const handleOpenShare = useCallback(() => {
+        if (!file?.id) return;
+        triggerHaptic();
+        setOptionsVisible(false);
+        setShareModalVisible(true);
+        void generateShareLink();
+    }, [file?.id, generateShareLink, triggerHaptic]);
+
+    const handleCopyShareLink = useCallback(async () => {
+        if (!shareLink) return;
+        await Clipboard.setStringAsync(shareLink);
+        showToast('Link copied');
+    }, [shareLink, showToast]);
+
+    const handleNativeShareLink = useCallback(async () => {
+        if (!shareLink) return;
+        try {
+            await Share.share({ message: shareLink, url: shareLink });
+        } catch {
+            showToast('System share unavailable', 'error');
+        }
+    }, [shareLink, showToast]);
+
+    const handleToggleStar = useCallback(async () => {
+        if (!file?.id) return;
+        triggerHaptic();
+        setOptionsVisible(false);
+        try {
+            await apiClient.patch(`/files/${file.id}/star`);
+            updateCurrentFile((f) => ({ ...f, is_starred: !f?.is_starred }));
+            emitFileUpdated(file.id, { is_starred: !file.is_starred });
+            showToast(file?.is_starred ? 'Removed from favorites' : 'Added to favorites');
+            syncAfterFileMutation({ clearCache: true });
+        } catch {
+            showToast('Could not update favorite', 'error');
+        }
+    }, [file?.id, file?.is_starred, showToast, updateCurrentFile, triggerHaptic]);
+
+    const openRenameModal = useCallback(() => {
+        if (!file) return;
+        triggerHaptic();
+        setRenameValue(sanitizeFileName(file.name || file.file_name || '', 'file'));
+        setOptionsVisible(false);
+        setRenameModalVisible(true);
+    }, [file, triggerHaptic]);
+
+    const handleRename = useCallback(async () => {
+        const trimmed = sanitizeFileName(renameValue, 'file');
+        if (!file?.id || !trimmed || isRenaming) return;
+        setIsRenaming(true);
+        try {
+            await apiClient.patch(`/files/${file.id}`, { name: trimmed, file_name: trimmed });
+            updateCurrentFile((f) => ({ ...f, name: trimmed, file_name: trimmed }));
+            emitFileUpdated(file.id, { name: trimmed, file_name: trimmed });
+            setRenameModalVisible(false);
+            showToast('File renamed');
+            syncAfterFileMutation();
+        } catch {
+            showToast('Rename failed', 'error');
+        } finally {
+            setIsRenaming(false);
+        }
+    }, [file?.id, renameValue, isRenaming, showToast, updateCurrentFile]);
+
+    const handleDelete = useCallback(() => {
+        if (!file?.id) return;
+        setOptionsVisible(false);
+        Alert.alert(
+            'Move to Trash',
+            `Move "${sanitizeDisplayName(file?.name || file?.file_name || 'this file', 'this file')}" to trash?`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Move to Trash',
+                    style: 'destructive',
+                    onPress: async () => {
+                        try {
+                            await apiClient.patch(`/files/${file.id}/trash`);
+                            setFilesState(prev => prev.filter((f, idx) => idx !== currentIndex));
+                            emitFileDeleted(file.id);
+                            showToast('Moved to trash');
+                            syncAfterFileMutation();
+                        } catch {
+                            showToast('Could not move to trash', 'error');
+                        }
+                    },
+                },
+            ]
+        );
+    }, [file, currentIndex, showToast]);
 
     const openMoveModal = useCallback(async () => {
         if (!file?.id) return;
-        setLoadingFolders(true);
-        setMoveModalVisible(true);
+        triggerHaptic();
+        setOptionsVisible(false);
         try {
             const res = await apiClient.get('/files/folders');
-            if (res.data.success) {
-                // Add "Root (No Folder)" as first option, then all user folders
-                setFolders([
-                    { id: null, name: '🏠 Root (No Folder)' },
-                    ...res.data.folders,
-                ]);
-            }
+            const folders = Array.isArray(res.data) ? res.data : (res.data?.folders || []);
+            setAllFolders(folders);
+            setMoveModalVisible(true);
         } catch {
             showToast('Could not load folders', 'error');
-            setMoveModalVisible(false);
-        } finally {
-            setLoadingFolders(false);
         }
-    }, [file]);
+    }, [file?.id, showToast, triggerHaptic]);
 
     const handleMove = useCallback(async (targetFolderId: string | null) => {
-        if (!file?.id) return;
+        if (!file?.id || isMoving) return;
+        setIsMoving(true);
         try {
-            await apiClient.post('/files/bulk', {
-                ids: [file.id],
-                action: 'move',
-                folder_id: targetFolderId,
-            });
+            await apiClient.post('/files/bulk', { ids: [file.id], action: 'move', folder_id: targetFolderId });
             setMoveModalVisible(false);
+            emitFileUpdated(file.id, { folder_id: targetFolderId });
             showToast('File moved successfully');
-            goBackSafe();
+            syncAfterFileMutation();
         } catch {
             showToast('Could not move file', 'error');
+        } finally {
+            setIsMoving(false);
         }
-    }, [file, goBackSafe]);
+    }, [file?.id, isMoving, showToast]);
 
-    // Rename
-    const [renameModalVisible, setRenameModalVisible] = useState(false);
-    const [newName, setNewName] = useState('');
+    // Design System
+    const BG_COLOR = isDark ? '#050505' : '#FFFFFF';
+    const CARD_BG = isDark ? '#141414' : '#F5F7FB';
+    const TEXT_MAIN = isDark ? '#FFFFFF' : '#111827';
+    const TEXT_SUB = isDark ? '#A0A0A0' : '#6B7280';
+    const ACCENT = '#3B82F6'; // Axya Blue (can adapt to primary accent)
+    const BORDER = isDark ? '#222222' : '#EBEEF2';
 
-    const controlsOpacity = useSharedValue(1);
-    const sheetTranslateY = useSharedValue(SHEET_COLLAPSED_OFFSET);
-    const sheetStartY = useSharedValue(SHEET_COLLAPSED_OFFSET);
-
-    useEffect(() => {
-        let active = true;
-
-        if (!deepLinkedFileId || hasInlinePreviewPayload) {
-            setLoadingDeepLinkedFile(false);
-            setDeepLinkedFile(null);
-            return () => { active = false; };
-        }
-
-        setLoadingDeepLinkedFile(true);
-        apiClient.get(`/files/${encodeURIComponent(deepLinkedFileId)}/details`)
-            .then((res) => {
-                if (!active) return;
-                if (res.data?.success && res.data?.file) {
-                    setDeepLinkedFile(res.data.file);
-                } else {
-                    setDeepLinkedFile(null);
-                }
-            })
-            .catch(() => {
-                if (active) setDeepLinkedFile(null);
-            })
-            .finally(() => {
-                if (active) setLoadingDeepLinkedFile(false);
-            });
-
-        return () => { active = false; };
-    }, [deepLinkedFileId, hasInlinePreviewPayload]);
-
-    useEffect(() => {
-        setJwt(authToken || '');
-    }, [authToken]);
-
-    useEffect(() => {
-        setIsStarred(!!file?.is_starred);
-        setNewName(file?.name || file?.file_name || '');
-    }, [file?.id, file?.is_starred, file?.name, file?.file_name]);
-
-    useEffect(() => {
-        controlsOpacity.value = withTiming(uiVisible ? 1 : 0, { duration: 180 });
-    }, [controlsOpacity, uiVisible]);
-
-    const setSheetState = useCallback((expanded: boolean) => {
-        setSheetExpanded(expanded);
-        sheetTranslateY.value = withSpring(expanded ? 0 : SHEET_COLLAPSED_OFFSET, SPRING_CFG);
-    }, [sheetTranslateY]);
-
-    const toggleChrome = useCallback(() => {
-        setUiVisible(prev => !prev);
-    }, []);
-
-    const handleStar = useCallback(async () => {
-        if (!file?.id) return;
-        try {
-            await apiClient.patch(`/files/${file.id}/star`);
-            setIsStarred((prev: boolean) => !prev);
-            showToast(isStarred ? 'Removed from starred' : 'Added to starred');
-        } catch { showToast('Failed to update star', 'error'); }
-    }, [file, isStarred]);
-
-    const handleTrash = useCallback(() => {
-        if (!file?.id) return;
-        Alert.alert('Move to Trash', `Move "${file.name || file.file_name}" to trash?`, [
-            { text: 'Cancel', style: 'cancel' },
-            {
-                text: 'Trash', style: 'destructive', onPress: async () => {
-                    try {
-                        await apiClient.patch(`/files/${file.id}/trash`);
-                        showToast('Moved to trash');
-                        goBackSafe();
-                    } catch { showToast('Failed to trash', 'error'); }
-                }
-            },
-        ]);
-    }, [file, goBackSafe]);
-
-    const handleDownload = useCallback(() => {
-        if (!file?.id) return;
-        if (!jwt) return;
-        const fileName = file.name || file.file_name || 'download';
-        addDownload(file.id, fileName, jwt, file.mime_type);
-        showToast('Download started…');
-    }, [file, jwt, addDownload, showToast]);
-
-    const handleCreateShare = async () => {
-        const shareFileId = String(file?.id || file?.file_id || '').trim();
-        if (!shareFileId) {
-            setShareError('File ID missing. Refresh and try again.');
-            return;
-        }
-        setIsCreatingShare(true);
-        setShareError('');
-        try {
-            const res = await apiClient.post('/api/v2/shares', { resource_type: 'file', root_file_id: shareFileId, expires_at: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString() });
-            if (res.data.success) {
-                const link = normalizeExternalShareUrl(String(res.data.share_url || res.data.shareUrl || ''));
-                if (link) {
-                    setShareToken(link);
-                } else {
-                    setShareError('Share link URL missing from response.');
-                }
-            } else {
-                setShareError(res.data?.message || res.data?.error || 'Could not create share link');
-            }
-        } catch (err: any) {
-            const status = Number(err?.response?.status || 0);
-            const apiMsg = String(err?.response?.data?.message || err?.response?.data?.error || '').trim();
-            const msg = apiMsg
-                || (status === 401 ? 'Session expired. Please log in again.' : '')
-                || (status === 404 ? 'Share API not found. Confirm backend exposes /api/v2/shares.' : '')
-                || (status >= 500 ? 'Server error while creating share link. Please retry.' : '')
-                || (err?.code === 'ECONNABORTED' ? 'Request timed out. Server may be waking up, retry in a few seconds.' : '')
-                || (!err?.response ? 'Cannot reach server. Check API URL/server status and retry.' : '')
-                || 'Could not create share link';
-            setShareError(msg);
-            showToast(msg, 'error');
-        }
-        finally { setIsCreatingShare(false); }
-    };
-
-    const handleCopyLink = async () => {
-        await Clipboard.setStringAsync(shareToken);
-        showToast('Link copied to clipboard!');
-    };
-
-    const handleRename = async () => {
-        if (!file?.id) return;
-        if (!newName.trim()) return;
-        try {
-            await apiClient.patch(`/files/${file.id}`, { file_name: newName.trim() });
-            showToast('File renamed!');
-            setRenameModalVisible(false);
-        } catch { showToast('Rename failed', 'error'); }
-    };
-
-    const styles = React.useMemo(() => StyleSheet.create({
-        container: { flex: 1, backgroundColor: '#0a0a0f' },
-        header: {
-            position: 'absolute',
-            top: Platform.OS === 'ios' ? 8 : 12,
-            left: 14,
-            right: 14,
-            flexDirection: 'row',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            zIndex: 20,
-        },
-        headerActions: { flexDirection: 'row', gap: theme.spacing.sm },
-        glassBtn: {
-            width: 44,
-            height: 44,
-            borderRadius: theme.radius.full,
-            backgroundColor: 'rgba(10, 15, 24, 0.52)',
-            borderWidth: 1,
-            borderColor: 'rgba(255,255,255,0.22)',
-            justifyContent: 'center',
-            alignItems: 'center',
-            ...staticTheme.shadows.elevation1,
-        },
-        previewContainer: { flex: 1, backgroundColor: '#0a0a0f' },
-        topOffsetSpacer: { height: Platform.OS === 'ios' ? 54 : 48 },
-
-        previewImage: { width: '100%', height: '100%' },
-        genericPreview: { alignItems: 'center', justifyContent: 'center', padding: theme.spacing['2xl'], flex: 1, backgroundColor: '#0a0a0f' },
-        genericLabel: { color: '#fff', fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight as any, marginTop: theme.spacing.xl, textAlign: 'center' },
-        genericSub: { color: 'rgba(255,255,255,0.6)', fontSize: theme.typography.caption.fontSize, marginTop: theme.spacing.sm },
-
-        dotRow: {
-            position: 'absolute',
-            alignSelf: 'center',
-            bottom: SHEET_HANDLE_HEIGHT + 8,
-            flexDirection: 'row',
-            justifyContent: 'center',
-            alignItems: 'center',
-            gap: 6,
-            paddingVertical: theme.spacing.sm,
-            zIndex: 12,
-        },
-        dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.3)' },
-        dotActive: { width: 18, backgroundColor: '#FFFFFF' },
-
-        fabDownload: {
-            position: 'absolute',
-            right: 18,
-            bottom: SHEET_HANDLE_HEIGHT + 24,
-            width: 58,
-            height: 58,
-            borderRadius: 29,
-            backgroundColor: theme.colors.primary,
-            justifyContent: 'center',
-            alignItems: 'center',
-            zIndex: 21,
-            shadowColor: theme.colors.primary,
-            shadowOffset: { width: 0, height: 8 },
-            shadowOpacity: 0.34,
-            shadowRadius: 14,
-            elevation: 7,
-        },
-
-        detailSheetFloating: {
-            position: 'absolute',
-            left: 0,
-            right: 0,
-            bottom: -SHEET_COLLAPSED_OFFSET,
-            height: Math.min(height * 0.62, 470) + SHEET_COLLAPSED_OFFSET,
-            backgroundColor: theme.mode === 'dark' ? 'rgba(26,30,46,0.97)' : 'rgba(248,250,252,0.97)',
-            borderTopLeftRadius: 26,
-            borderTopRightRadius: 26,
-            borderTopWidth: 1,
-            borderColor: theme.mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.7)',
-            paddingHorizontal: 16,
-            paddingTop: 10,
-            zIndex: 18,
-        },
-        detailSheetHandleArea: {
-            minHeight: SHEET_HANDLE_HEIGHT,
-            justifyContent: 'center',
-        },
-        detailSheetHandle: {
-            width: 40,
-            height: 4,
-            borderRadius: 3,
-            backgroundColor: theme.colors.border,
-            alignSelf: 'center',
-            marginBottom: 10,
-        },
-        tabRow: {
-            flexDirection: 'row',
-            gap: 8,
-            marginBottom: 4,
-        },
-        tabBtn: {
-            flex: 1,
-            borderRadius: 14,
-            paddingVertical: 10,
-            backgroundColor: theme.mode === 'dark' ? theme.colors.neutral[200] : '#E2E8F0',
-            alignItems: 'center',
-        },
-        tabBtnActive: {
-            backgroundColor: theme.colors.primary,
-        },
-        tabBtnText: {
-            fontSize: 12,
-            fontWeight: '700',
-            color: theme.colors.textBody,
-        },
-        tabBtnTextActive: {
-            color: '#fff',
-        },
-
-        sheetContent: {
-            paddingTop: 12,
-            paddingBottom: 24,
-        },
-        fileName: { fontSize: 20, fontWeight: '800', color: theme.colors.textHeading, marginBottom: 6 },
-        fileMeta: { fontSize: 13, color: theme.colors.textBody, marginBottom: 16 },
-        actionRow: { flexDirection: 'row', gap: theme.spacing.md },
-        primaryBtn: { flex: 1, flexDirection: 'row', backgroundColor: theme.colors.primary, height: 52, borderRadius: 14, justifyContent: 'center', alignItems: 'center', gap: theme.spacing.sm, ...staticTheme.shadows.elevation1 },
-        primaryBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
-        secondaryBtn: { width: 52, height: 52, backgroundColor: theme.mode === 'dark' ? theme.colors.neutral[200] : '#E2E8F0', borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
-
-        quickActionsGrid: {
-            flexDirection: 'row',
-            flexWrap: 'wrap',
-            rowGap: 12,
-            marginTop: 2,
-        },
-        quickActionItem: {
-            width: '25%',
-            alignItems: 'center',
-            gap: 8,
-        },
-        quickActionIcon: {
-            width: 50,
-            height: 50,
-            borderRadius: 14,
-            backgroundColor: theme.mode === 'dark' ? theme.colors.neutral[200] : '#E2E8F0',
-            justifyContent: 'center',
-            alignItems: 'center',
-        },
-        quickActionText: {
-            fontSize: 11,
-            color: theme.colors.textBody,
-            fontWeight: '600',
-        },
-
-        infoCard: {
-            backgroundColor: theme.mode === 'dark' ? 'rgba(59,130,246,0.1)' : '#EFF6FF',
-            borderRadius: 14,
-            padding: 14,
-            gap: 8,
-        },
-        infoLine: {
-            color: theme.colors.textHeading,
-            fontSize: 13,
-            fontWeight: '600',
-        },
-
-        overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
-        bottomSheet: { backgroundColor: theme.colors.card, borderTopLeftRadius: theme.radius.modal, borderTopRightRadius: theme.radius.modal, padding: theme.spacing.xl, paddingBottom: theme.spacing['4xl'] },
-        sheetHandle: { width: 40, height: 4, backgroundColor: theme.colors.border, borderRadius: theme.radius.full, alignSelf: 'center', marginBottom: theme.spacing.xl },
-        sheetTitle: { fontSize: theme.typography.title.fontSize, fontWeight: theme.typography.title.fontWeight as any, color: theme.colors.textHeading, marginBottom: theme.spacing.lg },
-
-        linkBox: { backgroundColor: theme.colors.inputBg, borderRadius: theme.radius.md, padding: theme.spacing.lg, marginBottom: theme.spacing.lg },
-        linkText: { fontSize: theme.typography.caption.fontSize, color: theme.colors.textBody, lineHeight: 20 },
-        copyBtn: { backgroundColor: theme.colors.primary, borderRadius: theme.radius.md, height: 50, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: theme.spacing.sm },
-        copyBtnText: { color: '#fff', fontWeight: theme.typography.hero.fontWeight as any, fontSize: theme.typography.body.fontSize },
-        linkSub: { fontSize: theme.typography.metadata.fontSize, color: theme.colors.textBody, textAlign: 'center', marginTop: theme.spacing.md },
-
-        moveRow: { paddingVertical: theme.spacing.lg, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
-        moveLabel: { fontSize: theme.typography.body.fontSize, fontWeight: theme.typography.subtitle.fontWeight as any, color: theme.colors.textHeading },
-
-        centeredOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: theme.spacing.xl },
-        modalCard: { width: '100%', backgroundColor: theme.colors.card, borderRadius: theme.radius.modal, padding: theme.spacing.xl, ...staticTheme.shadows.elevation2 },
-        renameInput: { borderWidth: 1.5, borderColor: theme.colors.border, borderRadius: theme.radius.md, paddingHorizontal: theme.spacing.lg, height: 50, fontSize: theme.typography.body.fontSize, marginBottom: theme.spacing.lg, color: theme.colors.textHeading },
-    }), [theme]);
-
-    // Render each slide
-    const renderItem = useCallback(({ item }: { item: any }) => {
-        const mime = String(item.mime_type || '').toLowerCase();
-        const isImage = mime.includes('image');
-        const isVideo = mime.includes('video');
-        const isPdf = mime.includes('pdf');
-        const isOfficeDoc = mime.includes('word') || mime.includes('excel') || mime.includes('powerpoint') || mime.includes('officedocument');
-        const isDoc = isPdf || isOfficeDoc;
-
-        const streamUrl = `${API_BASE}/stream/${item.id}`;
-        const downloadUrl = `${API_BASE}/files/${item.id}/download`;
-        const pdfInlineUrl = `${API_BASE}/files/${item.id}/stream`;
-
-        if (isImage) {
+    const renderFileItem = ({ item }: { item: any }) => {
+        const mime = item?.mime_type || '';
+        if (mime.startsWith('image/')) {
             return (
-                <ImagePreviewItem
-                    item={item}
-                    jwt={jwt}
-                    isZoomed={isZoomed}
-                    onZoomChange={setIsZoomed}
-                    onSingleTap={toggleChrome}
+                <ImagePreviewItem 
+                    item={item} jwt={jwt} 
+                    isZoomed={isZoomed} 
+                    onZoomChange={setIsZoomed} 
+                    onSingleTap={toggleUI} 
+                    CARD_BG={CARD_BG}
                 />
             );
         }
-        if (isVideo) {
+        if (mime.startsWith('video/')) {
             return (
-                <TouchableOpacity activeOpacity={1} onPress={toggleChrome} style={{ width, flex: 1, justifyContent: 'center', backgroundColor: '#0a0a0f' }}>
-                    <VideoPlayer url={streamUrl} token={jwt} width={width} fileId={item.id} onError={() => {
-                        showToast('Video stream failed. Try downloading instead.', 'error');
-                    }} />
-                </TouchableOpacity>
-            );
-        }
-        if (isPdf && jwt) {
-            return (
-                <TouchableOpacity activeOpacity={1} onPress={toggleChrome} style={{ width, flex: 1 }}>
-                    <PdfOpenButton url={pdfInlineUrl} jwt={jwt} fileName={item.name || item.file_name || 'document.pdf'} />
-                </TouchableOpacity>
-            );
-        }
-        if (isOfficeDoc && jwt) {
-            return (
-                <View style={{ width, flex: 1, backgroundColor: theme.colors.neutral[50] }}>
-                    <WebView
-                        source={{ uri: downloadUrl, headers: { Authorization: `Bearer ${jwt}` } }}
-                        style={{ flex: 1 }}
-                        startInLoadingState={true}
-                        renderLoading={() => (
-                            <View style={[StyleSheet.absoluteFillObject, { justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.neutral[50] }]}>
-                                <ActivityIndicator size="large" color={theme.colors.primary} />
-                                <Text style={{ color: theme.colors.neutral[500], marginTop: theme.spacing.md, fontWeight: '500' }}>Loading document...</Text>
-                            </View>
-                        )}
-                        renderError={() => (
-                            <View style={[StyleSheet.absoluteFillObject, { justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.neutral[50] }]}>
-                                <FileText color={theme.colors.neutral[400]} size={72} strokeWidth={1} />
-                                <Text style={{ color: theme.colors.neutral[600], marginTop: theme.spacing.md, fontSize: 16 }}>Could not preview document</Text>
-                                <Text style={{ color: theme.colors.neutral[500], marginTop: theme.spacing.sm, fontSize: 14 }}>Try downloading the file instead.</Text>
-                            </View>
-                        )}
-                        onShouldStartLoadWithRequest={(request) => {
-                            const url = request?.url || '';
-                            if (
-                                url.startsWith(API_BASE) ||
-                                url.startsWith('about:blank') ||
-                                url.startsWith('blob:') ||
-                                url.startsWith('data:')
-                            ) return true;
-                            return false;
-                        }}
-                    />
+                <View style={styles.previewCardContainer}>
+                    <View style={[styles.previewCard, { backgroundColor: CARD_BG }]}>
+                        <VideoPlayer 
+                            url={buildApiFileUrl(API_BASE, item.id, 'stream')}
+                            token={jwt}
+                            width={width}
+                            fileId={item.id} 
+                        />
+                    </View>
                 </View>
             );
         }
-        return (
-            <TouchableOpacity activeOpacity={1} onPress={toggleChrome} style={[styles.genericPreview, { width }]}> 
-                <FileText color="rgba(255,255,255,0.4)" size={80} strokeWidth={1} />
-                <Text style={styles.genericLabel}>{item.name || item.file_name}</Text>
-                <Text style={styles.genericSub}>{item.mime_type || 'Unknown type'}</Text>
-                <Text style={styles.genericSub}>Use Download to open this file</Text>
-            </TouchableOpacity>
-        );
-    }, [jwt, isZoomed, showToast, toggleChrome, styles.genericLabel, styles.genericPreview, styles.genericSub]);
-
-    const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
-        if (viewableItems.length > 0) {
-            const idx = viewableItems[0].index ?? 0;
-            setCurrentIndex(idx);
-            setIsZoomed(false);
-            setUiVisible(true);
+        if (mime === 'application/pdf') {
+            const pdfUrl = buildApiFileUrl(API_BASE, item.id, 'download');
+            return (
+                <View style={styles.previewCardContainer}>
+                    <View style={[styles.previewCard, { backgroundColor: CARD_BG }]}>
+                        {Platform.OS === 'web' ? (
+                            <iframe src={pdfUrl} style={{ width: '100%', height: '100%', border: 'none', borderRadius: 16 }} />
+                        ) : (
+                            <WebView source={{ uri: pdfUrl }} style={{ flex: 1, backgroundColor: 'transparent' }} />
+                        )}
+                    </View>
+                </View>
+            );
         }
-    }, []);
-
-    const viewabilityConfig = useRef({ viewAreaCoveragePercentThreshold: 50 }).current;
-
-    const formatSize = (bytes: number) => {
-        if (!bytes) return '—';
-        const k = 1024, s = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + s[i];
+        // Fallback generic
+        return (
+            <View style={styles.previewCardContainer}>
+                <View style={[styles.previewCard, { backgroundColor: CARD_BG, justifyContent: 'center', alignItems: 'center' }]}>
+                    <FileText color={TEXT_SUB} size={64} style={{ marginBottom: 16 }} />
+                    <Text style={{ color: TEXT_SUB, fontSize: 16 }}>Preview not available</Text>
+                </View>
+            </View>
+        );
     };
 
-    const controlsAnimStyle = useAnimatedStyle(() => ({
-        opacity: controlsOpacity.value,
-        transform: [{ translateY: (1 - controlsOpacity.value) * -14 }],
-        pointerEvents: controlsOpacity.value < 0.05 ? 'none' as any : 'auto' as any,
-    }));
+    const formatBytes = (bytes: number) => {
+        if (!bytes) return '0 B';
+        const k = 1024, s = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + s[i];
+    };
 
-    const fabAnimStyle = useAnimatedStyle(() => ({
-        opacity: controlsOpacity.value,
-        transform: [{ translateY: (1 - controlsOpacity.value) * 26 }],
-        pointerEvents: controlsOpacity.value < 0.05 ? 'none' as any : 'auto' as any,
-    }));
+    const handleViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
+        if (viewableItems.length > 0) setCurrentIndex(viewableItems[0].index || 0);
+    }).current;
 
-    const sheetAnimStyle = useAnimatedStyle(() => ({
-        transform: [{ translateY: sheetTranslateY.value }],
-    }));
-
-    const sheetPan = Gesture.Pan()
-        .onBegin(() => {
-            'worklet';
-            sheetStartY.value = sheetTranslateY.value;
-        })
-        .onUpdate(e => {
-            'worklet';
-            const next = sheetStartY.value + e.translationY;
-            sheetTranslateY.value = Math.max(0, Math.min(SHEET_COLLAPSED_OFFSET, next));
-        })
-        .onEnd(() => {
-            'worklet';
-            const shouldExpand = sheetTranslateY.value < SHEET_COLLAPSED_OFFSET * 0.5;
-            sheetTranslateY.value = withSpring(shouldExpand ? 0 : SHEET_COLLAPSED_OFFSET, SPRING_CFG);
-            runOnJS(setSheetExpanded)(shouldExpand);
-        });
-
-    const quickActions = [
-        { key: 'share', label: 'Share', icon: Share2, onPress: () => { setShareToken(''); setShareError(''); setShareModalVisible(true); void handleCreateShare(); } },
-        { key: 'rename', label: 'Rename', icon: Pencil, onPress: () => setRenameModalVisible(true) },
-        { key: 'move', label: 'Move', icon: Move, onPress: () => void openMoveModal() },
-        { key: 'delete', label: 'Delete', icon: Trash2, onPress: handleTrash },
-        { key: 'copy', label: 'Copy Link', icon: Link, onPress: async () => { if (!shareToken) await handleCreateShare(); if (shareToken) await handleCopyLink(); } },
-        { key: 'download', label: 'Download', icon: Download, onPress: handleDownload },
-    ];
-
-
+    useEffect(() => {
+        if (filesState.length === 0) {
+            navigation.goBack();
+            return;
+        }
+        if (currentIndex > filesState.length - 1) {
+            setCurrentIndex(filesState.length - 1);
+            requestAnimationFrame(() => {
+                listRef.current?.scrollToIndex({ index: filesState.length - 1, animated: true });
+            });
+        }
+    }, [filesState.length, currentIndex, navigation]);
+    
+    const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 50 }).current;
 
     return (
-        <SafeAreaView style={styles.container}>
-            <Animated2.View style={[styles.header, controlsAnimStyle]}>
-                <TouchableOpacity style={styles.glassBtn} onPress={goBackSafe}>
-                    <ArrowLeft color="#fff" size={22} />
+        <SafeAreaView style={[styles.container, { backgroundColor: BG_COLOR }]}>
+            
+            {/* Header */}
+            <Animated.View style={[styles.header, uiAnimStyle, { borderBottomColor: BORDER }]}>
+                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBtn}>
+                    <ArrowLeft color={TEXT_MAIN} size={22} />
                 </TouchableOpacity>
-                <View style={styles.headerActions}>
-                    <TouchableOpacity style={styles.glassBtn} onPress={handleStar}>
-                        <Star color={isStarred ? '#FACC15' : '#fff'} size={20} fill={isStarred ? '#FACC15' : 'transparent'} />
+
+                <View style={styles.headerCenter}>
+                    <Text style={[styles.headerTitle, { color: TEXT_MAIN }]} numberOfLines={1}>
+                        {sanitizeDisplayName(file?.name || file?.file_name || 'File Preview', 'File Preview')}
+                    </Text>
+                    <Text style={[styles.headerSub, { color: TEXT_SUB }]}>
+                        {file?.mime_type 
+                            ? file?.mime_type.split('/')[1]?.toUpperCase() || 'FILE' 
+                            : 'FILE'} 
+                        {filesState.length > 0 ? ` • ${currentIndex + 1}/${filesState.length}` : ''}
+                    </Text>
+                </View>
+
+                <View style={styles.headerRight}>
+                    <TouchableOpacity style={styles.iconBtn} onPress={handleToggleStar}>
+                        <Star color={file?.is_starred ? '#F59E0B' : TEXT_MAIN} size={20} fill={file?.is_starred ? '#F59E0B' : 'transparent'} />
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.glassBtn} onPress={() => setActiveTab('actions')}>
-                        <MoreHorizontal color="#fff" size={20} />
+                    <TouchableOpacity style={styles.iconBtn} onPress={() => { triggerHaptic(); setOptionsVisible(true); }}>
+                        <MoreHorizontal color={TEXT_MAIN} size={20} />
                     </TouchableOpacity>
                 </View>
-            </Animated2.View>
+            </Animated.View>
 
-            {/* Preview Area — Swipeable FlatList */}
-            <View style={styles.previewContainer}>
-                {!jwt ? (
-                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                        <ActivityIndicator size="large" color={theme.colors.primary} />
-                        <Text style={{ color: 'rgba(255,255,255,0.5)', marginTop: 12 }}>Authenticating…</Text>
-                    </View>
-                ) : loadingDeepLinkedFile ? (
-                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                        <ActivityIndicator size="large" color={theme.colors.primary} />
-                        <Text style={{ color: 'rgba(255,255,255,0.5)', marginTop: 12 }}>Loading file…</Text>
-                    </View>
-                ) : previewData.length === 0 ? (
-                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 }}>
-                        <FileText color="rgba(255,255,255,0.35)" size={56} />
-                        <Text style={{ color: '#fff', marginTop: 12, fontSize: 16, fontWeight: '600', textAlign: 'center' }}>
-                            This file could not be opened.
-                        </Text>
-                    </View>
-                ) : (
+            {/* Swiper */}
+            <View style={styles.swiperArea}>
+                {filesState.length > 0 ? (
                     <FlatList
-                        data={previewData}
+                        ref={listRef}
+                        data={filesState}
+                        keyExtractor={(item, idx) => `${item?.id || idx}`}
+                        initialScrollIndex={Math.min(Math.max(initialIndex, 0), Math.max(filesState.length - 1, 0))}
                         horizontal
                         pagingEnabled
                         showsHorizontalScrollIndicator={false}
-                        initialScrollIndex={previewData.length > 0 ? Math.min(initialIndex, previewData.length - 1) : 0}
-                        getItemLayout={(_, index) => ({ length: width, offset: width * index, index })}
-                        scrollEventThrottle={16}
-                        keyExtractor={(item, index) => String(item?.id || index)}
-                        renderItem={renderItem}
-                        onViewableItemsChanged={onViewableItemsChanged}
+                        scrollEnabled={Platform.OS === 'web' ? true : !isZoomed}
+                        bounces={false}
+                        overScrollMode="never"
+                        onViewableItemsChanged={handleViewableItemsChanged}
                         viewabilityConfig={viewabilityConfig}
-                        onMomentumScrollBegin={() => setIsZoomed(false)}
-                        scrollEnabled={Platform.OS === 'web' ? previewData.length > 1 : (previewData.length > 1 && !isZoomed)}
-                        decelerationRate="fast"
-                        snapToInterval={width}
-                        snapToAlignment="start"
-                        // ── Performance optimizations ──
-                        removeClippedSubviews={true}
-                        initialNumToRender={1}
-                        maxToRenderPerBatch={2}
-                        windowSize={3}
+                        renderItem={renderFileItem}
+                        onScrollToIndexFailed={(info) => {
+                            setTimeout(() => {
+                                listRef.current?.scrollToIndex({ index: info.index, animated: false });
+                            }, 120);
+                        }}
+                        getItemLayout={(data, index) => ({ length: width, offset: width * index, index })}
+                        contentContainerStyle={{ flexGrow: 1 }}
                     />
+                ) : (
+                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                        <ActivityIndicator size="large" color="#3B82F6" />
+                    </View>
                 )}
             </View>
 
-            {previewData.length > 1 && (
-                <Animated2.View style={[styles.dotRow, controlsAnimStyle]}>
-                    {previewData.map((_, i) => (
-                        <View key={i} style={[styles.dot, i === currentIndex && styles.dotActive]} />
-                    ))}
-                </Animated2.View>
-            )}
-
-            <Animated2.View style={[styles.fabDownload, fabAnimStyle]}>
-                <TouchableOpacity style={{ width: '100%', height: '100%', borderRadius: 29, justifyContent: 'center', alignItems: 'center' }} onPress={handleDownload}>
-                    {downloading ? <ActivityIndicator color="#fff" size="small" /> : <Download color="#fff" size={24} />}
-                </TouchableOpacity>
-            </Animated2.View>
-
-            <GestureDetector gesture={sheetPan}>
-                <Animated2.View style={[styles.detailSheetFloating, sheetAnimStyle]}>
-                    <View style={styles.detailSheetHandleArea}>
-                        <View style={styles.detailSheetHandle} />
-                        <View style={styles.tabRow}>
-                            {['details', 'actions', 'activity', 'permissions'].map((tab) => (
-                                <TouchableOpacity
-                                    key={tab}
-                                    style={[styles.tabBtn, activeTab === tab && styles.tabBtnActive]}
-                                    onPress={() => {
-                                        setActiveTab(tab as any);
-                                        if (!sheetExpanded) setSheetState(true);
-                                    }}
-                                >
-                                    <Text style={[styles.tabBtnText, activeTab === tab && styles.tabBtnTextActive]}>{tab.charAt(0).toUpperCase() + tab.slice(1)}</Text>
-                                </TouchableOpacity>
-                            ))}
-                        </View>
-                        {!sheetExpanded && (
-                            <TouchableOpacity style={{ alignSelf: 'center', paddingVertical: 6 }} onPress={() => setSheetState(true)}>
-                                <ChevronUp color={theme.colors.textBody} size={18} />
-                            </TouchableOpacity>
-                        )}
+            {/* Info Row + Actions Overlay */}
+            <Animated.View style={[styles.bottomContainer, uiAnimStyle]}>
+                
+                {/* 3-Column Info (Size | Date | Type) */}
+                <View style={styles.infoRow}>
+                    <View style={styles.infoCol}>
+                        <Text style={[styles.infoLabel, { color: TEXT_SUB }]}>Size</Text>
+                        <Text style={[styles.infoValue, { color: TEXT_MAIN }]}>{formatBytes(file?.size)}</Text>
                     </View>
+                    <View style={styles.infoCol}>
+                        <Text style={[styles.infoLabel, { color: TEXT_SUB }]}>Modified</Text>
+                        <Text style={[styles.infoValue, { color: TEXT_MAIN }]}>
+                            {file?.updated_at ? new Date(file.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unknown'}
+                        </Text>
+                    </View>
+                    <View style={[styles.infoCol, { alignItems: 'flex-end' }]}>
+                        <Text style={[styles.infoLabel, { color: TEXT_SUB }]}>Access</Text>
+                        <Text style={[styles.infoValue, { color: TEXT_MAIN }]}>{file?.is_public ? 'Public' : 'Private'}</Text>
+                    </View>
+                </View>
 
-                    <ScrollView style={styles.sheetContent} showsVerticalScrollIndicator={false}>
-                        {activeTab === 'details' && (
-                            <>
-                                <Text style={styles.fileName} numberOfLines={2}>{file?.name || file?.file_name || 'Unknown file'}</Text>
-                                <Text style={styles.fileMeta}>
-                                    {formatSize(file?.size || 0)} · {file?.created_at ? new Date(file.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'Unknown date'}
-                                </Text>
-                                <View style={styles.actionRow}>
-                                    <TouchableOpacity style={styles.primaryBtn} onPress={handleDownload} disabled={downloading}>
-                                        {downloading ? <ActivityIndicator color="#fff" size="small" /> : <><Download color="#fff" size={20} /><Text style={styles.primaryBtnText}>Download</Text></>}
-                                    </TouchableOpacity>
-                                    <TouchableOpacity style={styles.secondaryBtn} onPress={() => { setShareToken(''); setShareError(''); setShareModalVisible(true); void handleCreateShare(); }}>
-                                        <Link color={theme.colors.primary} size={20} />
-                                    </TouchableOpacity>
-                                    <TouchableOpacity style={styles.secondaryBtn} onPress={() => setRenameModalVisible(true)}>
-                                        <Pencil color={theme.colors.textHeading} size={19} />
-                                    </TouchableOpacity>
-                                    <TouchableOpacity style={styles.secondaryBtn} onPress={openMoveModal}>
-                                        <FolderInput color={theme.colors.textHeading} size={20} />
-                                    </TouchableOpacity>
-                                </View>
-                            </>
-                        )}
+                {/* Primary Sticky Action Bar */}
+                <View style={[styles.actionBar, { borderTopColor: BORDER }]}>
+                    <TouchableOpacity style={styles.actionBtn} onPress={() => void openMoveModal()}>
+                        <FolderInput color={TEXT_MAIN} size={22} />
+                    </TouchableOpacity>
 
-                        {activeTab === 'actions' && (
-                            <View style={styles.quickActionsGrid}>
-                                {quickActions.map((action) => {
-                                    const Icon = action.icon;
-                                    return (
-                                        <TouchableOpacity key={action.key} style={styles.quickActionItem} onPress={action.onPress}>
-                                            <View style={styles.quickActionIcon}>
-                                                <Icon color={action.key === 'delete' ? theme.colors.danger : theme.colors.textHeading} size={20} />
-                                            </View>
-                                            <Text style={styles.quickActionText}>{action.label}</Text>
-                                        </TouchableOpacity>
-                                    );
-                                })}
-                            </View>
-                        )}
-
-                        {activeTab === 'activity' && (
-                            <View style={styles.infoCard}>
-                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                                    <Clock3 color={theme.colors.textHeading} size={16} />
-                                    <Text style={styles.infoLine}>Uploaded: {file?.created_at ? new Date(file.created_at).toLocaleString() : 'Unknown'}</Text>
-                                </View>
-                                <Text style={styles.infoLine}>Recent activity will appear here.</Text>
-                            </View>
-                        )}
-
-                        {activeTab === 'permissions' && (
-                            <View style={styles.infoCard}>
-                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                                    <Shield color={theme.colors.textHeading} size={16} />
-                                    <Text style={styles.infoLine}>Owner access: Full control</Text>
-                                </View>
-                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                                    <Lock color={theme.colors.textHeading} size={16} />
-                                    <Text style={styles.infoLine}>Shared access: Controlled via share links</Text>
-                                </View>
-                            </View>
-                        )}
-                    </ScrollView>
-                </Animated2.View>
-            </GestureDetector>
-
-            {/* Share Modal */}
-            <Modal visible={shareModalVisible} transparent animationType="slide">
-                <View style={styles.overlay}>
-                    <View style={styles.bottomSheet}>
-                        <View style={styles.sheetHandle} />
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 }}>
-                            <Text style={styles.sheetTitle}>🔗 Share Link</Text>
-                            <TouchableOpacity onPress={() => setShareModalVisible(false)}>
-                                <X color={theme.colors.textBody} size={22} />
-                            </TouchableOpacity>
-                        </View>
-                        {isCreatingShare ? (
-                            <ActivityIndicator size="large" color={theme.colors.primary} style={{ paddingVertical: 32 }} />
-                        ) : shareToken ? (
-                            <>
-                                <View style={styles.linkBox}>
-                                    <Text style={styles.linkText} numberOfLines={2} selectable>{shareToken}</Text>
-                                </View>
-                                <TouchableOpacity style={styles.copyBtn} onPress={handleCopyLink}>
-                                    <CheckCircle color="#fff" size={18} />
-                                    <Text style={styles.copyBtnText}>Copy Link</Text>
-                                </TouchableOpacity>
-                                <Text style={styles.linkSub}>Link expires in 72 hours · Anyone with the link can view</Text>
-                            </>
+                    {/* BIG Primary Action */}
+                    <TouchableOpacity style={[styles.primaryActionBtn, { backgroundColor: ACCENT }]} onPress={handleDownload} disabled={isDownloadSubmitting}>
+                        {isDownloadSubmitting ? (
+                            <ActivityIndicator color="#FFF" />
                         ) : (
-                            <View style={{ paddingVertical: 12 }}>
-                                <Text style={{ color: theme.colors.textBody, marginBottom: 12 }}>
-                                    {shareError || 'Unable to generate link right now.'}
+                            <>
+                                <Download color="#FFF" size={20} strokeWidth={2.5}/>
+                                <Text style={styles.primaryActionText}>Download</Text>
+                            </>
+                        )}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity style={styles.actionBtn} onPress={handleOpenShare}>
+                        <Share2 color={TEXT_MAIN} size={22} />
+                    </TouchableOpacity>
+                </View>
+
+            </Animated.View>
+
+            <Modal visible={isShareModalVisible} transparent animationType="slide" onRequestClose={() => setShareModalVisible(false)}>
+                <TouchableOpacity
+                    style={styles.sheetOverlay}
+                    activeOpacity={1}
+                    onPress={() => setShareModalVisible(false)}
+                >
+                    <Animated.View entering={FadeIn.duration(180)} style={[styles.sheetCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
+                        <View style={[styles.sheetHandle, { backgroundColor: BORDER }]} />
+                        <Text style={[styles.sheetTitle, { color: TEXT_MAIN }]}>Share File</Text>
+                        <Text style={[styles.sheetSub, { color: TEXT_SUB }]}>Generate and copy a public share link.</Text>
+
+                        <View style={[styles.linkBox, { borderColor: BORDER, backgroundColor: isDark ? '#0B1220' : '#FFFFFF' }]}>
+                            {isGeneratingShare ? (
+                                <View style={styles.linkLoadingRow}>
+                                    <ActivityIndicator color={ACCENT} />
+                                    <Text style={[styles.linkText, { color: TEXT_SUB }]}>Generating link...</Text>
+                                </View>
+                            ) : (
+                                <Text style={[styles.linkText, { color: shareLink ? TEXT_MAIN : TEXT_SUB }]} numberOfLines={1}>
+                                    {shareLink || 'No link yet'}
                                 </Text>
-                                <TouchableOpacity style={styles.copyBtn} onPress={() => void handleCreateShare()}>
-                                    <Text style={styles.copyBtnText}>Retry</Text>
-                                </TouchableOpacity>
-                            </View>
-                        )}
-                    </View>
-                </View>
-            </Modal>
+                            )}
+                        </View>
 
-            {/* Move Modal */}
-            <Modal visible={moveModalVisible} transparent animationType="slide">
-                <View style={styles.overlay}>
-                    <View style={styles.bottomSheet}>
-                        <View style={styles.sheetHandle} />
-                        <Text style={styles.sheetTitle}>Move to Folder</Text>
-                        {loadingFolders ? <ActivityIndicator size="large" color={theme.colors.primary} style={{ paddingVertical: 32 }} /> : (
-                            <ScrollView style={{ maxHeight: 300 }}>
-                                {folders.map(f => (
-                                    <TouchableOpacity key={f.id || 'root'} style={styles.moveRow} onPress={() => handleMove(f.id)}>
-                                        <Text style={styles.moveLabel}>{f.name}</Text>
-                                    </TouchableOpacity>
-                                ))}
-                            </ScrollView>
-                        )}
-                        <TouchableOpacity style={[styles.copyBtn, { backgroundColor: theme.colors.background, marginTop: 12 }]} onPress={() => setMoveModalVisible(false)}>
-                            <Text style={{ color: theme.colors.textHeading, fontWeight: '600' }}>Cancel</Text>
-                        </TouchableOpacity>
-                    </View>
-                </View>
-            </Modal>
-
-            {/* Rename Modal */}
-            <Modal visible={renameModalVisible} transparent animationType="fade">
-                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.centeredOverlay}>
-                    <View style={styles.modalCard}>
-                        <Text style={styles.sheetTitle}>Rename File</Text>
-                        <TextInput style={styles.renameInput} value={newName} onChangeText={setNewName} autoFocus />
-                        <View style={{ flexDirection: 'row', gap: 12, justifyContent: 'flex-end' }}>
-                            <TouchableOpacity style={[styles.copyBtn, { backgroundColor: theme.colors.background, flex: 1 }]} onPress={() => setRenameModalVisible(false)}>
-                                <Text style={{ color: theme.colors.textHeading, fontWeight: '600' }}>Cancel</Text>
+                        <View style={styles.sheetActionRow}>
+                            <TouchableOpacity
+                                style={[styles.sheetActionBtn, { backgroundColor: isDark ? '#1E293B' : '#E5E7EB' }]}
+                                onPress={() => { triggerHaptic(); void generateShareLink(); }}
+                                disabled={isGeneratingShare}
+                            >
+                                <Text style={[styles.sheetActionText, { color: TEXT_MAIN }]}>Regenerate</Text>
                             </TouchableOpacity>
-                            <TouchableOpacity style={[styles.copyBtn, { flex: 1 }]} onPress={handleRename}>
-                                <Text style={styles.copyBtnText}>Rename</Text>
+                            <TouchableOpacity
+                                style={[styles.sheetActionBtn, { backgroundColor: isDark ? '#1E293B' : '#E5E7EB' }]}
+                                onPress={() => { triggerHaptic(); void handleCopyShareLink(); }}
+                                disabled={!shareLink}
+                            >
+                                <Copy color={TEXT_MAIN} size={16} />
+                                <Text style={[styles.sheetActionText, { color: TEXT_MAIN }]}>Copy</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.sheetActionBtn, { backgroundColor: ACCENT }]}
+                                onPress={() => { triggerHaptic(); void handleNativeShareLink(); }}
+                                disabled={!shareLink}
+                            >
+                                <Share2 color="#FFFFFF" size={16} />
+                                <Text style={[styles.sheetActionText, { color: '#FFFFFF' }]}>Share</Text>
                             </TouchableOpacity>
                         </View>
-                    </View>
+                    </Animated.View>
+                </TouchableOpacity>
+            </Modal>
+
+            <Modal visible={isOptionsVisible} transparent animationType="slide" onRequestClose={() => setOptionsVisible(false)}>
+                <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setOptionsVisible(false)}>
+                    <Animated.View entering={FadeIn.duration(180)} style={[styles.sheetCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
+                        <View style={[styles.sheetHandle, { backgroundColor: BORDER }]} />
+                        <Text style={[styles.sheetTitle, { color: TEXT_MAIN }]} numberOfLines={1}>
+                            {sanitizeDisplayName(file?.name || file?.file_name || 'File Actions', 'File Actions')}
+                        </Text>
+                        <TouchableOpacity style={styles.optionRow} onPress={handleOpenShare}>
+                            <Share2 color={ACCENT} size={20} />
+                            <Text style={[styles.optionText, { color: TEXT_MAIN }]}>Share</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.optionRow} onPress={openRenameModal}>
+                            <Pencil color={TEXT_MAIN} size={20} />
+                            <Text style={[styles.optionText, { color: TEXT_MAIN }]}>Rename</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.optionRow} onPress={handleToggleStar}>
+                            <Star color={file?.is_starred ? '#F59E0B' : TEXT_MAIN} size={20} fill={file?.is_starred ? '#F59E0B' : 'transparent'} />
+                            <Text style={[styles.optionText, { color: TEXT_MAIN }]}>{file?.is_starred ? 'Unstar' : 'Star'}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.optionRow} onPress={() => void openMoveModal()}>
+                            <FolderInput color={TEXT_MAIN} size={20} />
+                            <Text style={[styles.optionText, { color: TEXT_MAIN }]}>Move</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.optionRow} onPress={handleDelete}>
+                            <Trash2 color="#EF4444" size={20} />
+                            <Text style={[styles.optionText, { color: '#EF4444', fontWeight: '700' }]}>Delete</Text>
+                        </TouchableOpacity>
+                    </Animated.View>
+                </TouchableOpacity>
+            </Modal>
+
+            <Modal visible={isRenameModalVisible} transparent animationType="fade" onRequestClose={() => setRenameModalVisible(false)}>
+                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.centeredModal}>
+                    <Animated.View entering={FadeIn.duration(150)} style={[styles.renameCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
+                        <Text style={[styles.renameTitle, { color: TEXT_MAIN }]}>Rename File</Text>
+                        <TextInput
+                            style={[styles.renameInput, { borderColor: BORDER, color: TEXT_MAIN, backgroundColor: isDark ? '#0B1220' : '#FFFFFF' }]}
+                            value={renameValue}
+                            onChangeText={setRenameValue}
+                            autoFocus
+                            placeholder="Enter new name"
+                            placeholderTextColor={TEXT_SUB}
+                            onSubmitEditing={handleRename}
+                        />
+                        <View style={styles.renameActions}>
+                            <TouchableOpacity style={[styles.renameBtn, { backgroundColor: isDark ? '#1E293B' : '#E5E7EB' }]} onPress={() => setRenameModalVisible(false)}>
+                                <Text style={[styles.renameBtnText, { color: TEXT_MAIN }]}>Cancel</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[styles.renameBtn, { backgroundColor: ACCENT }]} onPress={handleRename} disabled={isRenaming || !sanitizeFileName(renameValue, '').trim()}>
+                                {isRenaming ? <ActivityIndicator color="#FFF" /> : <Text style={[styles.renameBtnText, { color: '#FFF' }]}>Rename</Text>}
+                            </TouchableOpacity>
+                        </View>
+                    </Animated.View>
                 </KeyboardAvoidingView>
+            </Modal>
+
+            <Modal visible={isMoveModalVisible} transparent animationType="slide" onRequestClose={() => setMoveModalVisible(false)}>
+                <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setMoveModalVisible(false)}>
+                    <Animated.View entering={FadeIn.duration(180)} style={[styles.sheetCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
+                        <View style={[styles.sheetHandle, { backgroundColor: BORDER }]} />
+                        <Text style={[styles.sheetTitle, { color: TEXT_MAIN }]}>Move File To</Text>
+                        <Text style={[styles.sheetSub, { color: TEXT_SUB }]}>Select destination folder.</Text>
+
+                        <TouchableOpacity style={styles.optionRow} onPress={() => void handleMove(null)} disabled={isMoving}>
+                            <FolderInput color={ACCENT} size={20} />
+                            <Text style={[styles.optionText, { color: TEXT_MAIN }]}>Home (Root)</Text>
+                        </TouchableOpacity>
+                        {allFolders.filter((f) => String(f.id) !== String(file?.folder_id || '')).map((f) => (
+                            <TouchableOpacity key={String(f.id)} style={styles.optionRow} onPress={() => void handleMove(String(f.id))} disabled={isMoving}>
+                                <FolderInput color={TEXT_MAIN} size={20} />
+                                <Text style={[styles.optionText, { color: TEXT_MAIN }]} numberOfLines={1}>{f.name}</Text>
+                            </TouchableOpacity>
+                        ))}
+                        {isMoving && <ActivityIndicator style={{ marginTop: 8 }} color={ACCENT} />}
+                    </Animated.View>
+                </TouchableOpacity>
             </Modal>
         </SafeAreaView>
     );
 }
 
+const styles = StyleSheet.create({
+    container: { flex: 1 },
 
+    /* Header */
+    header: {
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        height: 60, paddingHorizontal: 16,
+        borderBottomWidth: 1, zIndex: 10,
+    },
+    headerBtn: { width: 40, height: 40, justifyContent: 'center' },
+    headerRight: { flexDirection: 'row', alignItems: 'center', width: 80, justifyContent: 'flex-end', gap: 8 },
+    iconBtn: { padding: 8 },
 
+    headerCenter: { flex: 1, alignItems: 'center', paddingHorizontal: 12 },
+    headerTitle: { fontSize: 16, fontWeight: '600', textAlign: 'center' },
+    headerSub: { fontSize: 12, fontWeight: '500', marginTop: 2, textTransform: 'uppercase' },
+
+    /* Preview Area */
+    swiperArea: { flex: 1, justifyContent: 'center' },
+    previewCardContainer: {
+        width: width,
+        height: height - 120, // Explicit height to prevent collapse in FlatList
+        justifyContent: 'center', alignItems: 'center',
+        paddingVertical: 16,
+        paddingHorizontal: 12,
+    },
+    previewCard: {
+        width: '100%', height: '100%',
+        borderRadius: 16,
+        overflow: 'hidden',
+        // subtle shadow
+        shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.05, shadowRadius: 10, elevation: 2,
+    },
+
+    /* Bottom Info & Actions */
+    bottomContainer: {
+        position: 'absolute', bottom: 0, width: '100%',
+        zIndex: 10, paddingBottom: Platform.OS === 'ios' ? 24 : 16, // Safe area padding
+        backgroundColor: 'rgba(255, 255, 255, 0.01)', // To ensure clicks pass through if needed, UI handles the stack
+    },
+    
+    // Info Row
+    infoRow: {
+        flexDirection: 'row', justifyContent: 'space-between',
+        paddingHorizontal: 24, marginBottom: 20,
+    },
+    infoCol: { flex: 1 },
+    infoLabel: { fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
+    infoValue: { fontSize: 14, fontWeight: '500' },
+
+    // Action Bar
+    actionBar: {
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        paddingHorizontal: 20, paddingTop: 16,
+        borderTopWidth: 1,
+    },
+    actionBtn: {
+        width: 50, height: 50, borderRadius: 25,
+        justifyContent: 'center', alignItems: 'center',
+        backgroundColor: 'rgba(100,100,100,0.05)'
+    },
+    primaryActionBtn: {
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+        height: 52, borderRadius: 26, flex: 1, marginHorizontal: 16,
+        shadowColor: '#3B82F6', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 10, elevation: 4,
+    },
+    primaryActionText: { color: '#FFF', fontSize: 16, fontWeight: '600', marginLeft: 8 },
+
+    // Shared sheets
+    sheetOverlay: {
+        flex: 1,
+        justifyContent: 'flex-end',
+        backgroundColor: 'rgba(0,0,0,0.35)',
+    },
+    sheetCard: {
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
+        borderWidth: 1,
+        borderBottomWidth: 0,
+        paddingHorizontal: 20,
+        paddingTop: 12,
+        paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+        gap: 10,
+    },
+    sheetHandle: {
+        width: 40,
+        height: 4,
+        borderRadius: 4,
+        alignSelf: 'center',
+        marginBottom: 4,
+    },
+    sheetTitle: {
+        fontSize: 18,
+        fontWeight: '700',
+    },
+    sheetSub: {
+        fontSize: 13,
+        fontWeight: '500',
+        marginBottom: 2,
+    },
+    linkBox: {
+        borderWidth: 1,
+        borderRadius: 12,
+        minHeight: 48,
+        paddingHorizontal: 12,
+        justifyContent: 'center',
+    },
+    linkLoadingRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    linkText: {
+        fontSize: 13,
+        fontWeight: '500',
+    },
+    sheetActionRow: {
+        flexDirection: 'row',
+        gap: 10,
+        marginTop: 2,
+    },
+    sheetActionBtn: {
+        flex: 1,
+        minHeight: 44,
+        borderRadius: 12,
+        justifyContent: 'center',
+        alignItems: 'center',
+        flexDirection: 'row',
+        gap: 6,
+    },
+    sheetActionText: {
+        fontSize: 14,
+        fontWeight: '600',
+    },
+
+    // Options + move
+    optionRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        paddingVertical: 14,
+        borderRadius: 12,
+    },
+    optionText: {
+        flex: 1,
+        fontSize: 15,
+        fontWeight: '500',
+    },
+
+    // Rename modal
+    centeredModal: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: 20,
+        backgroundColor: 'rgba(0,0,0,0.35)',
+    },
+    renameCard: {
+        width: '100%',
+        borderRadius: 16,
+        borderWidth: 1,
+        padding: 16,
+    },
+    renameTitle: {
+        fontSize: 18,
+        fontWeight: '700',
+        marginBottom: 12,
+    },
+    renameInput: {
+        height: 48,
+        borderRadius: 12,
+        borderWidth: 1,
+        paddingHorizontal: 12,
+        fontSize: 15,
+        marginBottom: 14,
+    },
+    renameActions: {
+        flexDirection: 'row',
+        gap: 10,
+    },
+    renameBtn: {
+        flex: 1,
+        minHeight: 44,
+        borderRadius: 12,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    renameBtnText: {
+        fontSize: 15,
+        fontWeight: '600',
+    },
+});

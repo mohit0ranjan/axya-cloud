@@ -34,6 +34,9 @@ import AppButton from '../components/AppButton';
 import IconButton from '../components/IconButton';
 import { formatFolderMeta } from '../utils/folderMeta';
 import { useTheme } from '../context/ThemeContext';
+import { useFileRefresh } from '../utils/events';
+import { syncAfterFileMutation } from '../services/fileStateSync';
+import { sanitizeFileName } from '../utils/fileSafety';
 
 const { width } = Dimensions.get('window');
 const CARD_MARGIN = 12;
@@ -161,6 +164,10 @@ export default function FoldersScreen({ navigation }: any) {
         void fetchFolders();
     }, [sortKey]);
 
+    useFileRefresh(() => {
+        void fetchFolders();
+    });
+
     useEffect(() => {
         const loadPinned = async () => {
             try {
@@ -200,14 +207,16 @@ export default function FoldersScreen({ navigation }: any) {
     };
 
     const handleCreateFolder = async () => {
-        if (!newFolderName.trim() || isCreatingFolder) return;
+        const nextFolderName = sanitizeFileName(newFolderName, 'New Folder');
+        if (!nextFolderName || isCreatingFolder) return;
         setIsCreatingFolder(true);
         try {
-            const res = await apiClient.post('/files/folder', { name: newFolderName.trim() });
+            const res = await apiClient.post('/files/folder', { name: nextFolderName });
             if (res.data.success) {
                 setNewFolderName('');
                 setCreateModalVisible(false);
                 await fetchFolders();
+                syncAfterFileMutation();
             }
         } catch (e: any) {
             Alert.alert('Error', e.response?.data?.error || 'Could not create folder');
@@ -217,14 +226,16 @@ export default function FoldersScreen({ navigation }: any) {
     };
 
     const handleRenameFolder = async () => {
-        if (!renameValue.trim() || !renameTarget || isRenamingFolder) return;
+        const nextName = sanitizeFileName(renameValue, 'Folder');
+        if (!nextName || !renameTarget || isRenamingFolder) return;
         setIsRenamingFolder(true);
         try {
-            const res = await apiClient.patch(`/files/folder/${renameTarget.id}`, { name: renameValue.trim() });
+            const res = await apiClient.patch(`/files/folder/${renameTarget.id}`, { name: nextName });
             if (res.data.success) {
                 setRenameModalVisible(false);
                 setRenameTarget(null);
                 await fetchFolders();
+                syncAfterFileMutation();
             }
         } catch (e: any) {
             Alert.alert('Error', e.response?.data?.error || 'Could not rename folder');
@@ -260,6 +271,7 @@ export default function FoldersScreen({ navigation }: any) {
         try {
             await apiClient.delete(`/files/folder/${folder.id}`);
             await fetchFolders();
+            syncAfterFileMutation();
         } catch (e: any) {
             Alert.alert('Error', e.response?.data?.error || 'Could not delete');
         }
@@ -400,7 +412,7 @@ export default function FoldersScreen({ navigation }: any) {
                                 <Text style={[styles.folderName, { color: C.textHeading }]} numberOfLines={1}>
                                     All Files
                                 </Text>
-                                <Text style={styles.folderMeta}>Empty folder</Text>
+                                <Text style={styles.folderMeta}>Browse all files</Text>
                             </View>
                         </Pressable>
 
@@ -470,7 +482,7 @@ export default function FoldersScreen({ navigation }: any) {
                         />
                         <View style={styles.modalActions}>
                             <AppButton label="Cancel" variant="secondary" onPress={() => { setCreateModalVisible(false); setNewFolderName(''); }} />
-                            <AppButton label="Create" onPress={handleCreateFolder} loading={isCreatingFolder} disabled={!newFolderName.trim() || isCreatingFolder} />
+                            <AppButton label="Create" onPress={handleCreateFolder} loading={isCreatingFolder} disabled={!sanitizeFileName(newFolderName, '').trim() || isCreatingFolder} />
                         </View>
                     </View>
                 </KeyboardAvoidingView>
@@ -491,7 +503,7 @@ export default function FoldersScreen({ navigation }: any) {
                         />
                         <View style={styles.modalActions}>
                             <AppButton label="Cancel" variant="secondary" onPress={() => { setRenameModalVisible(false); setRenameTarget(null); }} />
-                            <AppButton label="Rename" onPress={handleRenameFolder} loading={isRenamingFolder} disabled={!renameValue.trim() || isRenamingFolder} />
+                            <AppButton label="Rename" onPress={handleRenameFolder} loading={isRenamingFolder} disabled={!sanitizeFileName(renameValue, '').trim() || isRenamingFolder} />
                         </View>
                     </View>
                 </KeyboardAvoidingView>

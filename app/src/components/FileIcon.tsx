@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Image } from './AppImage';
 import { Folder, Image as ImageIcon, FileText, Film, Music, Archive } from 'lucide-react-native';
+import { buildApiFileUrl } from '../utils/fileSafety';
 
 const failedThumbnailIds = new Set<string>();
 
@@ -33,7 +34,7 @@ export const FileIcon = ({ item = {}, size = 46, token, apiBase, themeColors = {
             {canLoadThumb ? (
                 <Image
                     source={{
-                        uri: `${baseUrl}/files/${itemId}/thumbnail`,
+                        uri: buildApiFileUrl(baseUrl, itemId, 'thumbnail'),
                         headers: { Authorization: `Bearer ${token}` },
                     }}
                     placeholder={item?.blurhash}

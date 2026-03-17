@@ -17,6 +17,7 @@ import { useTheme } from '../context/ThemeContext';
 import { FileCardSkeleton } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFileRefresh } from '../utils/events';
 
 const { width } = Dimensions.get('window');
 
@@ -138,6 +139,10 @@ export default function FilesScreen({ navigation }: any) {
             mountedRef.current = false;
         };
     }, [fetchFolders]);
+
+    useFileRefresh(() => {
+        fetchFolders();
+    });
 
     const filteredFolders = useMemo(() => {
         if (!searchQuery.trim()) return folders;

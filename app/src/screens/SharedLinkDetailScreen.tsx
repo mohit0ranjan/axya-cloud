@@ -3,7 +3,6 @@ import {
     ActivityIndicator,
     Alert,
     RefreshControl,
-    SafeAreaView,
     ScrollView,
     StyleSheet,
     Switch,
@@ -12,6 +11,7 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { ArrowLeft, Clock3, Copy, Eye, EyeOff, Link as LinkIcon, Lock, ShieldAlert, Trash2, Download, Image as ImageIcon } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
@@ -36,6 +36,7 @@ export default function SharedLinkDetailScreen({ navigation, route }: any) {
     const { theme } = useTheme();
     const { showToast } = useToast();
     const C = theme.colors;
+    const insets = useSafeAreaInsets();
 
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
@@ -145,17 +146,17 @@ export default function SharedLinkDetailScreen({ navigation, route }: any) {
 
     if (loading) {
         return (
-            <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
+            <View style={[styles.container, { backgroundColor: C.background, paddingTop: insets.top }]}>
                 <View style={styles.center}>
                     <ActivityIndicator size="large" color={C.primary} />
                 </View>
-            </SafeAreaView>
+            </View>
         );
     }
 
     if (loadError && !share) {
         return (
-            <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
+            <View style={[styles.container, { backgroundColor: C.background, paddingTop: insets.top }]}>
                 <View style={styles.header}>
                     <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
                         <ArrowLeft color={C.textHeading} size={24} />
@@ -164,12 +165,12 @@ export default function SharedLinkDetailScreen({ navigation, route }: any) {
                     <View style={{ width: 40 }} />
                 </View>
                 <ErrorState title="Could not load share" message={loadError} onRetry={() => void loadDetails()} />
-            </SafeAreaView>
+            </View>
         );
     }
 
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
+        <View style={[styles.container, { backgroundColor: C.background, paddingTop: insets.top }]}>
             <View style={styles.header}>
                 <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
                     <ArrowLeft color={C.textHeading} size={24} />
@@ -315,7 +316,7 @@ export default function SharedLinkDetailScreen({ navigation, route }: any) {
                     </TouchableOpacity>
                 </View>
             </ScrollView>
-        </SafeAreaView>
+        </View>
     );
 }
 

@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
-    View, Text, TouchableOpacity, StyleSheet, SafeAreaView, ActivityIndicator,
+    View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
     Dimensions, Platform, FlatList, ViewToken, Modal, TextInput,
     Alert, KeyboardAvoidingView, Vibration
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     ArrowLeft, Download, Star, Share2, MoreHorizontal,
     FolderInput, Trash2, Pencil,
-    FileText, X, Image as ImageIcon
+    FileText, X, Image as ImageIcon, ChevronLeft, ChevronRight
 } from 'lucide-react-native';
 import { Image } from '../components/AppImage';
 import VideoPlayer from '../components/VideoPlayer';
@@ -98,7 +99,7 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
     const pan = Gesture.Pan()
         .enabled(Platform.OS !== 'web' && isZoomed)
         .averageTouches(true)
-        .activeOffsetX([-20, 20])
+        .activeOffsetX([-10, 10])
         .activeOffsetY([-10, 10])
         .onUpdate(e => {
             'worklet';
@@ -163,10 +164,10 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
     }));
 
     return (
-        <View style={styles.previewCardContainer}>
+        <View style={styles.previewImageContainer}>
             <GestureDetector gesture={composed}>
-                <Animated.View style={[styles.previewCard, { backgroundColor: CARD_BG }]}>
-                    <Animated.View style={[{ flex: 1, overflow: 'hidden', borderRadius: 16, justifyContent: 'center', alignItems: 'center' }, animStyle]}>
+                <Animated.View style={[styles.previewImageArea, { backgroundColor: CARD_BG }]}>
+                    <Animated.View style={[{ flex: 1, overflow: 'hidden', justifyContent: 'center', alignItems: 'center' }, animStyle]}>
                         {loading && (
                             <PreviewSkeleton />
                         )}
@@ -215,6 +216,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const { token: jwt } = useAuth();
     const { addDownload, tasks } = useDownload();
     const { showToast } = useToast();
+    const insets = useSafeAreaInsets();
 
     // Data Maps
     const routeFiles = Array.isArray(route?.params?.files) ? route.params.files : [];
@@ -263,6 +265,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
     const file = filesState[currentIndex] || null;
 
+    // Slide animation
+    const slideX = useSharedValue(0);
+
     useEffect(() => {
         setFilesState((prev) => {
             if (prev.length === previewData.length && prev.every((entry, index) => entry?.id === previewData[index]?.id)) {
@@ -276,16 +281,29 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         }
         const safeIndex = Math.min(Math.max(initialIndex, 0), previewData.length - 1);
         setCurrentIndex((prev) => (prev === safeIndex ? prev : safeIndex));
-        // Removed FlatList scrolling logic
     }, [previewData, initialIndex]);
 
     const handleNext = useCallback(() => {
-        setCurrentIndex((prev) => Math.min(prev + 1, Math.max(0, filesState.length - 1)));
-    }, [filesState.length]);
+        if (currentIndex >= filesState.length - 1) return;
+        // Slide left animation
+        slideX.value = 0;
+        slideX.value = withTiming(-width, { duration: 200 }, () => {
+            runOnJS(setCurrentIndex)(currentIndex + 1);
+            slideX.value = width;
+            slideX.value = withTiming(0, { duration: 200 });
+        });
+    }, [filesState.length, currentIndex, slideX]);
 
     const handlePrev = useCallback(() => {
-        setCurrentIndex((prev) => Math.max(0, prev - 1));
-    }, []);
+        if (currentIndex <= 0) return;
+        // Slide right animation
+        slideX.value = 0;
+        slideX.value = withTiming(width, { duration: 200 }, () => {
+            runOnJS(setCurrentIndex)(currentIndex - 1);
+            slideX.value = -width;
+            slideX.value = withTiming(0, { duration: 200 });
+        });
+    }, [currentIndex, slideX]);
 
     const beginFileMutation = useCallback((fileId?: string | null) => {
         const id = String(fileId || '').trim();
@@ -303,12 +321,12 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
     const swipePan = useMemo(() => Gesture.Pan()
         .enabled(!isZoomed && Platform.OS !== 'web')
-        .activeOffsetX([-30, 30])
+        .activeOffsetX([-50, 50])
         .onEnd((e) => {
             'worklet';
-            if (e.translationX < -60) {
+            if (e.translationX < -80) {
                 runOnJS(handleNext)();
-            } else if (e.translationX > 60) {
+            } else if (e.translationX > 80) {
                 runOnJS(handlePrev)();
             }
         }), [isZoomed, handleNext, handlePrev]);
@@ -342,6 +360,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         uiOpacity.value = withTiming(uiVisible ? 0 : 1, { duration: 250 });
     };
     const uiAnimStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
+    const slideAnimStyle = useAnimatedStyle(() => ({
+        transform: [{ translateX: slideX.value }],
+    }));
 
     const updateCurrentFile = useCallback((updater: (f: any) => any) => {
         setFilesState(prev => {
@@ -511,6 +532,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const BORDER = theme.colors.border;
     const INPUT_BG = theme.colors.inputBg;
     const DANGER = theme.colors.danger;
+    const SURFACE_MUTED = theme.colors.surfaceMuted;
 
     const renderFileItem = ({ item }: { item: any }) => {
         const mime = item?.mime_type || '';
@@ -527,8 +549,8 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         }
         if (mime.startsWith('video/')) {
             return (
-                <View style={styles.previewCardContainer}>
-                    <View style={[styles.previewCard, { backgroundColor: CARD_BG }]}>
+                <View style={styles.previewImageContainer}>
+                    <View style={[styles.previewImageArea, { backgroundColor: '#000' }]}>
                         <VideoPlayer 
                             url={buildApiFileUrl(API_BASE, item.id, 'stream')}
                             token={jwt}
@@ -542,10 +564,10 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         if (mime === 'application/pdf' || item?.type === 'pdf') {
             const pdfUrl = buildApiFileUrl(API_BASE, item.id, 'download');
             return (
-                <View style={styles.previewCardContainer}>
-                    <View style={[styles.previewCard, { backgroundColor: CARD_BG }]}>
+                <View style={styles.previewImageContainer}>
+                    <View style={[styles.previewImageArea, { backgroundColor: CARD_BG }]}>
                         {Platform.OS === 'web' ? (
-                            <iframe src={pdfUrl} style={{ width: '100%', height: '100%', border: 'none', borderRadius: 16 }} />
+                            <iframe src={pdfUrl} style={{ width: '100%', height: '100%', border: 'none' }} />
                         ) : Platform.OS === 'android' ? (
                             <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
                                 <FileText color={TEXT_SUB} size={64} style={{ marginBottom: 16 }} />
@@ -569,8 +591,8 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         }
         // Fallback generic
         return (
-            <View style={styles.previewCardContainer}>
-                <View style={[styles.previewCard, { backgroundColor: CARD_BG, justifyContent: 'center', alignItems: 'center' }]}>
+            <View style={styles.previewImageContainer}>
+                <View style={[styles.previewImageArea, { backgroundColor: CARD_BG, justifyContent: 'center', alignItems: 'center' }]}>
                     <FileText color={TEXT_SUB} size={64} style={{ marginBottom: 16 }} />
                     <Text style={{ color: TEXT_SUB, fontSize: 16 }}>Preview not available</Text>
                 </View>
@@ -599,8 +621,10 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         }
     }, [filesState.length, currentIndex, navigation]);
 
+    const hasMultipleFiles = filesState.length > 1;
+
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor: BG_COLOR }]}>
+        <View style={[styles.container, { backgroundColor: BG_COLOR, paddingTop: insets.top }]}>
             
             {/* Header */}
             <Animated.View style={[styles.header, uiAnimStyle, { borderBottomColor: BORDER }]}>
@@ -612,12 +636,11 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     <Text style={[styles.headerTitle, { color: TEXT_MAIN }]} numberOfLines={1}>
                         {sanitizeDisplayName(file?.name || file?.file_name || 'File Preview', 'File Preview')}
                     </Text>
-                    <Text style={[styles.headerSub, { color: TEXT_SUB }]}>
-                        {file?.mime_type 
-                            ? file?.mime_type.split('/')[1]?.toUpperCase() || 'FILE' 
-                            : 'FILE'} 
-                        {filesState.length > 0 ? ` • ${currentIndex + 1}/${filesState.length}` : ''}
-                    </Text>
+                    {hasMultipleFiles && (
+                        <Text style={[styles.headerSub, { color: TEXT_SUB }]}>
+                            {currentIndex + 1} of {filesState.length}
+                        </Text>
+                    )}
                 </View>
 
                 <View style={styles.headerRight}>
@@ -630,11 +653,11 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                 </View>
             </Animated.View>
 
-            {/* Swiper */}
+            {/* Preview Area with slide animation */}
             <View style={styles.swiperArea}>
                 {filesState.length > 0 && file ? (
                     <GestureDetector gesture={swipePan}>
-                        <Animated.View style={{ flex: 1 }} key={file.id}>
+                        <Animated.View style={[{ flex: 1 }, slideAnimStyle]} key={file.id}>
                             {renderFileItem({ item: file })}
                         </Animated.View>
                     </GestureDetector>
@@ -643,12 +666,36 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                         <ActivityIndicator size="large" color={ACCENT} />
                     </View>
                 )}
+
+                {/* Navigation arrows for multiple files */}
+                {hasMultipleFiles && uiVisible && (
+                    <>
+                        {currentIndex > 0 && (
+                            <TouchableOpacity 
+                                style={[styles.navArrow, styles.navArrowLeft, { backgroundColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.06)' }]} 
+                                onPress={handlePrev}
+                                activeOpacity={0.7}
+                            >
+                                <ChevronLeft color={TEXT_MAIN} size={20} />
+                            </TouchableOpacity>
+                        )}
+                        {currentIndex < filesState.length - 1 && (
+                            <TouchableOpacity 
+                                style={[styles.navArrow, styles.navArrowRight, { backgroundColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.06)' }]} 
+                                onPress={handleNext}
+                                activeOpacity={0.7}
+                            >
+                                <ChevronRight color={TEXT_MAIN} size={20} />
+                            </TouchableOpacity>
+                        )}
+                    </>
+                )}
             </View>
 
-            {/* Info Row + Actions Overlay */}
-            <Animated.View style={[styles.bottomContainer, uiAnimStyle]}>
+            {/* Bottom Info + Actions — in flow, not absolute */}
+            <Animated.View style={[styles.bottomContainer, uiAnimStyle, { backgroundColor: BG_COLOR, borderTopColor: BORDER }]}>
                 
-                {/* 3-Column Info (Size | Date | Type) */}
+                {/* File info row */}
                 <View style={styles.infoRow}>
                     <View style={styles.infoCol}>
                         <Text style={[styles.infoLabel, { color: TEXT_SUB }]}>Size</Text>
@@ -666,26 +713,42 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     </View>
                 </View>
 
-                {/* Primary Sticky Action Bar */}
+                {/* Page indicator dots */}
+                {hasMultipleFiles && (
+                    <View style={styles.dotsRow}>
+                        {filesState.map((_, idx) => (
+                            <View 
+                                key={idx} 
+                                style={[
+                                    styles.dot, 
+                                    idx === currentIndex 
+                                        ? { backgroundColor: ACCENT, width: 18 } 
+                                        : { backgroundColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.1)' }
+                                ]} 
+                            />
+                        ))}
+                    </View>
+                )}
+
+                {/* Action Bar */}
                 <View style={[styles.actionBar, { borderTopColor: BORDER }]}>
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => void openMoveModal()}>
-                        <FolderInput color={TEXT_MAIN} size={22} />
+                    <TouchableOpacity style={[styles.actionBtn, { backgroundColor: SURFACE_MUTED }]} onPress={() => void openMoveModal()}>
+                        <FolderInput color={TEXT_MAIN} size={20} />
                     </TouchableOpacity>
 
-                    {/* BIG Primary Action */}
                     <TouchableOpacity style={[styles.primaryActionBtn, { backgroundColor: ACCENT }]} onPress={handleDownload} disabled={isDownloadSubmitting}>
                         {isDownloadSubmitting ? (
                             <ActivityIndicator color="#FFF" />
                         ) : (
                             <>
-                                <Download color="#FFF" size={20} strokeWidth={2.5}/>
+                                <Download color="#FFF" size={18} strokeWidth={2.5}/>
                                 <Text style={styles.primaryActionText}>Download</Text>
                             </>
                         )}
                     </TouchableOpacity>
 
-                    <TouchableOpacity style={styles.actionBtn} onPress={handleOpenShare}>
-                        <Share2 color={TEXT_MAIN} size={22} />
+                    <TouchableOpacity style={[styles.actionBtn, { backgroundColor: SURFACE_MUTED }]} onPress={handleOpenShare}>
+                        <Share2 color={TEXT_MAIN} size={20} />
                     </TouchableOpacity>
                 </View>
 
@@ -693,8 +756,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
             <Modal visible={isOptionsVisible} transparent animationType="slide" onRequestClose={() => setOptionsVisible(false)}>
                 <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setOptionsVisible(false)}>
-                    <Animated.View entering={FadeIn.duration(180)} style={[styles.sheetCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
-                        <View style={[styles.sheetHandle, { backgroundColor: BORDER }]} />
+                    <TouchableOpacity activeOpacity={1} style={{ width: '100%' }}>
+                        <Animated.View entering={FadeIn.duration(180)} style={[styles.sheetCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
+                            <View style={[styles.sheetHandle, { backgroundColor: BORDER }]} />
                         <Text style={[styles.sheetTitle, { color: TEXT_MAIN }]} numberOfLines={1}>
                             {sanitizeDisplayName(file?.name || file?.file_name || 'File Actions', 'File Actions')}
                         </Text>
@@ -719,13 +783,15 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                             <Text style={[styles.optionText, { color: DANGER, fontWeight: '700' }]}>Delete</Text>
                         </TouchableOpacity>
                     </Animated.View>
+                    </TouchableOpacity>
                 </TouchableOpacity>
             </Modal>
 
             <Modal visible={isRenameModalVisible} transparent animationType="fade" onRequestClose={() => setRenameModalVisible(false)}>
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.centeredModal}>
-                    <Animated.View entering={FadeIn.duration(150)} style={[styles.renameCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
-                        <Text style={[styles.renameTitle, { color: TEXT_MAIN }]}>Rename File</Text>
+                    <TouchableOpacity activeOpacity={1} style={{ width: '100%', alignItems: 'center' }}>
+                        <Animated.View entering={FadeIn.duration(150)} style={[styles.renameCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
+                            <Text style={[styles.renameTitle, { color: TEXT_MAIN }]}>Rename File</Text>
                         <TextInput
                             style={[styles.renameInput, { borderColor: BORDER, color: TEXT_MAIN, backgroundColor: INPUT_BG }]}
                             value={renameValue}
@@ -744,13 +810,15 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                             </TouchableOpacity>
                         </View>
                     </Animated.View>
+                    </TouchableOpacity>
                 </KeyboardAvoidingView>
             </Modal>
 
             <Modal visible={isMoveModalVisible} transparent animationType="slide" onRequestClose={() => setMoveModalVisible(false)}>
                 <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setMoveModalVisible(false)}>
-                    <Animated.View entering={FadeIn.duration(180)} style={[styles.sheetCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
-                        <View style={[styles.sheetHandle, { backgroundColor: BORDER }]} />
+                    <TouchableOpacity activeOpacity={1} style={{ width: '100%' }}>
+                        <Animated.View entering={FadeIn.duration(180)} style={[styles.sheetCard, { backgroundColor: CARD_BG, borderColor: BORDER }]}>
+                            <View style={[styles.sheetHandle, { backgroundColor: BORDER }]} />
                         <Text style={[styles.sheetTitle, { color: TEXT_MAIN }]}>Move File To</Text>
                         <Text style={[styles.sheetSub, { color: TEXT_SUB }]}>Select destination folder.</Text>
 
@@ -766,6 +834,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                         ))}
                         {isMoving && <ActivityIndicator style={{ marginTop: 8 }} color={ACCENT} />}
                     </Animated.View>
+                    </TouchableOpacity>
                 </TouchableOpacity>
             </Modal>
 
@@ -774,7 +843,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                 onClose={() => setShareModalVisible(false)}
                 targetItem={file}
             />
-        </SafeAreaView>
+        </View>
     );
 }
 
@@ -784,68 +853,87 @@ const styles = StyleSheet.create({
     /* Header */
     header: {
         flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-        height: 60, paddingHorizontal: 16,
-        borderBottomWidth: 1, zIndex: 10,
+        height: 56, paddingHorizontal: 12,
+        borderBottomWidth: StyleSheet.hairlineWidth, zIndex: 10,
     },
-    headerBtn: { width: 40, height: 40, justifyContent: 'center' },
-    headerRight: { flexDirection: 'row', alignItems: 'center', width: 80, justifyContent: 'flex-end', gap: 8 },
+    headerBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
+    headerRight: { flexDirection: 'row', alignItems: 'center', gap: 4 },
     iconBtn: { padding: 8 },
 
-    headerCenter: { flex: 1, alignItems: 'center', paddingHorizontal: 12 },
-    headerTitle: { fontSize: 16, fontWeight: '600', textAlign: 'center' },
-    headerSub: { fontSize: 12, fontWeight: '500', marginTop: 2, textTransform: 'uppercase' },
+    headerCenter: { flex: 1, alignItems: 'center', paddingHorizontal: 8 },
+    headerTitle: { fontSize: 15, fontWeight: '600', textAlign: 'center' },
+    headerSub: { fontSize: 11, fontWeight: '500', marginTop: 1 },
 
     /* Preview Area */
-    swiperArea: { flex: 1, justifyContent: 'center' },
-    previewCardContainer: {
-        width: width,
-        height: height - 120, // Explicit height to prevent collapse in FlatList
+    swiperArea: { flex: 1, justifyContent: 'center', position: 'relative' },
+    previewImageContainer: {
+        flex: 1,
         justifyContent: 'center', alignItems: 'center',
-        paddingVertical: 16,
-        paddingHorizontal: 12,
     },
-    previewCard: {
+    previewImageArea: {
         width: '100%', height: '100%',
-        borderRadius: 16,
         overflow: 'hidden',
-        // subtle shadow
-        shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.05, shadowRadius: 10, elevation: 2,
     },
 
-    /* Bottom Info & Actions */
+    /* Navigation Arrows */
+    navArrow: {
+        position: 'absolute',
+        top: '50%',
+        marginTop: -18,
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    navArrowLeft: { left: 8 },
+    navArrowRight: { right: 8 },
+
+    /* Bottom Info & Actions — in flow, not absolute */
     bottomContainer: {
-        position: 'absolute', bottom: 0, width: '100%',
-        zIndex: 10, paddingBottom: Platform.OS === 'ios' ? 24 : 16, // Safe area padding
-        backgroundColor: 'rgba(255, 255, 255, 0.01)', // To ensure clicks pass through if needed, UI handles the stack
+        borderTopWidth: StyleSheet.hairlineWidth,
+        paddingBottom: Platform.OS === 'ios' ? 24 : 12,
     },
     
     // Info Row
     infoRow: {
         flexDirection: 'row', justifyContent: 'space-between',
-        paddingHorizontal: 24, marginBottom: 20,
+        paddingHorizontal: 20, paddingVertical: 10,
     },
     infoCol: { flex: 1 },
-    infoLabel: { fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
-    infoValue: { fontSize: 14, fontWeight: '500' },
+    infoLabel: { fontSize: 10, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 },
+    infoValue: { fontSize: 13, fontWeight: '500' },
+
+    // Page dots
+    dotsRow: {
+        flexDirection: 'row',
+        justifyContent: 'center',
+        alignItems: 'center',
+        gap: 5,
+        paddingBottom: 8,
+    },
+    dot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+    },
 
     // Action Bar
     actionBar: {
         flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-        paddingHorizontal: 20, paddingTop: 16,
-        borderTopWidth: 1,
+        paddingHorizontal: 16, paddingTop: 10,
+        borderTopWidth: StyleSheet.hairlineWidth,
     },
     actionBtn: {
-        width: 50, height: 50, borderRadius: 25,
+        width: 46, height: 46, borderRadius: 23,
         justifyContent: 'center', alignItems: 'center',
-        backgroundColor: 'rgba(100,100,100,0.05)'
     },
     primaryActionBtn: {
         flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-        height: 52, borderRadius: 26, flex: 1, marginHorizontal: 16,
+        height: 48, borderRadius: 24, flex: 1, marginHorizontal: 12,
         shadowColor: '#3B82F6', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 10, elevation: 4,
     },
-    primaryActionText: { color: '#FFF', fontSize: 16, fontWeight: '600', marginLeft: 8 },
+    primaryActionText: { color: '#FFF', fontSize: 15, fontWeight: '600', marginLeft: 8 },
 
     // Shared sheets
     sheetOverlay: {

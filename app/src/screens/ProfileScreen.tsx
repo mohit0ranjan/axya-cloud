@@ -185,19 +185,6 @@ export default function ProfileScreen({ navigation }: any) {
                         >
                             <Text style={st.avatarLetter}>{avatarLetter}</Text>
                         </LinearGradient>
-                        <Pressable
-                            style={({ pressed }) => [
-                                st.editIconBadge,
-                                {
-                                    backgroundColor: CARD_BG,
-                                    borderColor: BG_COLOR,
-                                    transform: [{ scale: pressed ? 0.96 : 1 }],
-                                },
-                            ]}
-                            onPress={() => showToast('Profile editing will be added here', 'info')}
-                        >
-                            <Edit2 color={TEXT_MAIN} size={14} strokeWidth={2.5} />
-                        </Pressable>
                     </View>
 
                     {loading ? (

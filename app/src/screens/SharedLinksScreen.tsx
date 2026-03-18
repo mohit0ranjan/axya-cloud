@@ -3,12 +3,12 @@ import {
     View,
     Text,
     StyleSheet,
-    SafeAreaView,
     FlatList,
     TouchableOpacity,
     RefreshControl,
     Alert,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { ArrowLeft, Clock, Eye, Download, Link as LinkIcon, Trash2, Folder, File as FileIcon } from 'lucide-react-native';
 import apiClient from '../services/apiClient';
@@ -102,6 +102,7 @@ const createStyles = (theme: any, C: any) =>
 export default function SharedLinksScreen({ navigation }: any) {
     const { theme } = useTheme();
     const C = theme.colors;
+    const insets = useSafeAreaInsets();
     const styles = useMemo(() => createStyles(theme, C), [theme, C]);
     const { showToast } = useToast();
     const [links, setLinks] = useState<any[]>([]);
@@ -250,7 +251,7 @@ export default function SharedLinksScreen({ navigation }: any) {
     }, []);
 
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
+        <View style={[styles.container, { backgroundColor: C.background, paddingTop: insets.top }]}>
             <View style={styles.header}>
                 <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.7}>
                     <ArrowLeft color={C.textHeading} size={24} />
@@ -298,6 +299,6 @@ export default function SharedLinksScreen({ navigation }: any) {
                     }
                 />
             )}
-        </SafeAreaView>
+        </View>
     );
 }

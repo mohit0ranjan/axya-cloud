@@ -6,7 +6,6 @@ import {
     Pressable,
     ScrollView,
     StyleSheet,
-    SafeAreaView,
     Dimensions,
     Alert,
     TextInput,
@@ -15,6 +14,7 @@ import {
     Platform,
     RefreshControl,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     MoreHorizontal,
     ArrowLeft,
@@ -29,7 +29,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '../services/apiClient';
 import { EmptyState } from '../ui/EmptyState';
-import { FolderCardSkeleton } from '../ui/Skeleton';
+import { FolderCardSkeleton, ContentFadeIn } from '../ui/Skeleton';
 import ShareFolderModal from '../components/ShareFolderModal';
 import AppButton from '../components/AppButton';
 import IconButton from '../components/IconButton';
@@ -129,6 +129,7 @@ const createStyles = (theme: any, C: any) =>
 export default function FoldersScreen({ navigation }: any) {
     const { theme } = useTheme();
     const C = theme.colors;
+    const insets = useSafeAreaInsets();
     const styles = useMemo(() => createStyles(theme, C), [theme, C]);
 
     const [isLoading, setIsLoading] = useState(true);
@@ -340,7 +341,7 @@ export default function FoldersScreen({ navigation }: any) {
     };
 
     return (
-        <SafeAreaView style={styles.container}>
+        <View style={[styles.container, { paddingTop: insets.top }]}>
             <View style={styles.header}>
                 <View style={styles.headerTitleWrapper}>
                     <Text style={styles.headerTitle}>Your Folders</Text>
@@ -411,71 +412,73 @@ export default function FoldersScreen({ navigation }: any) {
                 {isLoading ? (
                     <View style={styles.gridContainer}>{[1, 2, 3, 4].map(i => <FolderCardSkeleton key={i} />)}</View>
                 ) : (
-                    <View style={styles.gridContainer}>
-                        <Pressable
-                            style={({ pressed }) => [styles.folderCard, styles.folderCardAllFiles, pressed && styles.folderCardPressed]}
-                            onPress={() => navigation.navigate('AllFiles')}
-                        >
-                            <View style={styles.cardHeader}>
-                                <View style={styles.iconBox}>
-                                    <FolderIcon color="#3B82F6" size={24} fill="#3B82F6" strokeWidth={2} />
-                                </View>
-                            </View>
-                            <View style={styles.cardFooter}>
-                                <Text style={[styles.folderName, { color: C.textHeading }]} numberOfLines={1}>
-                                    All Files
-                                </Text>
-                                <Text style={styles.folderMeta}>Browse all files</Text>
-                            </View>
-                        </Pressable>
-
-                        {filtered.map(folder => (
+                    <ContentFadeIn visible={!isLoading}>
+                        <View style={styles.gridContainer}>
                             <Pressable
-                                key={folder.id}
-                                style={({ pressed }) => [
-                                    styles.folderCard,
-                                    { backgroundColor: folder.color?.bg || '#F8FAFC' },
-                                    hoveredFolderId === String(folder.id) && styles.folderCardHovered,
-                                    pressed && styles.folderCardPressed,
-                                ]}
-                                onPress={() => openFolder(folder)}
-                                onHoverIn={() => setHoveredFolderId(String(folder.id))}
-                                onHoverOut={() => setHoveredFolderId(null)}
+                                style={({ pressed }) => [styles.folderCard, styles.folderCardAllFiles, pressed && styles.folderCardPressed]}
+                                onPress={() => navigation.navigate('AllFiles')}
                             >
                                 <View style={styles.cardHeader}>
                                     <View style={styles.iconBox}>
-                                        <FolderIcon color={folder.color?.icon || '#2563EB'} size={24} fill={folder.color?.icon || '#2563EB'} strokeWidth={2} />
+                                        <FolderIcon color="#3B82F6" size={24} fill="#3B82F6" strokeWidth={2} />
                                     </View>
-                                    <IconButton
-                                        variant="ghost"
-                                        style={styles.moreBtn}
-                                        onPress={(e: any) => {
-                                            e?.stopPropagation?.();
-                                            e?.preventDefault?.();
-                                            openFolderMenu(folder);
-                                        }}
-                                        icon={<MoreHorizontal color={folder.color?.icon ? folder.color.icon + '80' : '#CBD5E1'} size={20} />}
-                                    />
                                 </View>
                                 <View style={styles.cardFooter}>
-                                    <Text style={styles.folderName} numberOfLines={1}>
-                                        {folder.name}
+                                    <Text style={[styles.folderName, { color: C.textHeading }]} numberOfLines={1}>
+                                        All Files
                                     </Text>
-                                    <Text style={styles.folderMeta}>{formatFolderMeta(folder)}</Text>
+                                    <Text style={styles.folderMeta}>Browse all files</Text>
                                 </View>
                             </Pressable>
-                        ))}
-
-                        {filtered.length === 0 && (
-                            <View style={{ width: '100%', paddingTop: 20 }}>
-                                <EmptyState
-                                    title={searchQuery ? 'No results found' : 'No folders here'}
-                                    description={searchQuery ? 'Try a different folder name' : 'Create a folder to organize your files'}
-                                    iconType={searchQuery ? 'search' : 'folder'}
-                                />
-                            </View>
-                        )}
-                    </View>
+    
+                            {filtered.map(folder => (
+                                <Pressable
+                                    key={folder.id}
+                                    style={({ pressed }) => [
+                                        styles.folderCard,
+                                        { backgroundColor: folder.color?.bg || '#F8FAFC' },
+                                        hoveredFolderId === String(folder.id) && styles.folderCardHovered,
+                                        pressed && styles.folderCardPressed,
+                                    ]}
+                                    onPress={() => openFolder(folder)}
+                                    onHoverIn={() => setHoveredFolderId(String(folder.id))}
+                                    onHoverOut={() => setHoveredFolderId(null)}
+                                >
+                                    <View style={styles.cardHeader}>
+                                        <View style={styles.iconBox}>
+                                            <FolderIcon color={folder.color?.icon || '#2563EB'} size={24} fill={folder.color?.icon || '#2563EB'} strokeWidth={2} />
+                                        </View>
+                                        <IconButton
+                                            variant="ghost"
+                                            style={styles.moreBtn}
+                                            onPress={(e: any) => {
+                                                e?.stopPropagation?.();
+                                                e?.preventDefault?.();
+                                                openFolderMenu(folder);
+                                            }}
+                                            icon={<MoreHorizontal color={folder.color?.icon ? folder.color.icon + '80' : '#CBD5E1'} size={20} />}
+                                        />
+                                    </View>
+                                    <View style={styles.cardFooter}>
+                                        <Text style={styles.folderName} numberOfLines={1}>
+                                            {folder.name}
+                                        </Text>
+                                        <Text style={styles.folderMeta}>{formatFolderMeta(folder)}</Text>
+                                    </View>
+                                </Pressable>
+                            ))}
+    
+                            {filtered.length === 0 && (
+                                <View style={{ width: '100%', paddingTop: 20 }}>
+                                    <EmptyState
+                                        title={searchQuery ? 'No results found' : 'No folders here'}
+                                        description={searchQuery ? 'Try a different folder name' : 'Create a folder to organize your files'}
+                                        iconType={searchQuery ? 'search' : 'folder'}
+                                    />
+                                </View>
+                            )}
+                        </View>
+                    </ContentFadeIn>
                 )}
                 <View style={{ height: 120 }} />
             </ScrollView>
@@ -626,6 +629,6 @@ export default function FoldersScreen({ navigation }: any) {
             </Modal>
 
             <ShareFolderModal visible={shareModalVisible} onClose={closeShareModal} targetItem={shareTarget} />
-        </SafeAreaView>
+        </View>
     );
 }

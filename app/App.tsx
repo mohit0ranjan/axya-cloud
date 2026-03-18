@@ -102,7 +102,7 @@ function RootNavigator() {
                 <Stack.Navigator
                     id="root"
                     initialRouteName={isAuthenticated ? 'MainTabs' : 'Welcome'}
-                    screenOptions={{ headerShown: false, animation: 'fade' }}
+                    screenOptions={{ headerShown: false, animation: 'slide_from_right' }}
                 >
                     {!isAuthenticated ? (
                         <>

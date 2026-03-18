@@ -7,8 +7,10 @@ import Animated, {
     withTiming,
     Easing,
 } from 'react-native-reanimated';
+import { useTheme } from '../context/ThemeContext';
 
 export default function PreviewSkeleton() {
+    const { theme } = useTheme();
     const shimmer = useSharedValue(0.45);
 
     useEffect(() => {
@@ -23,13 +25,12 @@ export default function PreviewSkeleton() {
         opacity: shimmer.value,
     }));
 
-    return <Animated.View style={[styles.base, shimmerStyle]} />;
+    return <Animated.View style={[styles.base, { backgroundColor: theme.colors.surfaceMuted }, shimmerStyle]} />;
 }
 
 const styles = StyleSheet.create({
     base: {
         ...StyleSheet.absoluteFillObject,
-        backgroundColor: '#CBD5E1',
-        borderRadius: 16,
+        borderRadius: 12,
     },
 });

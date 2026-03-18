@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useContext, useCallback, useRef, useMemo } from 'react';
 import {
-    View, Text, TouchableOpacity, ScrollView, StyleSheet, SafeAreaView,
+    View, Text, TouchableOpacity, ScrollView, StyleSheet,
     Alert, Platform, Modal, TextInput, KeyboardAvoidingView,
     Dimensions, FlatList, Animated, ActivityIndicator,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     ArrowLeft, Trash2, FileText, Image as ImageIcon, Video, Music, Plus, Folder,
     MoreHorizontal, Star, Grid, List, Info, Move, Tag, CheckSquare, Square,
@@ -20,7 +21,7 @@ import { useToast } from '../context/ToastContext';
 import { useTheme } from '../context/ThemeContext';
 import { EmptyState } from '../ui/EmptyState';
 import { ErrorState } from '../ui/ErrorState';
-import { FileCardSkeleton } from '../ui/Skeleton';
+import { FileCardSkeleton, ContentFadeIn } from '../ui/Skeleton';
 import ShareFolderModal from '../components/ShareFolderModal';
 import { FileIcon } from '../components/FileIcon';
 import { normalizeExternalShareUrl } from '../utils/shareUrls';
@@ -143,6 +144,7 @@ const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode,
 export default function FolderFilesScreen({ route, navigation }: any) {
     const { folderId, folderName, breadcrumb = [] } = route.params;
     const { theme } = useTheme();
+    const insets = useSafeAreaInsets();
     const styles = useMemo(() => createStyles(theme), [theme]);
     const { showToast } = useToast();
     const { token } = useContext(AuthContext);
@@ -496,7 +498,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
     }, [selectMode, navigation, toggleSelect, currentBreadcrumb, filteredFiles, fetchFolderFiles]);
 
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <View style={[styles.container, { backgroundColor: theme.colors.background, paddingTop: insets.top }]}>
             <View style={[styles.header, { backgroundColor: theme.colors.background }]}>
                 <TouchableOpacity style={styles.iconBtn} onPress={() => { if (selectMode) { setSelectMode(false); setSelectedIds(new Set()); } else navigation.goBack(); }}>
                     {selectMode ? <X color={theme.colors.textHeading} size={22} /> : <ArrowLeft color={theme.colors.textHeading} size={24} />}
@@ -576,63 +578,65 @@ export default function FolderFilesScreen({ route, navigation }: any) {
             </View>
 
             {/* ? FlatList with client-side pagination — loads PAGE_SIZE at a time */}
-            <FlatList
-                style={styles.scrollArea}
-                data={isLoading ? [] : filteredFiles.slice(0, displayLimit)}
-                keyExtractor={(item) => String(item.id)}
-                renderItem={({ item }) => (
-                    <MemoizedFileItem
-                        item={item}
-                        isSelected={selectedIds.has(item.id)}
-                        isGridView={isGridView}
-                        selectMode={selectMode}
-                        theme={theme}
-                        token={token}
-                        onAction={handleCardAction}
-                    />
-                )}
-                numColumns={isGridView ? 2 : 1}
-                key={isGridView ? 'grid' : 'list'}
-                columnWrapperStyle={isGridView ? styles.gridContainer : undefined}
-                contentContainerStyle={{ paddingBottom: 100, paddingTop: isGridView ? 12 : 8 }}
-                showsVerticalScrollIndicator={false}
-                windowSize={10}
-                maxToRenderPerBatch={20}
-                initialNumToRender={15}
-                onEndReached={handleLoadMore}
-                onEndReachedThreshold={0.5}
-                ListFooterComponent={
-                    !isLoading && filteredFiles.length > displayLimit ? (
-                        <View style={{ paddingVertical: 20, alignItems: 'center' }}>
-                            <ActivityIndicator size="small" color={theme.colors.primary} />
-                            <Text style={{ fontSize: 12, color: theme.colors.textBody, marginTop: 8 }}>
-                                Showing {Math.min(displayLimit, filteredFiles.length)} of {filteredFiles.length}
-                            </Text>
-                        </View>
-                    ) : null
-                }
-                ListEmptyComponent={
-                    isLoading ? (
-                        <View style={{ paddingTop: 12 }}>
-                            {[1, 2, 3, 4].map(i => <FileCardSkeleton key={i} />)}
-                        </View>
-                    ) : loadError ? (
-                        <ErrorState
-                            title="Could not load folder"
-                            message={loadError}
-                            onRetry={() => void fetchFolderFiles()}
-                            style={{ paddingVertical: 60, flex: 0 }}
+            <ContentFadeIn visible={!isLoading} style={{ flex: 1 }}>
+                <FlatList
+                    style={styles.scrollArea}
+                    data={isLoading ? [] : filteredFiles.slice(0, displayLimit)}
+                    keyExtractor={(item) => String(item.id)}
+                    renderItem={({ item }) => (
+                        <MemoizedFileItem
+                            item={item}
+                            isSelected={selectedIds.has(item.id)}
+                            isGridView={isGridView}
+                            selectMode={selectMode}
+                            theme={theme}
+                            token={token}
+                            onAction={handleCardAction}
                         />
-                    ) : (
-                        <EmptyState
-                            title={searchQuery ? 'No results found' : 'Folder is empty'}
-                            description={searchQuery ? 'Try a different keyword' : 'Upload files or create subfolders here'}
-                            iconType={searchQuery ? 'search' : 'folder'}
-                            style={{ paddingVertical: 60, flex: 0 }}
-                        />
-                    )
-                }
-            />
+                    )}
+                    numColumns={isGridView ? 2 : 1}
+                    key={isGridView ? 'grid' : 'list'}
+                    columnWrapperStyle={isGridView ? styles.gridContainer : undefined}
+                    contentContainerStyle={{ paddingBottom: 100, paddingTop: isGridView ? 12 : 8 }}
+                    showsVerticalScrollIndicator={false}
+                    windowSize={10}
+                    maxToRenderPerBatch={20}
+                    initialNumToRender={15}
+                    onEndReached={handleLoadMore}
+                    onEndReachedThreshold={0.5}
+                    ListFooterComponent={
+                        !isLoading && filteredFiles.length > displayLimit ? (
+                            <View style={{ paddingVertical: 20, alignItems: 'center' }}>
+                                <ActivityIndicator size="small" color={theme.colors.primary} />
+                                <Text style={{ fontSize: 12, color: theme.colors.textBody, marginTop: 8 }}>
+                                    Showing {Math.min(displayLimit, filteredFiles.length)} of {filteredFiles.length}
+                                </Text>
+                            </View>
+                        ) : null
+                    }
+                    ListEmptyComponent={
+                        isLoading ? (
+                            <View style={{ paddingTop: 12 }}>
+                                {[1, 2, 3, 4].map(i => <FileCardSkeleton key={i} />)}
+                            </View>
+                        ) : loadError ? (
+                            <ErrorState
+                                title="Could not load folder"
+                                message={loadError}
+                                onRetry={() => void fetchFolderFiles()}
+                                style={{ paddingVertical: 60, flex: 0 }}
+                            />
+                        ) : (
+                            <EmptyState
+                                title={searchQuery ? 'No results found' : 'Folder is empty'}
+                                description={searchQuery ? 'Try a different keyword' : 'Upload files or create subfolders here'}
+                                iconType={searchQuery ? 'search' : 'folder'}
+                                style={{ paddingVertical: 60, flex: 0 }}
+                            />
+                        )
+                    }
+                />
+            </ContentFadeIn>
 
             {!selectMode && (
                 <TouchableOpacity style={[styles.fab, { backgroundColor: theme.colors.primary }]} onPress={handleUploadInit}>
@@ -807,7 +811,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                 targetItem={shareTarget}
             />
 
-        </SafeAreaView>
+        </View>
     );
 }
 

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-    View, Text, StyleSheet, SafeAreaView, ScrollView,
+    View, Text, StyleSheet, ScrollView,
     TouchableOpacity, RefreshControl, Dimensions, Platform
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     ArrowLeft, MoreHorizontal, HardDrive, Image as ImageIcon,
     Film, Music, FileText, Archive, Folder, Star, Trash2, CheckCircle2, AlertTriangle, Info
@@ -81,6 +82,7 @@ function CircularProgress({ usedGB, isUnlimited, themeColors, isDark }: any) {
 export default function AnalyticsScreen({ navigation }: any) {
     const { theme, isDark } = useTheme();
     const C = theme.colors;
+    const insets = useSafeAreaInsets();
 
     // Tokens matching the requested minimal premium palette
     const BG_COLOR = isDark ? '#0A0A0A' : '#FFFFFF';
@@ -136,16 +138,14 @@ export default function AnalyticsScreen({ navigation }: any) {
     const HealthIcon = health.icon;
 
     return (
-        <SafeAreaView style={[st.root, { backgroundColor: BG_COLOR }]}>
+        <View style={[st.root, { backgroundColor: BG_COLOR, paddingTop: insets.top }]}>
             {/* 1. HEADER */}
             <View style={[st.header, { backgroundColor: BG_COLOR }]}>
                 <TouchableOpacity style={st.iconBtn} onPress={() => navigation?.goBack()}>
                     <ArrowLeft color={TEXT_MAIN} size={24} />
                 </TouchableOpacity>
                 <Text style={[st.headerTitle, { color: TEXT_MAIN }]}>Storage Analytics</Text>
-                <TouchableOpacity style={st.iconBtn}>
-                    <MoreHorizontal color={TEXT_MAIN} size={24} />
-                </TouchableOpacity>
+                <View style={{ width: 44 }} />
             </View>
 
             <ScrollView 
@@ -273,7 +273,7 @@ export default function AnalyticsScreen({ navigation }: any) {
                 )}
             </ScrollView>
 
-        </SafeAreaView>
+        </View>
     );
 }
 

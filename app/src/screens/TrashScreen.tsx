@@ -3,10 +3,11 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    View, Text, StyleSheet, SafeAreaView,
+    View, Text, StyleSheet,
     TouchableOpacity, Animated, FlatList,
     RefreshControl, Alert
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowLeft, AlertTriangle } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import apiClient from '../services/apiClient';
@@ -22,6 +23,7 @@ import { sanitizeDisplayName } from '../utils/fileSafety';
 export default function TrashScreen({ navigation }: any) {
     const { theme, isDark } = useTheme();
     const C = theme.colors;
+    const insets = useSafeAreaInsets();
     const { showToast } = useToast();
     const { token } = useAuth();
 
@@ -135,7 +137,7 @@ export default function TrashScreen({ navigation }: any) {
     }, [handleRestore, handleDeleteForever]);
 
     return (
-        <SafeAreaView style={[st.root, { backgroundColor: C.background }]}>
+        <View style={[st.root, { backgroundColor: C.background, paddingTop: insets.top }]}>
             {/* Header — matches AllFiles/Starred pattern */}
             <View style={[st.header, { backgroundColor: C.background, borderBottomColor: C.border }]}>
                 <TouchableOpacity style={st.iconBtn} onPress={handleBack} activeOpacity={0.7}>
@@ -212,7 +214,7 @@ export default function TrashScreen({ navigation }: any) {
                     )}
                 </Animated.View>
             )}
-        </SafeAreaView>
+        </View>
     );
 }
 

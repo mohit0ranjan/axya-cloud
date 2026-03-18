@@ -3,9 +3,10 @@
  */
 import React, { useState, useEffect, useContext, useCallback, useRef, useMemo } from 'react';
 import {
-    View, Text, StyleSheet, SafeAreaView, FlatList, TouchableOpacity,
+    View, Text, StyleSheet, FlatList, TouchableOpacity,
     RefreshControl, Modal,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowLeft, SortAsc, SortDesc, Filter } from 'lucide-react-native';
 import apiClient from '../services/apiClient';
 import { useToast } from '../context/ToastContext';
@@ -32,6 +33,7 @@ export default function StarredScreen({ navigation }: any) {
     const { token } = useContext(AuthContext);
     const { theme, isDark } = useTheme();
     const C = theme.colors;
+    const insets = useSafeAreaInsets();
 
     const [isLoading, setIsLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
@@ -80,7 +82,7 @@ export default function StarredScreen({ navigation }: any) {
     }, [sortedFiles, navigation]);
 
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor: C.background }]}>
+        <View style={[styles.container, { backgroundColor: C.background, paddingTop: insets.top }]}>
             {/* Header — matches AllFilesScreen pattern */}
             <View style={[styles.header, { backgroundColor: C.background, borderBottomColor: C.border }]}>
                 <TouchableOpacity onPress={handleBack} style={styles.iconBtn} activeOpacity={0.7}>
@@ -188,7 +190,7 @@ export default function StarredScreen({ navigation }: any) {
                     </View>
                 </TouchableOpacity>
             </Modal>
-        </SafeAreaView>
+        </View>
     );
 }
 

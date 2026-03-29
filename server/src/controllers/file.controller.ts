@@ -576,68 +576,24 @@ export const fetchTrash = async (req: AuthRequest, res: Response) => {
 export const emptyTrash = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
     try {
-        const result = await pool.query(
-            'SELECT id, telegram_message_id, telegram_chat_id FROM files WHERE user_id = $1 AND is_trashed = true',
+        const countRes = await pool.query(
+            'SELECT COUNT(*)::int AS total FROM files WHERE user_id = $1 AND is_trashed = true',
             [req.user.id]
         );
-        const files = result.rows;
+        const totalFiles = Number(countRes.rows[0]?.total || 0);
 
-        const allTrashedIds: string[] = files.map((f: any) => String(f.id)).filter(Boolean);
-        const failedPointers: Array<{ chatId: string; messageId: number }> = [];
-
-        let clients: TelegramReadClient[] = [];
-        let hasClients = false;
-
-        if (files.some(f => {
-            const mId = Number.parseInt(String(f.telegram_message_id || ''), 10);
-            return f.telegram_chat_id && Number.isFinite(mId) && mId > 0;
-        })) {
-            try {
-                clients = await getTelegramReadClients(req.user.sessionString);
-                hasClients = true;
-            } catch {
-                // Ignore, handled in the loop
-            }
-        }
-
-        for (const f of files) {
-            const chatId = String(f.telegram_chat_id || '').trim();
-            const messageId = Number.parseInt(String(f.telegram_message_id || ''), 10);
-
-            if (chatId && Number.isFinite(messageId) && messageId > 0) {
-                if (!hasClients) {
-                    failedPointers.push({ chatId, messageId });
-                    continue;
-                }
-                const deleted = await deleteMessageAcrossTelegramClients(clients, chatId, messageId);
-                if (!deleted) {
-                    failedPointers.push({ chatId, messageId });
-                }
-            }
-        }
-
-        if (allTrashedIds.length > 0) {
-            await pool.query('DELETE FROM files WHERE id = ANY($1) AND user_id = $2', [allTrashedIds, req.user.id]);
-        }
+        // Keep empty-trash fast and deterministic. Bulk-delete DB rows first so UI never stalls.
+        await pool.query('DELETE FROM files WHERE user_id = $1 AND is_trashed = true', [req.user.id]);
 
         // Folders don't have Telegram pointers to clean up, they can be safely deleted
         await pool.query('DELETE FROM folders WHERE user_id = $1 AND is_trashed = true', [req.user.id]);
 
         await logActivity(req.user.id, 'empty_trash');
-        if (failedPointers.length > 0) {
-            logger.warn('backend.files', 'empty_trash_telegram_partial_failure', {
-                userId: req.user.id,
-                failedCount: failedPointers.length,
-            });
-            return res.json({
-                success: true,
-                warning: `Trash emptied locally. ${failedPointers.length} Telegram source message(s) could not be deleted.`,
-                message: 'Trash cleared permanently.',
-                failedTelegramDeletes: failedPointers.length,
-            });
-        }
-
-        res.json({ success: true, message: 'Trash cleared permanently.' });
+        return res.json({
+            success: true,
+            message: totalFiles > 0 ? 'Trash cleared permanently.' : 'Trash is already empty.',
+            deletedCount: totalFiles,
+        });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
     }

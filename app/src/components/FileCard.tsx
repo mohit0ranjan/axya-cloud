@@ -1,9 +1,11 @@
-﻿import React, { useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Animated, Pressable } from 'react-native';
+﻿import React, { memo } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Pressable } from 'react-native';
+import Animated, { useAnimatedStyle, withSpring, useSharedValue } from 'react-native-reanimated';
 import { MoreHorizontal, Star, Trash2 } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { FileIcon } from './FileIcon';
 import { formatFolderMeta } from '../utils/folderMeta';
+import { layout } from '../ui/layout';
 
 interface Props {
     item: any;
@@ -33,7 +35,7 @@ const formatDate = (dateStr: string) => {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
-export default function FileCard({
+const FileCardComponent = ({
     item,
     onPress,
     onOptions,
@@ -43,37 +45,27 @@ export default function FileCard({
     showRestore = false,
     token,
     apiBase
-}: Props) {
+}: Props) => {
     const { theme } = useTheme();
-    const scaleAnim = useRef(new Animated.Value(1)).current;
+    const scale = useSharedValue(1);
 
-    const onPressIn = () => {
-        Animated.spring(scaleAnim, {
-            toValue: 0.98,
-            useNativeDriver: true,
-            tension: 300,
-            friction: 20,
-        }).start();
-    };
+    const animatedStyle = useAnimatedStyle(() => ({
+        transform: [{ scale: scale.value }],
+    }));
 
-    const onPressOut = () => {
-        Animated.spring(scaleAnim, {
-            toValue: 1,
-            useNativeDriver: true,
-            tension: 300,
-            friction: 20,
-        }).start();
-    };
+    const handlePressIn = () => { scale.value = withSpring(0.97, layout.animation.springSmooth); };
+    const handlePressOut = () => { scale.value = withSpring(1, layout.animation.springSmooth); };
 
     const isFolder = item.result_type === 'folder' || item.mime_type === 'inode/directory';
 
     return (
-        <Pressable
-            onPress={onPress}
-            onPressIn={onPressIn}
-            onPressOut={onPressOut}
-        >
-            <Animated.View style={[styles.card, { backgroundColor: theme.colors.background, transform: [{ scale: scaleAnim }] }]}>
+        <Animated.View style={[styles.wrapper, animatedStyle, { backgroundColor: theme.colors.background }]}>
+            <Pressable
+                onPress={onPress}
+                onPressIn={handlePressIn}
+                onPressOut={handlePressOut}
+                style={styles.card}
+            >
                 <FileIcon item={item} size={46} token={token} apiBase={apiBase} themeColors={theme.colors} />
 
                 <View style={styles.info}>
@@ -114,25 +106,30 @@ export default function FileCard({
                         <MoreHorizontal color={theme.colors.textBody} size={20} />
                     </TouchableOpacity>
                 </View>
-            </Animated.View>
-        </Pressable>
+            </Pressable>
+        </Animated.View>
     );
 }
 
+export default memo(FileCardComponent);
+
 const styles = StyleSheet.create({
+    wrapper: {
+        marginBottom: layout.spacing.xs,
+        borderRadius: layout.radiusMap.md,
+    },
     card: {
         flexDirection: 'row',
         alignItems: 'center',
-        paddingVertical: 12,
-        paddingHorizontal: 0,
-        marginBottom: 4,
+        paddingVertical: layout.spacing.md,
+        paddingHorizontal: layout.spacing.sm,
     },
     iconBox: {
         width: 46, height: 46,
-        borderRadius: 12,
+        borderRadius: layout.radiusMap.md,
         justifyContent: 'center', alignItems: 'center'
     },
-    info: { flex: 1, marginHorizontal: 16 },
+    info: { flex: 1, marginHorizontal: layout.spacing.lg },
     name: {
         fontSize: 15,
         fontWeight: '500',
@@ -142,15 +139,15 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: '500'
     },
-    actions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    actions: { flexDirection: 'row', alignItems: 'center', gap: layout.spacing.sm },
     actionBtn: {
         width: 44, height: 44,
-        borderRadius: 12,
+        borderRadius: layout.radiusMap.md,
         justifyContent: 'center', alignItems: 'center',
     },
     actionBtnRestore: {
-        paddingHorizontal: 16, height: 44,
-        borderRadius: 12, justifyContent: 'center', alignItems: 'center',
+        paddingHorizontal: layout.spacing.lg, height: 44,
+        borderRadius: layout.radiusMap.md, justifyContent: 'center', alignItems: 'center',
         backgroundColor: `rgba(31, 212, 90, 0.1)`
     },
     actionBtnRestoreText: {
@@ -158,12 +155,12 @@ const styles = StyleSheet.create({
         fontWeight: '700',
     },
     actionBtnTrash: {
-        width: 44, height: 44, borderRadius: 12,
+        width: 44, height: 44, borderRadius: layout.radiusMap.md,
         justifyContent: 'center', alignItems: 'center',
         backgroundColor: `rgba(239, 68, 68, 0.08)`
     },
     moreBtn: {
-        padding: 8,
+        padding: layout.spacing.sm,
         justifyContent: 'center',
         alignItems: 'center',
     }

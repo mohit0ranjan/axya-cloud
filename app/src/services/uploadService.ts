@@ -93,7 +93,15 @@ export const uploadFile = async (
     // ── Step 2: Init ──────────────────────────────────────────────────────
     const initRes = await uploadClient.post(
         '/files/upload/init',
-        { originalname: name, size, mimetype, telegram_chat_id: chatTarget, folder_id: folderId, hash: fileHash },
+        {
+            originalname: name,
+            size,
+            mimetype,
+            telegram_chat_id: chatTarget,
+            folder_id: folderId,
+            hash: fileHash,
+            chunk_size_bytes: CHUNK_SIZE,
+        },
         { signal: abortSignal }
     );
 

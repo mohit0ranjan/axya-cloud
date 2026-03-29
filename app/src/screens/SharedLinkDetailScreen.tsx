@@ -101,8 +101,8 @@ export default function SharedLinkDetailScreen({ navigation, route }: any) {
 
     const handleCopy = useCallback(async () => {
         const shareUrl = String(share?.share_url || share?.shareUrl || '').trim();
-        if (!shareUrl) {
-            showToast('Share link unavailable', 'error');
+        if (!shareUrl || !/[?&]k=/.test(shareUrl)) {
+            showToast('This share link cannot be reconstructed from the saved data. Recreate the share to copy a fresh URL.', 'error');
             return;
         }
         await Clipboard.setStringAsync(shareUrl);

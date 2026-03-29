@@ -91,9 +91,8 @@ class DownloadManager {
 
         if (active.length > 0) {
             // Simple average progress for downloads (no weighted by size since we don't always know size)
-            const avgProgress = Math.round(
-                active.reduce((acc, t) => acc + t.progress, 0) / active.length
-            );
+            const avgProgressRaw = active.reduce((acc, t) => acc + (Number.isFinite(t.progress) ? t.progress : 0), 0) / active.length;
+            const avgProgress = Math.max(0, Math.min(100, Number.isFinite(avgProgressRaw) ? Math.round(avgProgressRaw) : 0));
 
             try {
                 await Notifications.scheduleNotificationAsync({
@@ -335,7 +334,8 @@ class DownloadManager {
                 const written = progressData.totalBytesWritten || 0;
                 if (total > 0) {
                     // Keep room for post-download processing (share/save).
-                    task.progress = Math.max(5, Math.min(90, Math.round((written / total) * 90)));
+                    const ratio = total > 0 ? (written / total) : 0;
+                    task.progress = Math.max(5, Math.min(90, Math.round(Math.max(0, ratio) * 90)));
                     this.notifyListeners();
                 }
             }

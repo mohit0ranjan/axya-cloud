@@ -14,12 +14,24 @@ export type ShareV2TicketPayload = {
     disposition: 'inline' | 'attachment' | 'thumbnail';
 };
 
+if (process.env.NODE_ENV === 'production') {
+    const missingSecrets = [
+        'SHARE_V2_SESSION_SECRET',
+        'SHARE_V2_TICKET_SECRET',
+        'SHARE_V2_LINK_PEPPER',
+    ].filter((key) => !String(process.env[key] || '').trim());
+
+    if (missingSecrets.length > 0) {
+        throw new Error(`Missing required share-v2 secrets in production: ${missingSecrets.join(', ')}`);
+    }
+}
+
 const SESSION_SECRET = process.env.SHARE_V2_SESSION_SECRET || process.env.JWT_SECRET || 'share_v2_session_secret';
 const TICKET_SECRET = process.env.SHARE_V2_TICKET_SECRET || process.env.JWT_SECRET || 'share_v2_ticket_secret';
 const LINK_PEPPER = process.env.SHARE_V2_LINK_PEPPER || process.env.JWT_SECRET || 'share_v2_link_pepper';
 
 const SESSION_TTL_SECONDS = Number.parseInt(String(process.env.SHARE_V2_SESSION_TTL_SECONDS || '1800'), 10) || 1800;
-const TICKET_TTL_SECONDS = Number.parseInt(String(process.env.SHARE_V2_TICKET_TTL_SECONDS || '120'), 10) || 120;
+const TICKET_TTL_SECONDS = Number.parseInt(String(process.env.SHARE_V2_TICKET_TTL_SECONDS || '600'), 10) || 600;
 
 const toBase64Url = (buf: Buffer): string => buf.toString('base64url');
 
@@ -79,3 +91,4 @@ export const verifyShareV2Ticket = (token: string): ShareV2TicketPayload | null 
 };
 
 export const getSessionTtlSeconds = (): number => SESSION_TTL_SECONDS;
+export const getTicketTtlSeconds = (): number => TICKET_TTL_SECONDS;

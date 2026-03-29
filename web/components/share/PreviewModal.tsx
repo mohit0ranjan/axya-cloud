@@ -117,12 +117,21 @@ export function PreviewModal({
         }
         if (isPdf(currentFile)) {
             return (
-                <iframe
-                    src={previewUrl}
-                    title={getFileLabel(currentFile)}
+                <object
+                    data={previewUrl}
+                    type="application/pdf"
                     className="h-[85vh] w-[90vw] rounded-xl bg-white shadow-2xl"
-                    onError={() => onPreviewMediaError?.(currentFile)}
-                />
+                    aria-label={getFileLabel(currentFile)}
+                >
+                    <div className="flex h-[85vh] w-[90vw] items-center justify-center rounded-xl bg-white p-8 text-center text-brand-muted shadow-2xl">
+                        <div className="max-w-sm">
+                            <h3 className="text-xl font-semibold text-brand-text mb-2">PDF preview unavailable</h3>
+                            <p>
+                                The browser could not render this PDF inline. Use download if the preview does not appear.
+                            </p>
+                        </div>
+                    </div>
+                </object>
             );
         }
         return null;

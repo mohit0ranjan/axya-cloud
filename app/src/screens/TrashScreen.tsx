@@ -5,7 +5,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
     View, Text, StyleSheet,
     TouchableOpacity, Animated, FlatList,
-    RefreshControl, Alert
+    RefreshControl, Alert, ActivityIndicator
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowLeft, AlertTriangle } from 'lucide-react-native';
@@ -16,6 +16,7 @@ import { useAuth } from '../context/AuthContext';
 import FileListItem from '../components/FileListItem';
 import { FileCardSkeleton, ContentFadeIn } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
+import { ErrorState } from '../ui/ErrorState';
 import { useFileRefresh } from '../utils/events';
 import { dedupeFilesById, sortFilesLatestFirst, syncAfterFileMutation } from '../services/fileStateSync';
 import { sanitizeDisplayName } from '../utils/fileSafety';
@@ -30,20 +31,25 @@ export default function TrashScreen({ navigation }: any) {
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [isEmptying, setIsEmptying] = useState(false);
+    const [pendingActionId, setPendingActionId] = useState<string | null>(null);
+    const [loadError, setLoadError] = useState('');
     const [files, setFiles] = useState<any[]>([]);
 
     const fadeAnim = useRef(new Animated.Value(0)).current;
 
     const loadTrash = useCallback(async () => {
+        setLoadError('');
         try {
             const res = await apiClient.get('/files/trash');
             if (res.data?.success) {
                 setFiles(sortFilesLatestFirst(dedupeFilesById(res.data.files || [])));
             } else {
                 setFiles([]);
+                setLoadError(res.data?.error || 'Could not load trash.');
             }
-        } catch {
-            showToast('Could not load trash', 'error');
+        } catch (err: any) {
+            const message = err?.response?.data?.error || 'Could not load trash. Check your connection and retry.';
+            setLoadError(message);
         } finally {
             setLoading(false);
             setRefreshing(false);
@@ -61,16 +67,26 @@ export default function TrashScreen({ navigation }: any) {
         return files.length === 1 ? '1 file' : `${files.length} files`;
     }, [files.length]);
 
+    const isBusy = isEmptying || pendingActionId !== null;
+
     const handleRestore = useCallback(async (item: any) => {
+        setPendingActionId(item.id);
         try {
-            await apiClient.patch(`/files/${item.id}/restore`);
+            const res = await apiClient.patch(`/files/${item.id}/restore`);
+            if (!res.data?.success) throw new Error(res.data?.error || 'Could not restore file');
             setFiles((prev) => prev.filter((file) => file.id !== item.id));
             syncAfterFileMutation({ clearCache: true });
+            await loadTrash();
             showToast('File restored');
-        } catch {
-            showToast('Could not restore file', 'error');
+        } catch (err: any) {
+            const message = err?.response?.data?.error || err?.message || 'Could not restore file';
+            setLoadError(message);
+            showToast(message, 'error');
+            await loadTrash();
+        } finally {
+            setPendingActionId(null);
         }
-    }, [showToast]);
+    }, [loadTrash, showToast]);
 
     const handleDeleteForever = useCallback((item: any) => {
         const label = sanitizeDisplayName(item.name || item.file_name || 'this file', 'this file');
@@ -83,22 +99,30 @@ export default function TrashScreen({ navigation }: any) {
                     text: 'Delete',
                     style: 'destructive',
                     onPress: async () => {
+                        setPendingActionId(item.id);
                         try {
-                            await apiClient.delete(`/files/${item.id}`);
+                            const res = await apiClient.post('/files/bulk', { ids: [item.id], action: 'delete' });
+                            if (!res.data?.success) throw new Error(res.data?.error || 'Could not delete file');
                             setFiles((prev) => prev.filter((file) => file.id !== item.id));
                             syncAfterFileMutation({ clearCache: true });
+                            await loadTrash();
                             showToast('File deleted permanently');
-                        } catch {
-                            showToast('Could not delete file', 'error');
+                        } catch (err: any) {
+                            const message = err?.response?.data?.error || err?.message || 'Could not delete file';
+                            setLoadError(message);
+                            showToast(message, 'error');
+                            await loadTrash();
+                        } finally {
+                            setPendingActionId(null);
                         }
                     },
                 },
             ]
         );
-    }, [showToast]);
+    }, [loadTrash, showToast]);
 
     const handleEmptyTrash = useCallback(() => {
-        if (files.length === 0) return;
+        if (files.length === 0 || isBusy) return;
         Alert.alert(
             'Empty trash',
             'Delete all trashed files permanently? This cannot be undone.',
@@ -109,24 +133,30 @@ export default function TrashScreen({ navigation }: any) {
                     style: 'destructive',
                     onPress: async () => {
                         setIsEmptying(true);
+                        setLoadError('');
                         try {
                             const res = await apiClient.delete('/files/trash');
                             if (res.data?.success) {
                                 setFiles([]);
-                                showToast(res.data.warning || res.data.message || 'Trash emptied');
+                                syncAfterFileMutation({ clearCache: true });
+                                await loadTrash();
+                                showToast(res.data.message || 'Trash emptied');
+                            } else {
+                                throw new Error(res.data?.error || 'Could not empty trash completely');
                             }
                         } catch (err: any) {
-                            showToast(err.response?.data?.error || 'Could not empty trash completely', 'error');
+                            const message = err?.response?.data?.error || err?.message || 'Could not empty trash completely';
+                            setLoadError(message);
+                            showToast(message, 'error');
+                            await loadTrash();
                         } finally {
                             setIsEmptying(false);
-                            void loadTrash();
-                            syncAfterFileMutation({ clearCache: true });
                         }
                     },
                 },
             ]
         );
-    }, [files.length, showToast]);
+    }, [files.length, isEmptying, loadTrash, showToast]);
 
     const handleBack = useCallback(() => {
         if (navigation?.canGoBack?.()) { navigation.goBack(); return; }
@@ -156,13 +186,22 @@ export default function TrashScreen({ navigation }: any) {
                 </View>
                 <TouchableOpacity
                     style={st.emptyBtn}
-                    activeOpacity={files.length === 0 || isEmptying ? 1 : 0.7}
-                    disabled={files.length === 0 || isEmptying}
+                    activeOpacity={files.length === 0 || isBusy ? 1 : 0.7}
+                    disabled={files.length === 0 || isBusy}
                     onPress={handleEmptyTrash}
                 >
-                    <Text style={{ color: files.length === 0 ? C.border : '#EF4444', fontWeight: '700', fontSize: 14 }}>
-                        {isEmptying ? 'Emptying...' : 'Empty'}
-                    </Text>
+                    {isBusy ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <ActivityIndicator size="small" color="#EF4444" />
+                            <Text style={{ color: '#EF4444', fontWeight: '700', fontSize: 14 }}>
+                                {isEmptying ? 'Emptying' : 'Working'}
+                            </Text>
+                        </View>
+                    ) : (
+                        <Text style={{ color: files.length === 0 ? C.border : '#EF4444', fontWeight: '700', fontSize: 14 }}>
+                            Empty
+                        </Text>
+                    )}
                 </TouchableOpacity>
             </View>
 
@@ -170,8 +209,19 @@ export default function TrashScreen({ navigation }: any) {
                 <View style={{ padding: 20 }}>
                     {[0, 1, 2, 3].map((key) => <FileCardSkeleton key={key} index={key} />)}
                 </View>
+            ) : loadError && files.length === 0 ? (
+                <ErrorState title="Trash unavailable" message={loadError} onRetry={() => { setLoading(true); void loadTrash(); }} />
             ) : (
                 <Animated.View style={[st.content, { opacity: fadeAnim }]}> 
+                    {loadError && files.length > 0 && (
+                        <View style={[st.errorBanner, { backgroundColor: C.card, borderColor: C.danger + '33' }]}>
+                            <Text style={[st.errorBannerText, { color: C.danger }]} numberOfLines={2}>{loadError}</Text>
+                            <TouchableOpacity onPress={() => { setRefreshing(true); void loadTrash(); }}>
+                                <Text style={{ color: C.primary, fontWeight: '700' }}>Retry</Text>
+                            </TouchableOpacity>
+                        </View>
+                    )}
+
                     {/* Warning Banner */}
                     <View style={[st.infoCard, { backgroundColor: isDark ? 'rgba(245,158,11,0.1)' : '#FFFBEB', borderColor: isDark ? '#451A03' : '#FEF3C7' }]}>
                         <AlertTriangle color="#F59E0B" size={20} />
@@ -198,7 +248,7 @@ export default function TrashScreen({ navigation }: any) {
                                     apiBaseUrl={apiClient.defaults.baseURL || ''}
                                     theme={theme}
                                     isDark={isDark}
-                                    onPress={() => {}} 
+                                    onPress={() => handleTrashOptions(item)}
                                     onOptionsPress={handleTrashOptions}
                                 />
                             )}
@@ -245,5 +295,19 @@ const st = StyleSheet.create({
         marginHorizontal: 20, marginTop: 8, marginBottom: 20,
     },
     infoText: { flex: 1, fontSize: 14, fontWeight: '500', lineHeight: 20 },
+    errorBanner: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+        paddingHorizontal: 16,
+        paddingVertical: 14,
+        borderRadius: 16,
+        borderWidth: 1,
+        marginHorizontal: 20,
+        marginTop: 8,
+        marginBottom: 12,
+    },
+    errorBannerText: { flex: 1, fontSize: 13, fontWeight: '600', lineHeight: 18 },
     emptyState: { flex: 1, paddingHorizontal: 20, paddingBottom: 56 },
 });

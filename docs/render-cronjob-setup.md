@@ -4,6 +4,8 @@ Use Cron-job.org to send a `GET` request to your Render backend every 5 minutes.
 
 This guide is optimized for Render free tier uptime behavior.
 
+If you prefer UptimeRobot instead of Cron-job.org, see the UptimeRobot section below.
+
 ## 1) Verify Health Endpoint
 
 Your backend health URL should be:
@@ -105,3 +107,14 @@ Example response:
 - Keep `/health` public and lightweight (no DB calls, no heavy logic).
 - Do not require auth for `/health`.
 - A 5-minute ping helps reduce cold starts on free tiers, but does not guarantee zero cold starts.
+
+## 9) UptimeRobot Alternative
+
+1. Open `https://uptimerobot.com` and create/login account.
+2. Add a new monitor:
+  - Monitor Type: `HTTP(s)`
+  - Friendly Name: `Axya Render Keep Alive`
+  - URL: `https://<your-render-service>.onrender.com/health`
+  - Monitoring Interval: `5 minutes`
+3. Save monitor and verify first check returns HTTP `200`.
+4. In Render logs, confirm recurring `/health` pings from UptimeRobot.

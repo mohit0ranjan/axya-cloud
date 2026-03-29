@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { useTheme } from '../context/ThemeContext';
+import { layout } from '../ui/layout';
 
 type Variant = 'primary' | 'secondary' | 'danger';
 type Size = 'sm' | 'md' | 'lg';
@@ -19,11 +21,11 @@ type Props = {
 
 const HEIGHT_BY_SIZE: Record<Size, number> = {
   sm: 40,
-  md: 44,
-  lg: 50,
+  md: 48,
+  lg: 56,
 };
 
-export default function AppButton({
+function AppButtonComponent({
   label,
   onPress,
   variant = 'primary',
@@ -37,6 +39,18 @@ export default function AppButton({
   const { theme } = useTheme();
   const isDisabled = disabled || loading;
   const height = HEIGHT_BY_SIZE[size];
+  const scale = useSharedValue(1);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  const handlePressIn = () => {
+    if (!isDisabled) scale.value = withSpring(0.97, layout.animation.springSmooth);
+  };
+  const handlePressOut = () => {
+    scale.value = withSpring(1, layout.animation.springSmooth);
+  };
 
   const variantStyle =
     variant === 'secondary'
@@ -48,35 +62,40 @@ export default function AppButton({
   const textColor = variant === 'secondary' ? theme.colors.textHeading : '#fff';
 
   return (
-    <Pressable
-      accessibilityRole="button"
-      disabled={isDisabled}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.base,
-        { minHeight: 44, height, opacity: pressed && !isDisabled ? 0.88 : 1 },
-        variantStyle,
-        fullWidth && styles.fullWidth,
-        isDisabled && styles.disabled,
-        style,
-      ]}
-    >
-      {loading ? (
-        <ActivityIndicator color={textColor} size="small" />
-      ) : (
-        <View style={styles.content}>
-          {icon}
-          <Text style={[styles.text, { color: textColor }]}>{label}</Text>
-        </View>
-      )}
-    </Pressable>
+    <Animated.View style={[animatedStyle, fullWidth && styles.fullWidth, style]}>
+      <Pressable
+        accessibilityRole="button"
+        disabled={isDisabled}
+        onPress={onPress}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        style={({ pressed }) => [
+          styles.base,
+          { height, opacity: pressed && !isDisabled ? 0.9 : 1 },
+          variantStyle,
+          fullWidth && styles.fullWidth,
+          isDisabled && styles.disabled,
+        ]}
+      >
+        {loading ? (
+          <ActivityIndicator color={textColor} size="small" />
+        ) : (
+          <View style={styles.content}>
+            {icon}
+            <Text style={[styles.text, { color: textColor }]}>{label}</Text>      
+          </View>
+        )}
+      </Pressable>
+    </Animated.View>
   );
 }
 
+export default memo(AppButtonComponent);
+
 const styles = StyleSheet.create({
   base: {
-    borderRadius: 12,
-    paddingHorizontal: 16,
+    borderRadius: layout.radiusMap.button,
+    paddingHorizontal: layout.spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -89,10 +108,10 @@ const styles = StyleSheet.create({
   content: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: layout.spacing.sm,
   },
   text: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
   },
 });

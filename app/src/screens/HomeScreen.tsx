@@ -23,6 +23,7 @@ import { useToast } from '../context/ToastContext';
 import { FileCardSkeleton, SkeletonBlock, ContentFadeIn } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
 import { useTheme } from '../context/ThemeContext';
+import { layout } from '../ui/layout';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 
@@ -67,7 +68,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     /* Header */
     header: {
         flexDirection: 'row', alignItems: 'center',
-        paddingHorizontal: 20,
+        paddingHorizontal: layout.padding.screen,
         paddingTop: 16,
         paddingBottom: 20,
         backgroundColor: C.bg,
@@ -94,7 +95,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     },
     searchBar: {
         flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10,
-        backgroundColor: C.card, borderRadius: 24, paddingHorizontal: 16, height: 48,
+        backgroundColor: C.card, borderRadius: layout.radiusMap.card, paddingHorizontal: 16, height: 48,
         shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
         shadowOpacity: 0.03, shadowRadius: 6, elevation: 2,
     },
@@ -104,8 +105,8 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
 
     /* Storage Card (Premium Gradient Hero) */
     storageCardContainer: {
-        marginHorizontal: 20,
-        borderRadius: 32,
+        marginHorizontal: layout.padding.screen,
+        borderRadius: layout.radiusMap.hero,
         marginTop: 4,
         marginBottom: 24,
         shadowColor: '#6366F1',
@@ -115,7 +116,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
         elevation: 14,
     },
     storageCard: {
-        borderRadius: 32,
+        borderRadius: layout.radiusMap.hero,
         paddingTop: 28,
         paddingBottom: 28,
         paddingHorizontal: 28,
@@ -155,7 +156,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     /* Section headers */
     sectionRow: {
         flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-        paddingHorizontal: 20,
+        paddingHorizontal: layout.padding.screen,
         marginBottom: 16,
     },
     sectionLabel: { fontSize: 12, fontWeight: '700', color: C.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
@@ -165,10 +166,10 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     /* Folders - Modern Glass Cards */
     folderGrid: {
         flexDirection: 'row', flexWrap: 'wrap', gap: 16,
-        paddingHorizontal: 20, marginBottom: 32,
+        paddingHorizontal: layout.padding.screen, marginBottom: 32,
     },
     folderGridCard: {
-        width: '47%', borderRadius: 24, padding: 20,
+        width: '47%', borderRadius: layout.radiusMap.card, padding: 20,
         minHeight: 140,
         justifyContent: 'space-between',
         backgroundColor: C.card,
@@ -186,7 +187,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     folderGridMeta: { fontSize: 12, color: C.muted, fontWeight: '300' },
     
     emptyFolder: {
-        marginHorizontal: 20, height: 80, backgroundColor: C.card, borderRadius: 24,
+        marginHorizontal: layout.padding.screen, height: 80, backgroundColor: C.card, borderRadius: layout.radiusMap.card,
         flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
         borderWidth: 1.5, borderColor: C.border, borderStyle: 'dashed', marginBottom: 20,
     },
@@ -211,7 +212,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     /* Empty state */
     emptyFiles: { alignItems: 'center', paddingTop: 40, paddingBottom: 32 },
     emptyFilesIcon: {
-        width: 76, height: 76, borderRadius: 24,
+        width: 76, height: 76, borderRadius: layout.radiusMap.card,
         backgroundColor: C.card, justifyContent: 'center', alignItems: 'center',
         marginBottom: 18,
         shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 10, elevation: 2,
@@ -290,7 +291,7 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     },
     modalBtns: { flexDirection: 'row', gap: 12, justifyContent: 'flex-end' },
     btnCancel: {
-        paddingHorizontal: 20, paddingVertical: 13, borderRadius: 12, backgroundColor: C.border,
+        paddingHorizontal: layout.padding.screen, paddingVertical: 13, borderRadius: 12, backgroundColor: C.border,
     },
     btnCancelTxt: { fontWeight: '600', color: C.text, fontSize: 14 },
     btnConfirm: {
@@ -1075,7 +1076,7 @@ export default function HomeScreen({ navigation, route }: any) {
                 </View>
 
                 {loading || searching ? (
-                    <View style={{ paddingHorizontal: 20 }}>
+                    <View style={{ paddingHorizontal: layout.padding.screen }}>
                         {[0, 1, 2, 3].map(i => <FileCardSkeleton key={i} index={i} />)}
                     </View>
                 ) : displayItems.length === 0 ? (

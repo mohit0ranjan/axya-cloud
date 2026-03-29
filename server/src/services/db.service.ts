@@ -3,6 +3,7 @@ import pool from '../config/db';
 export const initSchema = async () => {
   const schema = `
         CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+        CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 
         CREATE TABLE IF NOT EXISTS users (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -55,6 +56,43 @@ export const initSchema = async () => {
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         );
+
+          CREATE TABLE IF NOT EXISTS upload_sessions (
+            upload_id UUID PRIMARY KEY,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            file_name TEXT NOT NULL,
+            mime_type TEXT,
+            folder_id UUID REFERENCES folders(id) ON DELETE SET NULL,
+            telegram_chat_id TEXT NOT NULL DEFAULT 'me',
+            source_tag TEXT,
+            total_bytes BIGINT NOT NULL CHECK (total_bytes >= 0),
+            chunk_size_bytes INT NOT NULL CHECK (chunk_size_bytes > 0),
+            total_chunks INT NOT NULL CHECK (total_chunks >= 0),
+            uploaded_chunks JSONB NOT NULL DEFAULT '[]'::jsonb,
+            received_bytes BIGINT NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'uploading', 'completed', 'cancelled', 'failed')),
+            telegram_progress_percent INT NOT NULL DEFAULT 0,
+            file_id UUID REFERENCES files(id) ON DELETE SET NULL,
+            file_sha256 TEXT,
+            file_md5 TEXT,
+            temp_file_path TEXT NOT NULL,
+            error_code TEXT,
+            error_message TEXT,
+            retryable BOOLEAN NOT NULL DEFAULT false,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            completed_at TIMESTAMP
+          );
+
+          CREATE TABLE IF NOT EXISTS upload_session_chunks (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            upload_id UUID NOT NULL REFERENCES upload_sessions(upload_id) ON DELETE CASCADE,
+            chunk_index INT NOT NULL CHECK (chunk_index >= 0),
+            chunk_size_bytes INT NOT NULL CHECK (chunk_size_bytes >= 0),
+            chunk_hash_sha256 TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            CONSTRAINT upload_session_chunks_unique UNIQUE (upload_id, chunk_index)
+          );
 
         CREATE TABLE IF NOT EXISTS share_links_v2 (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -203,6 +241,10 @@ export const initSchema = async () => {
         );
 
         CREATE INDEX IF NOT EXISTS idx_files_user_folder ON files (user_id, folder_id);
+        CREATE INDEX IF NOT EXISTS idx_upload_sessions_user_status_updated ON upload_sessions (user_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_upload_sessions_updated ON upload_sessions (updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_upload_sessions_file_id ON upload_sessions (file_id);
+        CREATE INDEX IF NOT EXISTS idx_upload_session_chunks_upload_index ON upload_session_chunks (upload_id, chunk_index);
         CREATE INDEX IF NOT EXISTS idx_activity_user ON activity_log(user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_file_tags_user ON file_tags(user_id, tag);
         CREATE INDEX IF NOT EXISTS idx_file_access_log_file_time ON file_access_log(file_id, accessed_at DESC);
@@ -255,6 +297,10 @@ export const initSchema = async () => {
     `CREATE INDEX IF NOT EXISTS idx_share_links_v2_slug ON share_links_v2 (slug)`,
     `CREATE INDEX IF NOT EXISTS idx_share_items_v2_share_path ON share_items_v2 (share_id, relative_path)`,
     `CREATE INDEX IF NOT EXISTS idx_share_items_v2_share_pos ON share_items_v2 (share_id, position_index)`,
+    `CREATE INDEX IF NOT EXISTS idx_share_items_v2_share_path_name ON share_items_v2 (share_id, relative_path, display_name, id)`,
+    `CREATE INDEX IF NOT EXISTS idx_share_items_v2_share_path_size ON share_items_v2 (share_id, relative_path, size_bytes, id)`,
+    `CREATE INDEX IF NOT EXISTS idx_share_items_v2_share_path_created ON share_items_v2 (share_id, relative_path, created_at, id)`,
+    `CREATE INDEX IF NOT EXISTS idx_share_items_v2_display_name_trgm ON share_items_v2 USING GIN (display_name gin_trgm_ops)`,
     `CREATE INDEX IF NOT EXISTS idx_share_access_sessions_v2_share_expires ON share_access_sessions_v2 (share_id, expires_at)`,
     `CREATE INDEX IF NOT EXISTS idx_share_access_sessions_v2_hash ON share_access_sessions_v2 (session_token_hash)`,
     `CREATE INDEX IF NOT EXISTS idx_share_events_v2_share_created ON share_events_v2 (share_id, created_at DESC)`,
@@ -272,6 +318,67 @@ export const initSchema = async () => {
     `CREATE INDEX IF NOT EXISTS idx_activity_log_user_created ON activity_log(user_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_file_access_log_file_time ON file_access_log(file_id, accessed_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_file_access_log_user_time ON file_access_log(user_id, accessed_at DESC)`,
+     `CREATE TABLE IF NOT EXISTS upload_sessions (
+       upload_id UUID PRIMARY KEY,
+       user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+       file_name TEXT NOT NULL,
+       mime_type TEXT,
+       folder_id UUID REFERENCES folders(id) ON DELETE SET NULL,
+       telegram_chat_id TEXT NOT NULL DEFAULT 'me',
+       source_tag TEXT,
+       total_bytes BIGINT NOT NULL CHECK (total_bytes >= 0),
+       chunk_size_bytes INT NOT NULL CHECK (chunk_size_bytes > 0),
+       total_chunks INT NOT NULL CHECK (total_chunks >= 0),
+       uploaded_chunks JSONB NOT NULL DEFAULT '[]'::jsonb,
+       received_bytes BIGINT NOT NULL DEFAULT 0,
+       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'uploading', 'completed', 'cancelled', 'failed')),
+       telegram_progress_percent INT NOT NULL DEFAULT 0,
+       file_id UUID REFERENCES files(id) ON DELETE SET NULL,
+       file_sha256 TEXT,
+       file_md5 TEXT,
+       temp_file_path TEXT NOT NULL,
+       error_code TEXT,
+       error_message TEXT,
+       retryable BOOLEAN NOT NULL DEFAULT false,
+       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+       updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+       completed_at TIMESTAMP
+      )`,
+     `CREATE TABLE IF NOT EXISTS upload_session_chunks (
+       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+       upload_id UUID NOT NULL REFERENCES upload_sessions(upload_id) ON DELETE CASCADE,
+       chunk_index INT NOT NULL CHECK (chunk_index >= 0),
+       chunk_size_bytes INT NOT NULL CHECK (chunk_size_bytes >= 0),
+       chunk_hash_sha256 TEXT NOT NULL,
+       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+       CONSTRAINT upload_session_chunks_unique UNIQUE (upload_id, chunk_index)
+      )`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS mime_type TEXT`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS folder_id UUID REFERENCES folders(id) ON DELETE SET NULL`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT NOT NULL DEFAULT 'me'`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS source_tag TEXT`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS total_bytes BIGINT NOT NULL DEFAULT 0`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS chunk_size_bytes INT NOT NULL DEFAULT 5242880`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS total_chunks INT NOT NULL DEFAULT 0`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS uploaded_chunks JSONB NOT NULL DEFAULT '[]'::jsonb`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS received_bytes BIGINT NOT NULL DEFAULT 0`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS telegram_progress_percent INT NOT NULL DEFAULT 0`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS file_id UUID REFERENCES files(id) ON DELETE SET NULL`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS file_sha256 TEXT`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS file_md5 TEXT`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS temp_file_path TEXT NOT NULL DEFAULT ''`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS error_code TEXT`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS error_message TEXT`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS retryable BOOLEAN NOT NULL DEFAULT false`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP`,
+     `UPDATE upload_sessions SET temp_file_path = CONCAT('/tmp/axya_uploads/', upload_id::text, '/partial.bin') WHERE temp_file_path = ''`,
+     `CREATE INDEX IF NOT EXISTS idx_upload_sessions_user_status_updated ON upload_sessions (user_id, status, updated_at DESC)`,
+     `CREATE INDEX IF NOT EXISTS idx_upload_sessions_updated ON upload_sessions (updated_at DESC)`,
+     `CREATE INDEX IF NOT EXISTS idx_upload_sessions_file_id ON upload_sessions (file_id)`,
+     `CREATE INDEX IF NOT EXISTS idx_upload_session_chunks_upload_index ON upload_session_chunks (upload_id, chunk_index)`,
     `UPDATE users u SET
        storage_used_bytes = COALESCE(s.used_bytes, 0),
        total_files_count  = COALESCE(s.cnt, 0)

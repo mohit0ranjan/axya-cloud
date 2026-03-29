@@ -11,7 +11,6 @@ import {
     FileText, X, Image as ImageIcon, ChevronLeft, ChevronRight
 } from 'lucide-react-native';
 import { Image } from '../components/AppImage';
-import { Image as ExpoImage } from 'expo-image';
 import VideoPlayer from '../components/VideoPlayer';
 import PreviewSkeleton from '../components/PreviewSkeleton';
 import ShareFolderModal from '../components/ShareFolderModal';
@@ -22,9 +21,11 @@ import { useToast } from '../context/ToastContext';
 import { useDownload } from '../context/DownloadContext';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
+import { usePreviewAssetCache } from '../hooks/usePreviewAssetCache';
 import { syncAfterFileMutation } from '../services/fileStateSync';
 import { emitFileDeleted, emitFileUpdated } from '../utils/events';
 import { buildApiFileUrl, sanitizeDisplayName, sanitizeFileName } from '../utils/fileSafety';
+import { buildPreviewMediaUrls, getCachedPreviewDetail, invalidatePreviewAssetCache, setCachedPreviewDetail } from '../utils/previewCache';
 
 import Animated, {
     useSharedValue, useAnimatedStyle, withSpring, withTiming, runOnJS, FadeIn, FadeOut
@@ -42,11 +43,9 @@ const MAX_SCALE = 4;
 const IMG_H = height * 0.55;
 const SPRING_CFG = { damping: 20, stiffness: 200 };
 const SLOW_PREVIEW_MS = 1500;
-const SWIPE_THRESHOLD_PX = Math.max(32, Math.round(width * 0.16));
-const SWIPE_VELOCITY_PX_PER_MS = 0.45;
 
 const withRetryNonce = (url: string, nonce: number): string => {
-    if (!nonce) return url;
+    if (!nonce || !/^https?:\/\//i.test(url)) return url;
     return url.includes('?') ? `${url}&r=${nonce}` : `${url}?r=${nonce}`;
 };
 
@@ -59,14 +58,16 @@ const logPreview = (event: string, meta?: Record<string, unknown>) => {
 type ImagePreviewItemProps = {
     item: any;
     jwt: string;
+    fileSizeBytes?: number;
     isZoomed: boolean;
+    isCurrent: boolean;
     onZoomChange?: (value: boolean) => void;
     onSingleTap?: () => void;
     CARD_BG: string;
     shouldLoad: boolean;
 };
 
-const ImagePreviewItem = React.memo(function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD_BG, shouldLoad }: ImagePreviewItemProps) {
+const ImagePreviewItem = React.memo(function ImagePreviewItem({ item, jwt, fileSizeBytes, isZoomed, isCurrent, onZoomChange, onSingleTap, CARD_BG, shouldLoad }: ImagePreviewItemProps) {
     const [loading, setLoading] = useState(true);
     const [useFallback, setUseFallback] = useState(false);
     const [previewFailed, setPreviewFailed] = useState(false);
@@ -75,24 +76,27 @@ const ImagePreviewItem = React.memo(function ImagePreviewItem({ item, jwt, isZoo
     const loadStartedAtRef = useRef<number>(0);
     const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // File URLs
-    const thumbUrl = buildApiFileUrl(API_BASE, item.id, 'thumbnail');
-    const downloadUrl = buildApiFileUrl(API_BASE, item.id, 'download');
-    const headers = useMemo(() => ({ Authorization: `Bearer ${jwt}` }), [jwt]);
-    const activeUrl = useMemo(() => {
-        const raw = useFallback ? thumbUrl : downloadUrl;
-        return withRetryNonce(raw, retryNonce);
-    }, [downloadUrl, thumbUrl, useFallback, retryNonce]);
-    const imageSource = useMemo(() => ({ 
-        uri: activeUrl,
-        headers, 
-        cache: 'force-cache' as const 
-    }), [activeUrl, headers]);
+    const mimeType = String(item?.mime_type || '');
+    const previewWidth = mimeType.startsWith('video/') ? 720 : 480;
+    const { thumbSource, activeSource } = usePreviewAssetCache({
+        baseUrl: API_BASE,
+        fileId: item.id,
+        jwt,
+        retryNonce,
+        mimeType,
+        fileSizeBytes,
+        isCurrent,
+        shouldLoad,
+        thumbWidth: previewWidth,
+    });
+    const imageSource = useMemo(() => ({
+        uri: withRetryNonce(isCurrent && !useFallback ? activeSource.uri : thumbSource.uri, retryNonce),
+        headers: isCurrent && !useFallback ? activeSource.headers : thumbSource.headers,
+    }), [activeSource.headers, activeSource.uri, isCurrent, retryNonce, thumbSource.headers, thumbSource.uri, useFallback]);
     const placeholderSource = useMemo(() => ({
-        uri: withRetryNonce(thumbUrl, retryNonce),
-        headers,
-        cache: 'force-cache' as const,
-    }), [headers, retryNonce, thumbUrl]);
+        uri: withRetryNonce(thumbSource.uri, retryNonce),
+        headers: thumbSource.headers,
+    }), [retryNonce, thumbSource.headers, thumbSource.uri]);
 
     const scale = useSharedValue(1);
     const savedScale = useSharedValue(1);
@@ -111,7 +115,7 @@ const ImagePreviewItem = React.memo(function ImagePreviewItem({ item, jwt, isZoo
         imageOpacity.value = 0;
         loadStartedAtRef.current = Date.now();
         onZoomChange?.(false);
-    }, [item?.id, onZoomChange]);
+    }, [item?.id, isCurrent, onZoomChange]);
 
     useEffect(() => {
         if (!loading) {
@@ -133,11 +137,6 @@ const ImagePreviewItem = React.memo(function ImagePreviewItem({ item, jwt, isZoo
             }
         };
     }, [loading]);
-
-    useEffect(() => {
-        if (!shouldLoad) return;
-        ExpoImage.prefetch([thumbUrl, downloadUrl]).catch(() => undefined);
-    }, [downloadUrl, shouldLoad, thumbUrl]);
 
     const pinch = Gesture.Pinch()
         .enabled(Platform.OS !== 'web')
@@ -238,6 +237,43 @@ const ImagePreviewItem = React.memo(function ImagePreviewItem({ item, jwt, isZoo
         opacity: imageOpacity.value,
     }));
 
+    if (!isCurrent) {
+        if (!shouldLoad) {
+            return (
+                <View style={styles.previewImageContainer}>
+                    <View style={[styles.previewImageArea, { backgroundColor: CARD_BG }]}> 
+                        <PreviewSkeleton />
+                    </View>
+                </View>
+            );
+        }
+
+        return (
+            <View style={styles.previewImageContainer}>
+                <View style={[styles.previewImageArea, { backgroundColor: CARD_BG }]}> 
+                    <Image
+                        source={imageSource}
+                        placeholder={placeholderSource}
+                        transition={120}
+                        style={{ width: '100%', height: '100%' }}
+                        contentFit="cover"
+                        onLoadStart={() => {
+                            loadStartedAtRef.current = Date.now();
+                            setShowSlowNotice(false);
+                        }}
+                        onLoad={() => {
+                            setLoading(false);
+                        }}
+                        onError={() => {
+                            setPreviewFailed(true);
+                            setLoading(false);
+                        }}
+                    />
+                </View>
+            </View>
+        );
+    }
+
     if (!shouldLoad) {
         return (
             <View style={styles.previewImageContainer}>
@@ -274,6 +310,7 @@ const ImagePreviewItem = React.memo(function ImagePreviewItem({ item, jwt, isZoo
                                             setPreviewFailed(false);
                                             setLoading(true);
                                             setUseFallback(false);
+                                            invalidatePreviewAssetCache(API_BASE, item.id);
                                             setRetryNonce((v) => v + 1);
                                             loadStartedAtRef.current = Date.now();
                                         }}
@@ -325,6 +362,17 @@ const ImagePreviewItem = React.memo(function ImagePreviewItem({ item, jwt, isZoo
             </GestureDetector>
         </View>
     );
+}, (prev, next) => {
+    const prevMime = String(prev.item?.mime_type || '');
+    const nextMime = String(next.item?.mime_type || '');
+    return prev.item?.id === next.item?.id
+        && prevMime === nextMime
+        && prev.fileSizeBytes === next.fileSizeBytes
+        && prev.isZoomed === next.isZoomed
+        && prev.isCurrent === next.isCurrent
+        && prev.shouldLoad === next.shouldLoad
+        && prev.CARD_BG === next.CARD_BG
+        && prev.jwt === next.jwt;
 });
 
 // --------------------------------------------------------------------------
@@ -346,7 +394,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     
     // Deep Linking support via standard hook
     const deepLinkedFileId = String(route?.params?.fileId || '').trim();
-    const [deepLinkedFile, setDeepLinkedFile] = useState<any>(null);
+    const [deepLinkedFile, setDeepLinkedFile] = useState<any>(() => getCachedPreviewDetail(deepLinkedFileId));
 
     const previewData = useMemo(() => {
         if (allFiles.length > 0) return allFiles;
@@ -357,20 +405,32 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
     useEffect(() => {
         if (!deepLinkedFileId || allFiles.length > 0 || fallbackFile) return;
+        const cachedDetail = getCachedPreviewDetail(deepLinkedFileId);
+        if (cachedDetail) {
+            setDeepLinkedFile(cachedDetail);
+            setIsResolvingDeepLink(false);
+            return;
+        }
+
         let cancelled = false;
         const startedAt = Date.now();
+        setIsResolvingDeepLink(true);
 
         apiClient.get(`/files/${deepLinkedFileId}/details`)
             .then(res => {
                 if (cancelled) return;
                 const durationMs = Date.now() - startedAt;
                 logPreview('file_details_success', { fileId: deepLinkedFileId, durationMs, slow: durationMs > SLOW_PREVIEW_MS });
-                setDeepLinkedFile(res.data?.file || res.data);
+                const resolved = res.data?.file || res.data;
+                setDeepLinkedFile(resolved);
+                setCachedPreviewDetail(deepLinkedFileId, resolved);
+                setIsResolvingDeepLink(false);
             })
             .catch(() => {
                 if (cancelled) return;
                 logPreview('file_details_error', { fileId: deepLinkedFileId, durationMs: Date.now() - startedAt });
                 showToast('Could not load shared file', 'error');
+                setIsResolvingDeepLink(false);
             });
 
         return () => {
@@ -385,6 +445,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const [uiVisible, setUiVisible] = useState(true);
     const [isDownloadSubmitting, setIsDownloadSubmitting] = useState(false);
     const [downloadTaskId, setDownloadTaskId] = useState<string | null>(null);
+    const [isResolvingDeepLink, setIsResolvingDeepLink] = useState(Boolean(deepLinkedFileId && allFiles.length === 0 && !fallbackFile && !getCachedPreviewDetail(deepLinkedFileId)));
 
     const [isShareModalVisible, setShareModalVisible] = useState(false);
 
@@ -398,9 +459,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const [allFolders, setAllFolders] = useState<any[]>([]);
     const [isMoving, setIsMoving] = useState(false);
     const mutationPendingRef = useRef<Set<string>>(new Set());
+    const currentIndexRef = useRef(initialIndex);
 
     const file = filesState[currentIndex] || null;
-    const dragStartRef = useRef<{ x: number; ts: number }>({ x: 0, ts: 0 });
 
     // slide animations removed in favor of FlatList
 
@@ -460,6 +521,10 @@ export default function FilePreviewScreen({ route, navigation }: any) {
             next[currentIndex] = updater(next[currentIndex]);
             return next;
         });
+    }, [currentIndex]);
+
+    useEffect(() => {
+        currentIndexRef.current = currentIndex;
     }, [currentIndex]);
 
     const handleDownload = useCallback(() => {
@@ -625,13 +690,16 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
     const renderFileItem = useCallback(({ item, index }: { item: any; index: number }) => {
         const mime = item?.mime_type || '';
+        const isCurrent = index === currentIndex;
         const shouldLoad = Math.abs(index - currentIndex) <= 1;
         let content;
         if (mime.startsWith('image/')) {
             content = (
                 <ImagePreviewItem 
                     item={item} jwt={jwt} 
+                    fileSizeBytes={Number(item?.file_size || item?.size_bytes || item?.size || 0)}
                     isZoomed={isZoomed} 
+                    isCurrent={isCurrent}
                     onZoomChange={setIsZoomed} 
                     onSingleTap={toggleUI} 
                     CARD_BG={CARD_BG}
@@ -639,15 +707,34 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                 />
             );
         } else if (mime.startsWith('video/')) {
+            const { thumbUrl: videoThumbUrl } = buildPreviewMediaUrls(API_BASE, item.id, { thumbWidth: 720 });
             content = (
                 <View style={[styles.previewImageContainer, { width }]}>
                     <View style={[styles.previewImageArea, { backgroundColor: '#000' }]}>
-                        <VideoPlayer 
-                            url={buildApiFileUrl(API_BASE, item.id, 'stream')}
-                            token={jwt}
-                            width={width}
-                            fileId={item.id}
-                        />
+                        {isCurrent ? (
+                            <VideoPlayer 
+                                url={buildApiFileUrl(API_BASE, item.id, 'stream')}
+                                token={jwt}
+                                width={width}
+                                fileId={item.id}
+                            />
+                        ) : shouldLoad ? (
+                            <Image
+                                source={{
+                                    uri: videoThumbUrl,
+                                    headers: { Authorization: `Bearer ${jwt}` },
+                                }}
+                                placeholder={{
+                                    uri: videoThumbUrl,
+                                    headers: { Authorization: `Bearer ${jwt}` },
+                                }}
+                                transition={120}
+                                style={{ width: '100%', height: '100%' }}
+                                contentFit="contain"
+                            />
+                        ) : (
+                            <PreviewSkeleton />
+                        )}
                     </View>
                 </View>
             );
@@ -657,7 +744,19 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                 <View style={[styles.previewImageContainer, { width }]}>
                     <View style={[styles.previewImageArea, { backgroundColor: CARD_BG }]}>
                         {Platform.OS === 'web' ? (
-                            <iframe src={pdfUrl} style={{ width: '100%', height: '100%', border: 'none' }} />
+                            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+                                <FileText color={TEXT_SUB} size={64} style={{ marginBottom: 16 }} />
+                                <Text style={{ color: TEXT_MAIN, fontSize: 18, fontWeight: '600', marginBottom: 8 }}>PDF Document</Text>
+                                <Text style={{ color: TEXT_SUB, fontSize: 14, textAlign: 'center', marginBottom: 24 }}>
+                                    PDF preview on web needs an auth-safe URL. Use download for now.
+                                </Text>
+                                <TouchableOpacity 
+                                    style={{ backgroundColor: ACCENT, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12 }}
+                                    onPress={handleDownload}
+                                >
+                                    <Text style={{ color: '#FFF', fontWeight: 'bold' }}>Download PDF</Text>
+                                </TouchableOpacity>
+                            </View>
                         ) : Platform.OS === 'android' ? (
                             <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
                                 <FileText color={TEXT_SUB} size={64} style={{ marginBottom: 16 }} />
@@ -702,8 +801,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     };
 
     const handleViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
-        if (viewableItems.length > 0) {
-            const next = viewableItems[0].index || 0;
+        const next = viewableItems.find((entry) => entry.isViewable && typeof entry.index === 'number')?.index;
+        if (typeof next === 'number' && next !== currentIndexRef.current) {
+            currentIndexRef.current = next;
             setCurrentIndex(next);
             logPreview('viewable_index_changed', { index: next });
         }
@@ -722,11 +822,11 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     }, [previewData]);
 
     useEffect(() => {
-        if (filesState.length === 0) {
+        if (filesState.length === 0 && !isResolvingDeepLink) {
             navigation.goBack();
             return;
         }
-    }, [filesState.length, navigation]);
+    }, [filesState.length, isResolvingDeepLink, navigation]);
 
     const hasMultipleFiles = filesState.length > 1;
 
@@ -754,47 +854,28 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         index,
     }), []);
 
-    const onScrollBeginDrag = useCallback((e: any) => {
-        dragStartRef.current = {
-            x: Number(e?.nativeEvent?.contentOffset?.x || 0),
-            ts: Date.now(),
-        };
-    }, []);
-
     const onMomentumScrollEnd = useCallback((e: any) => {
         const x = Number(e?.nativeEvent?.contentOffset?.x || 0);
-        const startX = dragStartRef.current.x;
-        const dt = Math.max(1, Date.now() - dragStartRef.current.ts);
-        const deltaX = x - startX;
-        const velocity = deltaX / dt;
-        const roughIndex = Math.round(x / width);
-
-        let targetIndex = roughIndex;
-        if (Math.abs(deltaX) >= SWIPE_THRESHOLD_PX || Math.abs(velocity) >= SWIPE_VELOCITY_PX_PER_MS) {
-            const direction = deltaX > 0 ? 1 : -1;
-            targetIndex = currentIndex + direction;
-        }
-
-        const clamped = Math.max(0, Math.min(filesState.length - 1, targetIndex));
+        const clamped = Math.max(0, Math.min(filesState.length - 1, Math.round(x / width)));
         const expectedOffset = clamped * width;
         const offsetDrift = Math.abs(expectedOffset - x);
+        const previousIndex = currentIndexRef.current;
 
         if (offsetDrift > 2) {
             flatListRef.current?.scrollToIndex({ index: clamped, animated: true });
         }
 
-        if (clamped !== currentIndex) {
+        if (clamped !== previousIndex) {
+            currentIndexRef.current = clamped;
             setCurrentIndex(clamped);
         }
 
         logPreview('swipe_resolved', {
-            from: currentIndex,
+            from: previousIndex,
             to: clamped,
-            deltaX,
-            velocity,
             drift: offsetDrift,
         });
-    }, [currentIndex, filesState.length]);
+    }, [filesState.length]);
 
     return (
         <View style={[styles.container, { backgroundColor: BG_COLOR, paddingTop: insets.top }]}>
@@ -844,7 +925,6 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                         getItemLayout={getItemLayout}
                         onScrollToIndexFailed={onScrollToIndexFailed}
                         onViewableItemsChanged={handleViewableItemsChanged}
-                        onScrollBeginDrag={onScrollBeginDrag}
                         onMomentumScrollEnd={onMomentumScrollEnd}
                         initialNumToRender={1}
                         maxToRenderPerBatch={2}

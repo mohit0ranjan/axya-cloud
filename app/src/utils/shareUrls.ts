@@ -21,6 +21,7 @@ export const normalizeExternalShareUrl = (rawUrl: string): string => {
 
     try {
         const parsed = new URL(input);
+        if (parsed.pathname.startsWith('/s/') && !parsed.searchParams.has('k')) return '';
         return `${PUBLIC_SHARE_BASE_URL}${parsed.pathname}${parsed.search}`.replace(/([^:]\/)\/+/g, '$1');
     } catch {
         return input;
@@ -30,10 +31,9 @@ export const normalizeExternalShareUrl = (rawUrl: string): string => {
 export const buildExternalShareUrl = (slug: string, secret?: string | null): string => {
     const cleanSlug = encodeURIComponent(String(slug || '').trim());
     const cleanSecret = String(secret || '').trim();
-    if (!cleanSlug) return '';
+    if (!cleanSlug || !cleanSecret) return '';
 
-    const query = cleanSecret ? `?k=${encodeURIComponent(cleanSecret)}` : '';
-    return `${PUBLIC_SHARE_BASE_URL}/s/${cleanSlug}${query}`;
+    return `${PUBLIC_SHARE_BASE_URL}/s/${cleanSlug}?k=${encodeURIComponent(cleanSecret)}`;
 };
 
 export const resolveShareUrl = (payload: any): string => {

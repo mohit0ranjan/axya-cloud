@@ -26,7 +26,7 @@ interface VideoPlayerProps {
 
 type StreamBadge = 'none' | 'streaming' | 'downloaded';
 
-export default function VideoPlayer({ url, token, width: w, fileId, onError }: VideoPlayerProps) {
+function VideoPlayer({ url, token, width: w, fileId, onError }: VideoPlayerProps) {
     const [loading, setLoading] = useState(true);
     const [muted, setMuted] = useState(false);
     const [isPlaying, setIsPlaying] = useState(true);
@@ -37,6 +37,7 @@ export default function VideoPlayer({ url, token, width: w, fileId, onError }: V
     const loadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const statusInterval = useRef<ReturnType<typeof setInterval> | null>(null);
     const loadStartedAtRef = useRef<number>(Date.now());
+    const statusFailureCountRef = useRef(0);
     const safeUrl = sanitizeRemoteUri(url);
 
     const logVideoPreview = useCallback((event: string, meta?: Record<string, unknown>) => {
@@ -62,6 +63,7 @@ export default function VideoPlayer({ url, token, width: w, fileId, onError }: V
         const pollStatus = async () => {
             try {
                 const res = await apiClient.get(`/stream/${fileId}/status`);
+                statusFailureCountRef.current = 0;
                 if (res.data?.success) {
                     const { status, progress } = res.data;
                     if (status === 'ready') {
@@ -78,7 +80,12 @@ export default function VideoPlayer({ url, token, width: w, fileId, onError }: V
                     }
                 }
             } catch {
-                // Non-critical — badge just won't show
+                statusFailureCountRef.current += 1;
+                if (statusFailureCountRef.current >= 3 && statusInterval.current) {
+                    clearInterval(statusInterval.current);
+                    statusInterval.current = null;
+                    setStreamBadge('none');
+                }
             }
         };
 
@@ -93,6 +100,7 @@ export default function VideoPlayer({ url, token, width: w, fileId, onError }: V
                 clearInterval(statusInterval.current);
                 statusInterval.current = null;
             }
+            statusFailureCountRef.current = 0;
         };
     }, [fileId]);
 
@@ -257,6 +265,8 @@ export default function VideoPlayer({ url, token, width: w, fileId, onError }: V
         </View>
     );
 }
+
+export default React.memo(VideoPlayer);
 
 const s = StyleSheet.create({
     container: {

@@ -16,6 +16,7 @@ import {
     generateLinkSecret,
     generateSlug,
     getSessionTtlSeconds,
+    getTicketTtlSeconds,
     hashLinkSecret,
     hashSessionToken,
     signShareV2SessionToken,
@@ -31,6 +32,7 @@ import { iterFileDownload } from '../services/telegram.service';
 import { sendApiError } from '../utils/apiError';
 import { FRONTEND_BASE_URL } from '../config/urls';
 import { logger } from '../utils/logger';
+import { cacheGet, cacheSet, cacheDelByPrefix } from '../services/cache.service';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -72,7 +74,8 @@ const normalizeSnapshotPath = (value: unknown): string => {
         .replace(/\/+/g, '/')
         .replace(/\/+$/g, '')
         .replace(/^\//, '')
-        .replace(/\.\./g, '');
+    .replace(/\.\./g, '')
+    .slice(0, MAX_SHARE_PATH_LENGTH);
 };
 
 const toDisplayPath = (path: string): string => (path ? `/${path}` : '/');
@@ -80,12 +83,176 @@ const ZIP_TMP_DIR = path.join(os.tmpdir(), 'axya_share_v2_zip');
 const SYNC_ZIP_MAX_FILES = Number.parseInt(String(process.env.SHARE_V2_SYNC_ZIP_MAX_FILES || '40'), 10) || 40;
 const SYNC_ZIP_MAX_BYTES = Number.parseInt(String(process.env.SHARE_V2_SYNC_ZIP_MAX_BYTES || String(200 * 1024 * 1024)), 10) || 200 * 1024 * 1024;
 const ZIP_JOB_TTL_HOURS = Number.parseInt(String(process.env.SHARE_V2_ZIP_JOB_TTL_HOURS || '2'), 10) || 2;
+const ZIP_CLEANUP_INTERVAL_MS = Number.parseInt(String(process.env.SHARE_V2_ZIP_CLEANUP_INTERVAL_MS || String(30 * 60 * 1000)), 10) || 30 * 60 * 1000;
+const ZIP_JOB_HISTORY_RETENTION_HOURS = Number.parseInt(String(process.env.SHARE_V2_ZIP_HISTORY_RETENTION_HOURS || '168'), 10) || 168;
+const SHARE_META_CACHE_TTL_SECONDS = Number.parseInt(String(process.env.SHARE_V2_META_CACHE_TTL_SECONDS || '20'), 10) || 20;
+const SHARE_LOOKUP_CACHE_TTL_SECONDS = Number.parseInt(String(process.env.SHARE_V2_LOOKUP_CACHE_TTL_SECONDS || '20'), 10) || 20;
+const SHARE_ITEMS_CACHE_TTL_SECONDS = Number.parseInt(String(process.env.SHARE_V2_ITEMS_CACHE_TTL_SECONDS || '12'), 10) || 12;
+const SHARE_SLUG_REGEX = /^[a-zA-Z0-9_-]{6,128}$/;
+const MAX_SEARCH_TERM_LENGTH = 120;
+const MAX_SHARE_PATH_LENGTH = 400;
+
+const TRANSIENT_DB_ERROR_CODES = new Set(['57P01', '57P02', '57P03', '08001', '08003', '08006', '53300', '40001']);
+const isTransientDbError = (err: unknown): boolean => {
+    if (!err || typeof err !== 'object') return false;
+    const code = String((err as { code?: unknown }).code || '').trim();
+    return TRANSIENT_DB_ERROR_CODES.has(code);
+};
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const withDbReadRetry = async <T>(operationName: string, fn: () => Promise<T>, maxAttempts = 2): Promise<T> => {
+    let lastErr: unknown = null;
+    for (let attempt = 1; attempt <= Math.max(1, maxAttempts); attempt += 1) {
+        try {
+            return await fn();
+        } catch (err) {
+            lastErr = err;
+            if (!isTransientDbError(err) || attempt >= maxAttempts) {
+                throw err;
+            }
+            logger.warn('backend.share_v2', 'db_read_retry', {
+                operationName,
+                attempt,
+                code: (err as any)?.code || null,
+                message: String((err as any)?.message || err || 'unknown'),
+            });
+            await sleep(120 * attempt);
+        }
+    }
+    throw lastErr || new Error('DB read retry exhausted');
+};
+
+const toVersionTag = (value: unknown): string => {
+    if (!value) return 'na';
+    const dateValue = new Date(String(value));
+    if (!Number.isNaN(dateValue.getTime())) return String(dateValue.getTime());
+    return String(value);
+};
+
+const hashCachePart = (value: string): string => {
+    return crypto.createHash('sha1').update(value).digest('hex').slice(0, 16);
+};
+
+const shareCachePrefix = (shareId: string) => `share:v2:${shareId}:`;
+const shareMetaCacheKey = (share: ShareLinkV2Row) =>
+    `share:v2:${share.id}:meta:${toVersionTag(share.updated_at)}:${toVersionTag(share.revoked_at)}:${toVersionTag(share.expires_at)}`;
+const shareSlugCacheKey = (slug: string) => `share:v2:slug:${slug}`;
+const shareIdCacheKey = (shareId: string) => `share:v2:id:${shareId}`;
+const shareItemsCacheKey = (
+    share: ShareLinkV2Row,
+    pathValue: string,
+    searchValue: string,
+    sort: string,
+    limit: number,
+    offset: number
+) => {
+    const raw = JSON.stringify({
+        path: pathValue,
+        search: searchValue,
+        sort,
+        limit,
+        offset,
+        shareVersion: toVersionTag(share.updated_at),
+        revokedAt: toVersionTag(share.revoked_at),
+        expiresAt: toVersionTag(share.expires_at),
+    });
+    return `share:v2:${share.id}:items:${hashCachePart(raw)}`;
+};
+
+const invalidateShareCaches = (shareId: string, slug?: string) => {
+    cacheDelByPrefix(shareCachePrefix(shareId));
+    if (slug) {
+        cacheDelByPrefix(shareSlugCacheKey(slug));
+    }
+};
+
+const normalizeShareSlug = (value: unknown): string => {
+    return String(value || '').trim();
+};
+
+const sanitizeSearchTerm = (value: unknown): string => {
+    return String(value || '')
+        .replace(/[\u0000-\u001F\u007F]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, MAX_SEARCH_TERM_LENGTH);
+};
 
 try {
     fs.mkdirSync(ZIP_TMP_DIR, { recursive: true });
 } catch {
     // best effort
 }
+
+const cleanupZipArtifacts = async () => {
+    try {
+        // Cleanup expired tmp files on disk first.
+        try {
+            const now = Date.now();
+            const maxAgeMs = Math.max(1, ZIP_JOB_TTL_HOURS) * 60 * 60 * 1000;
+            const files = fs.readdirSync(ZIP_TMP_DIR);
+            for (const file of files) {
+                const filePath = path.join(ZIP_TMP_DIR, file);
+                try {
+                    const stat = fs.statSync(filePath);
+                    if (now - stat.mtimeMs > maxAgeMs) {
+                        fs.unlinkSync(filePath);
+                    }
+                } catch {
+                    // best effort per-file cleanup
+                }
+            }
+        } catch {
+            // best effort disk cleanup
+        }
+
+        const expiredJobs = await pool.query(
+            `SELECT id, zip_path
+             FROM share_zip_jobs_v2
+             WHERE zip_path IS NOT NULL
+               AND expires_at IS NOT NULL
+               AND expires_at < NOW()`
+        );
+
+        for (const row of expiredJobs.rows) {
+            const zipPath = String(row.zip_path || '');
+            if (!zipPath) continue;
+            try {
+                if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+            } catch {
+                // best effort per-job cleanup
+            }
+        }
+
+        await pool.query(
+            `UPDATE share_zip_jobs_v2
+             SET status = CASE WHEN status = 'completed' THEN 'failed' ELSE status END,
+                 error_code = COALESCE(error_code, 'zip_expired'),
+                 error_message = COALESCE(error_message, 'ZIP expired and removed.'),
+                 zip_path = NULL
+             WHERE zip_path IS NOT NULL
+               AND expires_at IS NOT NULL
+               AND expires_at < NOW()`
+        );
+
+        await pool.query(
+            `DELETE FROM share_zip_jobs_v2
+             WHERE completed_at IS NOT NULL
+               AND completed_at < NOW() - ($1::int * INTERVAL '1 hour')`,
+            [Math.max(1, ZIP_JOB_HISTORY_RETENTION_HOURS)]
+        );
+    } catch (err) {
+        logger.warn('backend.share_v2', 'zip_cleanup_failed', {
+            message: String((err as any)?.message || err),
+        });
+    }
+};
+
+void cleanupZipArtifacts();
+setInterval(() => {
+    void cleanupZipArtifacts();
+}, ZIP_CLEANUP_INTERVAL_MS);
 
 const encodeCursor = (offset: number): string => Buffer.from(String(Math.max(0, offset)), 'utf8').toString('base64url');
 const decodeCursor = (cursor: unknown): number => {
@@ -153,18 +320,40 @@ const getOwnerShareInsights = async (shareId: string) => {
 };
 
 const getShareBySlug = async (slug: string): Promise<ShareLinkV2Row | null> => {
-    const res = await pool.query('SELECT * FROM share_links_v2 WHERE slug = $1', [slug]);
-    return (res.rows[0] as ShareLinkV2Row | undefined) || null;
+    const key = shareSlugCacheKey(slug);
+    const cached = cacheGet<ShareLinkV2Row | null>(key);
+    if (cached !== undefined) return cached;
+
+    const res = await withDbReadRetry('get_share_by_slug', async () => {
+        return pool.query('SELECT * FROM share_links_v2 WHERE slug = $1', [slug]);
+    });
+    const share = (res.rows[0] as ShareLinkV2Row | undefined) || null;
+    cacheSet(key, share, SHARE_LOOKUP_CACHE_TTL_SECONDS);
+    return share;
 };
 
 const getShareByIdForPublic = async (shareId: string): Promise<ShareLinkV2Row | null> => {
-    const res = await pool.query('SELECT * FROM share_links_v2 WHERE id = $1', [shareId]);
-    return (res.rows[0] as ShareLinkV2Row | undefined) || null;
+    const key = shareIdCacheKey(shareId);
+    const cached = cacheGet<ShareLinkV2Row | null>(key);
+    if (cached !== undefined) return cached;
+
+    const res = await withDbReadRetry('get_share_by_id_for_public', async () => {
+        return pool.query('SELECT * FROM share_links_v2 WHERE id = $1', [shareId]);
+    });
+    const share = (res.rows[0] as ShareLinkV2Row | undefined) || null;
+    cacheSet(key, share, SHARE_LOOKUP_CACHE_TTL_SECONDS);
+    return share;
 };
 
 const buildShareMeta = async (share: ShareLinkV2Row): Promise<ShareMetaV2> => {
-    const countRes = await pool.query('SELECT COUNT(*)::int AS file_count FROM share_items_v2 WHERE share_id = $1', [share.id]);
-    return {
+    const key = shareMetaCacheKey(share);
+    const cached = cacheGet<ShareMetaV2>(key);
+    if (cached) return cached;
+
+    const countRes = await withDbReadRetry('build_share_meta_count', async () => {
+        return pool.query('SELECT COUNT(*)::int AS file_count FROM share_items_v2 WHERE share_id = $1', [share.id]);
+    });
+    const meta = {
         id: share.id,
         slug: share.slug,
         resourceType: share.resource_type,
@@ -175,6 +364,8 @@ const buildShareMeta = async (share: ShareLinkV2Row): Promise<ShareMetaV2> => {
         revokedAt: share.revoked_at,
         fileCount: Number(countRes.rows[0]?.file_count || 0),
     };
+    cacheSet(key, meta, SHARE_META_CACHE_TTL_SECONDS);
+    return meta;
 };
 
 const readShareSessionToken = (req: Request): string => {
@@ -197,16 +388,18 @@ const resolvePublicSession = async (req: Request, res: Response): Promise<{ shar
     }
 
     const sessionHash = hashSessionToken(token);
-    const sessionRes = await pool.query(
-        `SELECT id
-         FROM share_access_sessions_v2
-         WHERE id = $1
-           AND share_id = $2
-           AND session_token_hash = $3
-           AND revoked_at IS NULL
-           AND expires_at > NOW()`,
-        [payload.sid, payload.shareId, sessionHash]
-    );
+    const sessionRes = await withDbReadRetry('resolve_public_session', async () => {
+        return pool.query(
+            `SELECT id
+             FROM share_access_sessions_v2
+             WHERE id = $1
+               AND share_id = $2
+               AND session_token_hash = $3
+               AND revoked_at IS NULL
+               AND expires_at > NOW()`,
+            [payload.sid, payload.shareId, sessionHash]
+        );
+    });
     if (sessionRes.rowCount === 0) {
         sendApiError(res, 401, 'share_session_expired', 'Expired or revoked share session.', { retryable: false });
         return null;
@@ -351,6 +544,7 @@ export const createShareV2 = async (req: AuthRequest, res: Response) => {
         );
 
         await client.query('COMMIT');
+        invalidateShareCaches(created.id, created.slug);
 
         const shareMeta = await buildShareMeta(created);
         const base = deriveShareBaseUrlFromRequest(req);
@@ -384,7 +578,6 @@ export const listSharesV2 = async (req: AuthRequest, res: Response) => {
     }
 
     try {
-        const base = deriveShareBaseUrlFromRequest(req);
         const result = await pool.query(
             `SELECT
                 s.*,
@@ -417,7 +610,6 @@ export const listSharesV2 = async (req: AuthRequest, res: Response) => {
         return res.json({
             success: true,
             shares: result.rows.map((row: any) => {
-                const sharePath = `/s/${encodeURIComponent(String(row.slug || ''))}`;
                 return {
                     id: row.id,
                     slug: row.slug,
@@ -434,8 +626,8 @@ export const listSharesV2 = async (req: AuthRequest, res: Response) => {
                     error_count: Number(row.error_count || 0),
                     createdAt: row.created_at,
                     updatedAt: row.updated_at,
-                    share_url: `${base}${sharePath}`,
-                    shareUrl: `${base}${sharePath}`,
+                    share_url: null,
+                    shareUrl: null,
                 };
             }),
         });
@@ -464,8 +656,6 @@ export const getShareDetailsV2 = async (req: AuthRequest, res: Response) => {
             buildShareMeta(share),
             getOwnerShareInsights(share.id),
         ]);
-        const base = deriveShareBaseUrlFromRequest(req);
-        const sharePath = `/s/${encodeURIComponent(String(share.slug || ''))}`;
 
         return res.json({
             success: true,
@@ -473,8 +663,8 @@ export const getShareDetailsV2 = async (req: AuthRequest, res: Response) => {
                 ...meta,
                 createdAt: share.created_at,
                 updatedAt: share.updated_at,
-                share_url: `${base}${sharePath}`,
-                shareUrl: `${base}${sharePath}`,
+                share_url: null,
+                shareUrl: null,
             },
             analytics: insights.summary,
             recentEvents: insights.recentEvents,
@@ -549,6 +739,7 @@ export const patchShareV2 = async (req: AuthRequest, res: Response) => {
         const updated = await pool.query(query, values);
 
         const row = updated.rows[0] as ShareLinkV2Row;
+        invalidateShareCaches(row.id, row.slug);
         const meta = await buildShareMeta(row);
         return res.json({ success: true, share: meta });
     } catch {
@@ -571,13 +762,15 @@ export const deleteShareV2 = async (req: AuthRequest, res: Response) => {
             `UPDATE share_links_v2
              SET revoked_at = NOW(), updated_at = NOW()
              WHERE id = $1 AND owner_user_id = $2
-             RETURNING id`,
+             RETURNING id, slug`,
             [shareId, req.user.id]
         );
 
         if (result.rowCount === 0) {
             return sendApiError(res, 404, 'not_found', 'Share not found.', { retryable: false });
         }
+
+        invalidateShareCaches(String(result.rows[0]?.id || shareId), String(result.rows[0]?.slug || ''));
 
         return res.json({ success: true });
     } catch {
@@ -586,12 +779,21 @@ export const deleteShareV2 = async (req: AuthRequest, res: Response) => {
 };
 
 export const openPublicShareV2 = async (req: Request, res: Response) => {
-    const slug = String(req.params.slug || '').trim();
+    const slug = normalizeShareSlug(req.params.slug);
     const secret = String(req.body?.secret || req.query.k || '').trim();
     const password = String(req.body?.password || '').trim();
 
     if (!slug || !secret) {
         return sendApiError(res, 400, 'invalid_request', 'slug and secret are required.', { retryable: false });
+    }
+    if (!SHARE_SLUG_REGEX.test(slug)) {
+        return sendApiError(res, 400, 'invalid_request', 'Invalid share slug.', { retryable: false });
+    }
+    if (secret.length > 512) {
+        return sendApiError(res, 400, 'invalid_request', 'Invalid share secret.', { retryable: false });
+    }
+    if (password.length > 256) {
+        return sendApiError(res, 400, 'invalid_request', 'Password is too long.', { retryable: false });
     }
 
     try {
@@ -652,7 +854,7 @@ export const openPublicShareV2 = async (req: Request, res: Response) => {
             share: await buildShareMeta(share),
         });
     } catch {
-        return sendApiError(res, 500, 'internal_error', 'Failed to open share.', { retryable: false });
+        return sendApiError(res, 500, 'internal_error', 'Failed to open share.', { retryable: true });
     }
 };
 
@@ -660,7 +862,15 @@ export const getPublicShareMetaV2 = async (req: Request, res: Response) => {
     const ctx = await resolvePublicSession(req, res);
     if (!ctx) return;
 
-    return res.json({ success: true, share: await buildShareMeta(ctx.share) });
+    try {
+        return res.json({ success: true, share: await buildShareMeta(ctx.share) });
+    } catch (err) {
+        logger.error('backend.share_v2', 'public_meta_failed', {
+            shareId: ctx.share.id,
+            message: String((err as any)?.message || err || 'unknown'),
+        });
+        return sendApiError(res, 500, 'internal_error', 'Failed to load shared metadata.', { retryable: true });
+    }
 };
 
 export const listPublicShareItemsV2 = async (req: Request, res: Response) => {
@@ -669,12 +879,36 @@ export const listPublicShareItemsV2 = async (req: Request, res: Response) => {
 
     const share = ctx.share;
     const path = normalizeSnapshotPath(req.query.path);
-    const search = String(req.query.search || '').trim();
+    const search = sanitizeSearchTerm(req.query.search);
     const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || 50), 10) || 50));
     const offsetFromQuery = Math.max(0, Number.parseInt(String(req.query.offset || 0), 10) || 0);
     const offsetFromCursor = decodeCursor(req.query.cursor);
     const offset = req.query.cursor ? offsetFromCursor : offsetFromQuery;
     const sort = String(req.query.sort || 'name_asc').trim().toLowerCase();
+
+    if (path.length > MAX_SHARE_PATH_LENGTH) {
+        return sendApiError(res, 400, 'invalid_request', 'Path is too long.', { retryable: false });
+    }
+
+    const validSorts = new Set([
+        'name_asc',
+        'name_desc',
+        'size_asc',
+        'size_desc',
+        'date_asc',
+        'date_desc',
+        'position_asc',
+        'position_desc',
+    ]);
+    if (!validSorts.has(sort)) {
+        return sendApiError(res, 400, 'invalid_request', 'Invalid sort value.', { retryable: false });
+    }
+
+    const itemsCacheKey = shareItemsCacheKey(share, path, search, sort, limit, offset);
+    const cachedPayload = cacheGet<any>(itemsCacheKey);
+    if (cachedPayload) {
+        return res.json(cachedPayload);
+    }
 
     try {
         const whereParts = ['si.share_id = $1'];
@@ -704,64 +938,129 @@ export const listPublicShareItemsV2 = async (req: Request, res: Response) => {
             }
         })();
 
-        const filesRes = await pool.query(
-            `SELECT
-                si.*,
-                tph.pointer_status,
-                CASE WHEN fsm.mode = 'segmented' AND fsm.status IN ('scheduled', 'building', 'ready') THEN true ELSE false END AS segment_mode_enabled,
-                COUNT(*) OVER()::int AS total_count
-             FROM share_items_v2 si
-             LEFT JOIN telegram_pointer_health tph ON tph.share_item_id = si.id
-             LEFT JOIN file_segment_manifests fsm ON fsm.file_id = si.file_id
-             WHERE ${whereParts.join(' AND ')}
-             ORDER BY ${sortSql}
-             LIMIT $${idx++} OFFSET $${idx}`,
-            [...values, limit, offset]
-        );
+        const whereSql = whereParts.join(' AND ');
+        const filesParams = [...values, limit, offset];
+        const countParams = [...values];
 
-        const total = Number(filesRes.rows[0]?.total_count || 0);
+        const filesQueryPromise = withDbReadRetry('list_public_share_items_files', async () => {
+            return pool.query(
+                `SELECT
+                    si.*,
+                    tph.pointer_status,
+                    CASE WHEN fsm.mode = 'segmented' AND fsm.status IN ('scheduled', 'building', 'ready') THEN true ELSE false END AS segment_mode_enabled
+                 FROM share_items_v2 si
+                 LEFT JOIN telegram_pointer_health tph ON tph.share_item_id = si.id
+                 LEFT JOIN file_segment_manifests fsm ON fsm.file_id = si.file_id
+                 WHERE ${whereSql}
+                 ORDER BY ${sortSql}
+                 LIMIT $${idx++} OFFSET $${idx}`,
+                filesParams
+            );
+        });
 
-        const folderRes = path
-            ? await pool.query(
-                `WITH source AS (
-                    SELECT relative_path
+        const countQueryPromise = withDbReadRetry('list_public_share_items_count', async () => {
+            return pool.query(
+                `SELECT COUNT(*)::int AS total
+                 FROM share_items_v2 si
+                 WHERE ${whereSql}`,
+                countParams
+            );
+        });
+
+        const folderQueryPromise = path
+            ? withDbReadRetry('list_public_share_items_folders_nested', async () => {
+                return pool.query(
+                    `WITH source AS (
+                        SELECT relative_path
+                        FROM share_items_v2
+                        WHERE share_id = $1
+                          AND relative_path LIKE ($2 || '/%')
+                    )
+                    SELECT
+                        split_part(substring(relative_path FROM char_length($2) + 2), '/', 1) AS name,
+                        COUNT(*)::int AS file_count
+                    FROM source
+                    WHERE substring(relative_path FROM char_length($2) + 2) <> ''
+                    GROUP BY name
+                    ORDER BY name ASC`,
+                    [share.id, path]
+                );
+            })
+            : withDbReadRetry('list_public_share_items_folders_root', async () => {
+                return pool.query(
+                    `SELECT
+                        split_part(relative_path, '/', 1) AS name,
+                        COUNT(*)::int AS file_count
                     FROM share_items_v2
                     WHERE share_id = $1
-                      AND relative_path LIKE ($2 || '/%')
-                )
-                SELECT
-                    split_part(substring(relative_path FROM char_length($2) + 2), '/', 1) AS name,
-                    COUNT(*)::int AS file_count
-                FROM source
-                WHERE substring(relative_path FROM char_length($2) + 2) <> ''
-                GROUP BY name
-                ORDER BY name ASC`,
-                [share.id, path]
-            )
-            : await pool.query(
-                `SELECT
-                    split_part(relative_path, '/', 1) AS name,
-                    COUNT(*)::int AS file_count
-                FROM share_items_v2
-                WHERE share_id = $1
-                  AND relative_path <> ''
-                GROUP BY name
-                ORDER BY name ASC`,
-                [share.id]
-            );
+                      AND relative_path <> ''
+                    GROUP BY name
+                    ORDER BY name ASC`,
+                    [share.id]
+                );
+            });
 
-        return res.json({
+        const [filesSettled, countSettled, folderSettled, shareMetaSettled] = await Promise.allSettled([
+            filesQueryPromise,
+            countQueryPromise,
+            folderQueryPromise,
+            buildShareMeta(share),
+        ]);
+
+        if (filesSettled.status === 'rejected') {
+            throw filesSettled.reason;
+        }
+
+        const filesRes = filesSettled.value;
+        const total = countSettled.status === 'fulfilled'
+            ? Number(countSettled.value.rows[0]?.total || 0)
+            : offset + filesRes.rows.length;
+
+        if (countSettled.status === 'rejected') {
+            logger.warn('backend.share_v2', 'public_items_count_fallback', {
+                shareId: share.id,
+                path,
+                search,
+                sort,
+                message: String((countSettled.reason as any)?.message || countSettled.reason || 'unknown'),
+            });
+        }
+
+        const foldersRows = folderSettled.status === 'fulfilled' ? folderSettled.value.rows : [];
+        if (folderSettled.status === 'rejected') {
+            logger.warn('backend.share_v2', 'public_items_folders_fallback', {
+                shareId: share.id,
+                path,
+                message: String((folderSettled.reason as any)?.message || folderSettled.reason || 'unknown'),
+            });
+        }
+
+        const shareMeta = shareMetaSettled.status === 'fulfilled'
+            ? shareMetaSettled.value
+            : {
+                id: share.id,
+                slug: share.slug,
+                resourceType: share.resource_type,
+                allowDownload: Boolean(share.allow_download),
+                allowPreview: Boolean(share.allow_preview),
+                requiresPassword: Boolean(share.password_hash),
+                expiresAt: share.expires_at,
+                revokedAt: share.revoked_at,
+                fileCount: 0,
+            };
+
+        const responsePayload = {
             success: true,
-            share: await buildShareMeta(share),
+            share: shareMeta,
             path: toDisplayPath(path),
-            folders: folderRes.rows
+            folders: foldersRows
                 .filter((row: any) => String(row.name || '').trim())
                 .map((row: any) => ({
                     name: row.name,
                     path: toDisplayPath(path ? `${path}/${row.name}` : row.name),
                     fileCount: Number(row.file_count || 0),
                 })),
-            files: filesRes.rows.map(({ total_count, pointer_status, segment_mode_enabled, ...row }: any) => ({
+            files: filesRes.rows.map(({ pointer_status, segment_mode_enabled, ...row }: any) => ({
                 ...row,
                 pointer_health: pointer_status || null,
                 cache_state: getMessageCacheState(String(row.telegram_chat_id || ''), Number(row.telegram_message_id || 0)),
@@ -777,9 +1076,19 @@ export const listPublicShareItemsV2 = async (req: Request, res: Response) => {
                 next: offset + filesRes.rows.length < total ? encodeCursor(offset + filesRes.rows.length) : null,
                 current: encodeCursor(offset),
             },
+        };
+
+        cacheSet(itemsCacheKey, responsePayload, SHARE_ITEMS_CACHE_TTL_SECONDS);
+        return res.json(responsePayload);
+    } catch (err) {
+        logger.error('backend.share_v2', 'list_public_items_failed', {
+            shareId: share.id,
+            path,
+            search,
+            sort,
+            message: String((err as any)?.message || err || 'unknown'),
         });
-    } catch {
-        return sendApiError(res, 500, 'internal_error', 'Failed to list shared items.', { retryable: false });
+        return sendApiError(res, 500, 'internal_error', 'Failed to list shared items.', { retryable: true });
     }
 };
 
@@ -793,7 +1102,10 @@ export const createShareItemTicketV2 = async (req: Request, res: Response) => {
         return sendApiError(res, 400, 'invalid_request', 'Invalid item id.', { retryable: false });
     }
 
-    const reqDisposition = String(req.body?.disposition || req.query.disposition || 'inline').toLowerCase();
+    const reqDisposition = String(req.body?.disposition || req.query.disposition || '').trim().toLowerCase();
+    if (reqDisposition && reqDisposition !== 'inline' && reqDisposition !== 'attachment' && reqDisposition !== 'thumbnail') {
+        return sendApiError(res, 400, 'invalid_request', 'Invalid disposition value.', { retryable: false });
+    }
     const disposition = reqDisposition === 'attachment'
         ? 'attachment'
         : reqDisposition === 'thumbnail'
@@ -828,6 +1140,7 @@ export const createShareItemTicketV2 = async (req: Request, res: Response) => {
             success: true,
             ticket,
             stream_url: `/api/v2/public/stream/${encodeURIComponent(ticket)}`,
+            expires_in_seconds: getTicketTtlSeconds(),
         });
     } catch {
         return sendApiError(res, 500, 'internal_error', 'Failed to issue preview ticket.', { retryable: false });
@@ -935,7 +1248,7 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
         res.setHeader('Content-Disposition', buildContentDisposition(payload.disposition, resolvedFileName));
 
         if (payload.disposition === 'thumbnail') {
-            res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache thumbnails for 24h
+            res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400, immutable');
         }
 
         req.socket.setTimeout(5 * 60 * 1000);

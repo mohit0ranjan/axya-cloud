@@ -29,11 +29,18 @@ const REQUIRED_NODE_MAJOR = 20;
 const SCHEMA_RETRY_DELAY_MS = 5000;
 const SCHEMA_MAX_RETRIES = 12;
 const SCHEMA_RETRY_AFTER_SECONDS = Math.max(1, Math.ceil(SCHEMA_RETRY_DELAY_MS / 1000));
+const HEALTH_DB_TIMEOUT_MS = Number.parseInt(String(process.env.HEALTH_DB_TIMEOUT_MS || '1200'), 10) || 1200;
 const isHealthPath = (p: string) => p === '/health' || p === '/health/';
 const redactSensitiveQuery = (url: string) =>
     url
-        .replace(/([?&](?:token|password|otp|code)=)[^&]*/gi, '$1[redacted]')
+        .replace(/([?&](?:token|session_token|sessionToken|password|otp|code|k|secret)=)[^&]*/gi, '$1[redacted]')
         .replace(/([?&](?:authorization)=)[^&]*/gi, '$1[redacted]');
+const getRequestId = (req: Request, res?: Response): string => {
+    const responseHeader = res ? String(res.getHeader('x-request-id') || '').trim() : '';
+    const requestHeader = String(req.headers['x-request-id'] || '').trim();
+    const requestScoped = String((req as any).requestId || '').trim();
+    return requestScoped || responseHeader || requestHeader;
+};
 
 let schemaReady = false;
 let schemaInitAttempts = 0;
@@ -43,7 +50,16 @@ let telegramWarmupStatus: 'idle' | 'ready' | 'partial' | 'failed' | 'skipped' = 
 
 app.disable('x-powered-by');
 
-app.use(morgan(':method :url :status :response-time ms', {
+app.use((req, res, next) => {
+    const incomingRequestId = String(req.headers['x-request-id'] || '').trim();
+    const requestId = incomingRequestId || crypto.randomUUID();
+    (req as any).requestId = requestId;
+    res.setHeader('x-request-id', requestId);
+    next();
+});
+
+app.use(morgan(':req[x-request-id] :method :url :status :response-time ms', {
+    skip: (req) => isHealthPath(req.path),
     stream: {
         write: (line: string) => {
             logger.info('backend.http', 'request.access', { line: line.trim() });
@@ -55,12 +71,14 @@ app.use(morgan(':method :url :status :response-time ms', {
 app.use((req, res, next) => {
     const startedAt = Date.now();
     res.on('finish', () => {
+        const requestId = getRequestId(req, res);
         logger.info('backend.http', 'request.complete', {
             method: req.method,
             url: redactSensitiveQuery(req.originalUrl || req.url || ''),
             status: res.statusCode,
             durationMs: Date.now() - startedAt,
             ip: req.ip,
+            requestId: requestId || null,
         });
     });
     next();
@@ -180,12 +198,14 @@ app.use(cookieParser(cookieSecret));
 app.use((req, res, next) => {
     if (schemaReady) return next();
     if (req.path === '/' || isHealthPath(req.path)) return next();
+    const requestId = getRequestId(req, res);
     logger.warn('backend.http', 'schema_not_ready_reject', {
         method: req.method,
         url: redactSensitiveQuery(req.originalUrl || req.url || ''),
         schemaState,
         retryAfterSeconds: SCHEMA_RETRY_AFTER_SECONDS,
         ip: req.ip,
+        requestId: requestId || null,
     });
     return sendApiError(
         res,
@@ -197,7 +217,7 @@ app.use((req, res, next) => {
         {
             retryable: true,
             retryAfterSeconds: SCHEMA_RETRY_AFTER_SECONDS,
-            details: { schemaState },
+            details: { schemaState, requestId: requestId || null },
         }
     );
 });
@@ -213,7 +233,15 @@ const globalLimiter = rateLimit({
         // Always skip rate limiting for lightweight health checks.
         return isHealthPath(req.path);
     },
-    message: { success: false, error: 'Too many requests, please try again in 15 minutes.' },
+    handler: (_req, res) => {
+        return sendApiError(
+            res,
+            429,
+            'rate_limited',
+            'Too many requests. Please try again in 15 minutes.',
+            { retryable: true, retryAfterSeconds: 15 * 60 }
+        );
+    },
 });
 app.use(globalLimiter);
 
@@ -249,9 +277,23 @@ app.use('/stream', streamRoutes);
 
 // ── Lightweight Health Check (Render keep-alive friendly) ───────────────────
 // Keep this endpoint fast and dependency-free for external keep-alive pings.
-app.get('/health', (req: Request, res: Response) => {
+app.get('/health', async (req: Request, res: Response) => {
     const startedAt = Date.now();
     const requestTimestamp = new Date().toISOString();
+    const requestId = getRequestId(req, res);
+    const deepCheckRequested = String(req.query.deep || '').trim() === '1';
+
+    const runDbHealthCheck = async (): Promise<'ok' | 'degraded'> => {
+        try {
+            await Promise.race([
+                pool.query('SELECT 1'),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('health_db_timeout')), HEALTH_DB_TIMEOUT_MS)),
+            ]);
+            return 'ok';
+        } catch {
+            return 'degraded';
+        }
+    };
 
     // Emit an explicit keep-alive log for cron monitoring and debugging.
     res.on('finish', () => {
@@ -261,18 +303,34 @@ app.get('/health', (req: Request, res: Response) => {
             durationMs: Date.now() - startedAt,
             ip: req.ip,
             userAgent: req.headers['user-agent'] || null,
+            requestId: requestId || null,
+            deepCheckRequested,
         });
     });
 
     try {
+        const dbState = deepCheckRequested ? await runDbHealthCheck() : 'skipped';
+        const status = schemaReady && dbState !== 'degraded'
+            ? 'ok'
+            : schemaState === 'starting'
+                ? 'starting'
+                : 'degraded';
+
         return res.status(200).json({
-            status: 'ok',
+            status,
             uptime: Math.floor(process.uptime()),
             timestamp: requestTimestamp,
+            request_id: requestId || null,
+            checks: {
+                schema: schemaState,
+                db: dbState,
+                telegramWarmup: telegramWarmupStatus,
+            },
         });
     } catch (err: any) {
         logger.error('backend.health', 'health_response_error', {
             message: String(err?.message || err || 'unknown'),
+            requestId: requestId || null,
         });
 
         // Fail gracefully for cron callers without heavy dependencies.
@@ -280,6 +338,12 @@ app.get('/health', (req: Request, res: Response) => {
             status: 'degraded',
             uptime: Math.floor(process.uptime() || 0),
             timestamp: requestTimestamp,
+            request_id: requestId || null,
+            checks: {
+                schema: schemaState,
+                db: 'degraded',
+                telegramWarmup: telegramWarmupStatus,
+            },
         });
     }
 });
@@ -291,20 +355,28 @@ app.get('/', (req: Request, res: Response) => {
 
 // ── Global Error Handler ────────────────────────────────────────────────────
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+    const requestId = getRequestId(req, res);
     logger.error('backend.http', 'unhandled_error', {
         method: req.method,
         url: redactSensitiveQuery(req.originalUrl || req.url || ''),
         message: err.message,
         stack: err.stack,
+        requestId: requestId || null,
     });
     if (res.headersSent) return next(err);
 
     // Handle multer errors
     if ((err as any).code === 'LIMIT_FILE_SIZE') {
-        return res.status(413).json({ success: false, error: 'File too large' });
+        return sendApiError(res, 413, 'invalid_request', 'File too large', {
+            retryable: false,
+            details: { requestId: requestId || null },
+        });
     }
 
-    res.status(500).json({ success: false, error: 'Internal Server Error' });
+    return sendApiError(res, 500, 'internal_error', 'Internal Server Error', {
+        retryable: true,
+        details: { requestId: requestId || null },
+    });
 });
 
 // ── Graceful Shutdown ────────────────────────────────────────────────────────
@@ -333,18 +405,14 @@ process.on('unhandledRejection', (reason) => {
 // ── Startup ──────────────────────────────────────────────────────────────────
 
 /**
- * ✅ Fix 2.3: Wipe orphaned partial upload chunks on startup.
- * If the server was killed during an upload the temp files stay forever.
- * This runs synchronously before accepting any traffic.
+ * Ensure upload temp root exists without wiping active partial files.
+ * Upload sessions are now persisted in DB and rely on these files for restart resume.
  */
 function cleanOrphanedUploads(): void {
     const tmpDir = path.join(os.tmpdir(), 'axya_uploads');
     try {
-        if (fs.existsSync(tmpDir)) {
-            fs.rmSync(tmpDir, { recursive: true, force: true });
-            logger.info('backend.startup', 'orphaned_uploads_cleaned', { tmpDir });
-        }
         fs.mkdirSync(tmpDir, { recursive: true });
+        logger.info('backend.startup', 'upload_tmp_ready', { tmpDir });
     } catch (e: any) {
         // Non-fatal — log and continue
         logger.warn('backend.startup', 'orphaned_uploads_cleanup_failed', {

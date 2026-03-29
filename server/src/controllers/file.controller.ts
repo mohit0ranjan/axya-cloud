@@ -1,4 +1,4 @@
-import { Response } from 'express';
+﻿import { Response } from 'express';
 import { AuthRequest } from '../middlewares/auth.middleware';
 import { getDynamicClient } from '../services/telegram.service';
 import { CustomFile } from 'telegram/client/uploads';
@@ -13,6 +13,7 @@ import { sendApiError } from '../utils/apiError';
 import { mapTelegramError } from '../utils/telegramErrors';
 import { formatFileRow, extractTelegramNativeMeta } from '../utils/formatters';
 import { getMessageCacheState } from '../services/share-v2/telegram-read-cache.service';
+import { cacheDelByPrefix, cacheGet, cacheSet } from '../services/cache.service';
 
 // ── Allowed MIME types ─────────────────────────────────────────────────────
 const ALLOWED_TYPES = [
@@ -27,6 +28,17 @@ const clampInt = (value: unknown, fallback: number, min: number, max: number) =>
     const parsed = Number.parseInt(String(value ?? ''), 10);
     if (!Number.isFinite(parsed)) return fallback;
     return Math.min(Math.max(parsed, min), max);
+};
+
+const userStatsCacheKey = (userId: string) => `user:${userId}:stats`;
+const userFoldersCacheKey = (userId: string, parentId: unknown, sort: unknown, order: unknown) =>
+    `user:${userId}:folders:${String(parentId || 'root')}:${String(sort || 'created_at')}:${String(order || 'DESC')}`;
+const userActivityCacheKey = (userId: string, limit: number) => `user:${userId}:activity:${limit}`;
+
+const invalidateUserPerformanceCaches = (userId: string) => {
+    cacheDelByPrefix(`user:${userId}:stats`);
+    cacheDelByPrefix(`user:${userId}:folders:`);
+    cacheDelByPrefix(`user:${userId}:activity:`);
 };
 
 const getFileReadSessionCandidates = (ownerSessionString: string) => {
@@ -135,6 +147,129 @@ const deleteMessageAcrossTelegramClients = async (
     return false;
 };
 
+type TrashDeleteFileRow = {
+    id: string;
+    telegram_chat_id: string;
+    telegram_message_id: string | number;
+};
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const deleteTrashRowsAtomically = async (
+    userId: string,
+    ownerSessionString: string,
+    options?: {
+        fileIds?: string[];
+        includeFolders?: boolean;
+    }
+): Promise<{ deletedFiles: number; deletedFolders: number }> => {
+    const fileIdsFilter = Array.isArray(options?.fileIds)
+        ? options.fileIds.map((id) => String(id || '').trim()).filter(Boolean)
+        : [];
+    const includeFolders = Boolean(options?.includeFolders);
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const fileRowsRes = fileIdsFilter.length > 0
+            ? await client.query(
+                `SELECT id, telegram_chat_id, telegram_message_id
+                 FROM files
+                 WHERE user_id = $1
+                   AND is_trashed = true
+                   AND id = ANY($2::uuid[])
+                 ORDER BY trashed_at ASC NULLS LAST, created_at ASC
+                 FOR UPDATE`,
+                [userId, fileIdsFilter]
+            )
+            : await client.query(
+                `SELECT id, telegram_chat_id, telegram_message_id
+                 FROM files
+                 WHERE user_id = $1
+                   AND is_trashed = true
+                 ORDER BY trashed_at ASC NULLS LAST, created_at ASC
+                 FOR UPDATE`,
+                [userId]
+            );
+
+        const fileRows = fileRowsRes.rows as TrashDeleteFileRow[];
+        if (fileIdsFilter.length > 0 && fileRows.length !== fileIdsFilter.length) {
+            throw new Error('Some selected files are no longer in trash.');
+        }
+
+        const folderRowsRes = includeFolders
+            ? await client.query(
+                `SELECT id
+                 FROM folders
+                 WHERE user_id = $1
+                   AND is_trashed = true
+                 ORDER BY trashed_at ASC NULLS LAST, created_at ASC
+                 FOR UPDATE`,
+                [userId]
+            )
+            : { rows: [] as Array<{ id: string }> };
+
+        const folderRows = folderRowsRes.rows as Array<{ id: string }>;
+        if (fileRows.length === 0 && folderRows.length === 0) {
+            await client.query('COMMIT');
+            return { deletedFiles: 0, deletedFolders: 0 };
+        }
+
+        const clients = fileRows.length > 0 ? await getTelegramReadClients(ownerSessionString) : [];
+
+        for (const row of fileRows) {
+            const chatId = String(row.telegram_chat_id || '').trim();
+            const messageId = Number.parseInt(String(row.telegram_message_id || ''), 10);
+            if (!chatId || !Number.isFinite(messageId) || messageId <= 0) {
+                continue;
+            }
+
+            let deletedInTelegram = false;
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                deletedInTelegram = await deleteMessageAcrossTelegramClients(clients, chatId, messageId);
+                if (deletedInTelegram) break;
+                if (attempt === 0) await sleep(250);
+            }
+
+            if (!deletedInTelegram) {
+                throw new Error('Could not delete Telegram message for one or more trashed files. Please retry.');
+            }
+        }
+
+        const deletedFilesRes = fileRows.length > 0
+            ? await client.query(
+                `DELETE FROM files
+                 WHERE user_id = $1
+                   AND is_trashed = true
+                   AND id = ANY($2::uuid[])`,
+                [userId, fileRows.map((row) => row.id)]
+            )
+            : { rowCount: 0 };
+
+        const deletedFoldersRes = folderRows.length > 0
+            ? await client.query(
+                `DELETE FROM folders
+                 WHERE user_id = $1
+                   AND is_trashed = true
+                   AND id = ANY($2::uuid[])`,
+                [userId, folderRows.map((row) => row.id)]
+            )
+            : { rowCount: 0 };
+
+        await client.query('COMMIT');
+        return {
+            deletedFiles: Number(deletedFilesRes.rowCount || 0),
+            deletedFolders: Number(deletedFoldersRes.rowCount || 0),
+        };
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw err;
+    } finally {
+        client.release();
+    }
+};
+
 const logActivity = async (userId: string, action: string, fileId?: string, folderId?: string, meta?: object) => {
     try {
         await pool.query(
@@ -204,6 +339,7 @@ export const uploadFile = async (req: AuthRequest, res: Response) => {
 
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
         await logActivity(req.user.id, 'upload', result.rows[0].id, folder_id || undefined, { name: originalname, size });
+        invalidateUserPerformanceCaches(req.user.id);
 
         res.status(201).json({ success: true, file: formatFileRow(result.rows[0]) });
     } catch (err: any) {
@@ -223,7 +359,7 @@ export const uploadFile = async (req: AuthRequest, res: Response) => {
 // LIST FILES
 // ─────────────────────────────────────────────────────────────────────────────
 export const fetchFiles = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
 
     const { folder_id, sort = 'created_at', order = 'DESC' } = req.query;
     const limit = clampInt(req.query.limit, 50, 1, 500);
@@ -281,7 +417,7 @@ export const fetchFiles = async (req: AuthRequest, res: Response) => {
 // SEARCH
 // ─────────────────────────────────────────────────────────────────────────────
 export const searchFiles = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
 
     const { q, type, folder_id } = req.query;
     // ✅ Fix 2.2: Accept limit/offset for paginated search (hardcoded LIMIT 50 removed)
@@ -386,7 +522,7 @@ export const searchFiles = async (req: AuthRequest, res: Response) => {
 // UPDATE FILE (rename / move)
 // ─────────────────────────────────────────────────────────────────────────────
 export const updateFile = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
     const { folder_id, file_name } = req.body;
 
@@ -430,6 +566,7 @@ export const updateFile = async (req: AuthRequest, res: Response) => {
         );
         if (result.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
         await logActivity(req.user.id, 'rename', String(id));
+        invalidateUserPerformanceCaches(req.user.id);
         res.json({ success: true, file: formatFileRow(result.rows[0]) });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
@@ -440,7 +577,7 @@ export const updateFile = async (req: AuthRequest, res: Response) => {
 // STAR / UNSTAR
 // ─────────────────────────────────────────────────────────────────────────────
 export const toggleStar = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
 
     try {
@@ -450,6 +587,7 @@ export const toggleStar = async (req: AuthRequest, res: Response) => {
             [id, req.user.id]
         );
         if (result.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
+        invalidateUserPerformanceCaches(req.user.id);
         res.json({ success: true, is_starred: result.rows[0].is_starred });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
@@ -460,7 +598,7 @@ export const toggleStar = async (req: AuthRequest, res: Response) => {
 // STARRED FILES
 // ─────────────────────────────────────────────────────────────────────────────
 export const fetchStarred = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     try {
         const result = await pool.query(
             `SELECT * FROM files WHERE user_id = $1 AND is_starred = true AND is_trashed = false ORDER BY updated_at DESC`,
@@ -476,7 +614,7 @@ export const fetchStarred = async (req: AuthRequest, res: Response) => {
 // SOFT DELETE → TRASH
 // ─────────────────────────────────────────────────────────────────────────────
 export const trashFile = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
 
     try {
@@ -486,6 +624,7 @@ export const trashFile = async (req: AuthRequest, res: Response) => {
         );
         if (result.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
         await logActivity(req.user.id, 'trash', String(id));
+        invalidateUserPerformanceCaches(req.user.id);
         res.json({ success: true, message: 'File moved to trash.' });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
@@ -496,7 +635,7 @@ export const trashFile = async (req: AuthRequest, res: Response) => {
 // RESTORE FROM TRASH
 // ─────────────────────────────────────────────────────────────────────────────
 export const restoreFile = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
 
     try {
@@ -506,6 +645,7 @@ export const restoreFile = async (req: AuthRequest, res: Response) => {
         );
         if (result.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
         await logActivity(req.user.id, 'restore', String(id));
+        invalidateUserPerformanceCaches(req.user.id);
         res.json({ success: true, message: 'File restored.' });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
@@ -516,7 +656,7 @@ export const restoreFile = async (req: AuthRequest, res: Response) => {
 // PERMANENT DELETE
 // ─────────────────────────────────────────────────────────────────────────────
 export const deleteFile = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
 
     try {
@@ -548,6 +688,7 @@ export const deleteFile = async (req: AuthRequest, res: Response) => {
 
         await pool.query('DELETE FROM files WHERE id = $1 AND user_id = $2', [id, req.user.id]);
         await logActivity(req.user.id, 'delete_permanent', String(id));
+        invalidateUserPerformanceCaches(req.user.id);
         res.json({ success: true, message: 'File permanently deleted.' });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
@@ -558,7 +699,7 @@ export const deleteFile = async (req: AuthRequest, res: Response) => {
 // FETCH TRASH
 // ─────────────────────────────────────────────────────────────────────────────
 export const fetchTrash = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     try {
         const result = await pool.query(
             `SELECT * FROM files WHERE user_id = $1 AND is_trashed = true ORDER BY trashed_at DESC`,
@@ -574,28 +715,25 @@ export const fetchTrash = async (req: AuthRequest, res: Response) => {
 // EMPTY TRASH (Permanent Delete All)
 // ─────────────────────────────────────────────────────────────────────────────
 export const emptyTrash = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     try {
-        const countRes = await pool.query(
-            'SELECT COUNT(*)::int AS total FROM files WHERE user_id = $1 AND is_trashed = true',
-            [req.user.id]
-        );
-        const totalFiles = Number(countRes.rows[0]?.total || 0);
-
-        // Keep empty-trash fast and deterministic. Bulk-delete DB rows first so UI never stalls.
-        await pool.query('DELETE FROM files WHERE user_id = $1 AND is_trashed = true', [req.user.id]);
-
-        // Folders don't have Telegram pointers to clean up, they can be safely deleted
-        await pool.query('DELETE FROM folders WHERE user_id = $1 AND is_trashed = true', [req.user.id]);
+        const result = await deleteTrashRowsAtomically(req.user.id, req.user.sessionString, { includeFolders: true });
 
         await logActivity(req.user.id, 'empty_trash');
+        invalidateUserPerformanceCaches(req.user.id);
         return res.json({
             success: true,
-            message: totalFiles > 0 ? 'Trash cleared permanently.' : 'Trash is already empty.',
-            deletedCount: totalFiles,
+            message: (result.deletedFiles + result.deletedFolders) > 0 ? 'Trash cleared permanently.' : 'Trash is already empty.',
+            deletedCount: result.deletedFiles + result.deletedFolders,
+            deletedFiles: result.deletedFiles,
+            deletedFolders: result.deletedFolders,
         });
     } catch (err: any) {
-        res.status(500).json({ success: false, error: err.message });
+        const message = String(err?.message || 'Could not empty trash.');
+        const status = message.includes('no longer in trash') ? 409 : 502;
+        return sendApiError(res, status, status === 409 ? 'conflict' : 'trash_delete_failed', message, {
+            retryable: status >= 500,
+        });
     }
 };
 
@@ -718,7 +856,7 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
             const age = Date.now() - stat.mtimeMs;
             if (age < THUMB_CACHE_TTL_MS && stat.size > 0) {
                 res.setHeader('Content-Type', 'image/webp');
-                res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+                res.setHeader('Cache-Control', 'public, max-age=31536000, s-maxage=604800, stale-while-revalidate=86400, immutable');
                 res.setHeader('ETag', `W/"${id}-thumb"`);
                 res.setHeader('X-Cache', 'HIT');
                 return fs.createReadStream(cacheFile).pipe(res);
@@ -756,7 +894,7 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
         }
         if (!resolved) return sendApiError(res, 404, 'telegram_message_not_found', 'File no longer exists', { retryable: false });
 
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('Cache-Control', 'public, max-age=31536000, s-maxage=604800, stale-while-revalidate=86400, immutable');
                 res.setHeader('ETag', `W/"${id}-thumb"`);
         res.setHeader('X-Cache', 'MISS');
 
@@ -910,7 +1048,7 @@ async function ensureStreamCached(
 }
 
 export const streamFile = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
 
     try {
@@ -991,7 +1129,7 @@ export const streamFile = async (req: AuthRequest, res: Response) => {
 // FOLDERS: CREATE
 // ─────────────────────────────────────────────────────────────────────────────
 export const createFolder = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { name, parent_id = null, color = '#3174ff' } = req.body;
     if (!name?.trim()) return res.status(400).json({ success: false, error: 'Folder name required' });
 
@@ -1009,6 +1147,7 @@ export const createFolder = async (req: AuthRequest, res: Response) => {
             [req.user.id, name.trim(), parent_id || null, color]
         );
         await logActivity(req.user.id, 'create_folder', undefined, result.rows[0].id, { name });
+        invalidateUserPerformanceCaches(req.user.id);
         res.status(201).json({ success: true, folder: result.rows[0] });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
@@ -1019,7 +1158,7 @@ export const createFolder = async (req: AuthRequest, res: Response) => {
 // FOLDERS: LIST (with recursive file counts)
 // ─────────────────────────────────────────────────────────────────────────────
 export const fetchFolders = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { parent_id, sort, order } = req.query;
 
     // Whitelist allowed sort columns to prevent SQL injection
@@ -1030,6 +1169,12 @@ export const fetchFolders = async (req: AuthRequest, res: Response) => {
     };
     const sortCol = ALLOWED_SORT[sort as string] || 'f.created_at';
     const sortOrder = (order as string)?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+
+    const cacheKey = userFoldersCacheKey(req.user.id, parent_id, sortCol, sortOrder);
+    const cached = cacheGet<any[]>(cacheKey);
+    if (cached) {
+        return res.json({ success: true, folders: cached, cache: 'hit' });
+    }
 
     try {
         let query = `
@@ -1086,6 +1231,7 @@ export const fetchFolders = async (req: AuthRequest, res: Response) => {
         query += ` ORDER BY ${sortCol} ${sortOrder}`;
 
         const result = await pool.query(query, params);
+        cacheSet(cacheKey, result.rows, 30);
         res.json({ success: true, folders: result.rows });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
@@ -1096,7 +1242,7 @@ export const fetchFolders = async (req: AuthRequest, res: Response) => {
 // FOLDERS: UPDATE
 // ─────────────────────────────────────────────────────────────────────────────
 export const updateFolder = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
     const { name, color } = req.body;
 
@@ -1129,6 +1275,7 @@ export const updateFolder = async (req: AuthRequest, res: Response) => {
             values
         );
         if (result.rows.length === 0) return res.status(404).json({ success: false, error: 'Folder not found' });
+        invalidateUserPerformanceCaches(req.user.id);
         res.json({ success: true, folder: result.rows[0] });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
@@ -1139,7 +1286,7 @@ export const updateFolder = async (req: AuthRequest, res: Response) => {
 // FOLDERS: TRASH (Cascade — soft-deletes all nested sub-folders + their files)
 // ─────────────────────────────────────────────────────────────────────────────
 export const trashFolder = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
 
     try {
@@ -1167,6 +1314,7 @@ export const trashFolder = async (req: AuthRequest, res: Response) => {
             [folderIds, req.user.id]
         );
         await logActivity(req.user.id, 'trash_folder', undefined, id as string);
+        invalidateUserPerformanceCaches(req.user.id);
 
         res.json({ success: true, message: `Folder and ${folderIds.length - 1} sub-folder(s) moved to trash.` });
     } catch (err: any) {
@@ -1178,7 +1326,13 @@ export const trashFolder = async (req: AuthRequest, res: Response) => {
 // STATS
 // ─────────────────────────────────────────────────────────────────────────────
 export const getStats = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
+
+    const cacheKey = userStatsCacheKey(req.user.id);
+    const cached = cacheGet<Record<string, unknown>>(cacheKey);
+    if (cached) {
+        return res.json({ ...cached, cache: 'hit' });
+    }
 
     try {
         const [fileStats, folderCount, trashCount, starredCount, byType] = await Promise.all([
@@ -1210,7 +1364,7 @@ export const getStats = async (req: AuthRequest, res: Response) => {
         const imageRow = byTypeRows.find((r: any) => r.category === 'image');
         const videoRow = byTypeRows.find((r: any) => r.category === 'video');
 
-        res.json({
+        const payload = {
             success: true,
             totalFiles: fileStats.rows[0].total_files,
             totalBytes: parseInt(fileStats.rows[0].total_bytes),
@@ -1221,7 +1375,10 @@ export const getStats = async (req: AuthRequest, res: Response) => {
             image_count: imageRow ? imageRow.count : 0,
             video_count: videoRow ? videoRow.count : 0,
             storageByType: byTypeRows,
-        });
+        };
+
+        cacheSet(cacheKey, payload, 20);
+        res.json(payload);
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -1231,11 +1388,17 @@ export const getStats = async (req: AuthRequest, res: Response) => {
 // ACTIVITY LOG
 // ─────────────────────────────────────────────────────────────────────────────
 export const getActivity = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit)
         ? Math.min(Math.max(Math.floor(rawLimit), 1), 20)
         : 5;
+
+    const cacheKey = userActivityCacheKey(req.user.id, limit);
+    const cached = cacheGet<any[]>(cacheKey);
+    if (cached) {
+        return res.json({ success: true, activity: cached, cache: 'hit' });
+    }
 
     try {
         const result = await pool.query(
@@ -1244,6 +1407,7 @@ export const getActivity = async (req: AuthRequest, res: Response) => {
              WHERE al.user_id = $1 ORDER BY al.created_at DESC LIMIT $2`,
             [req.user.id, limit]
         );
+        cacheSet(cacheKey, result.rows, 15);
         res.json({ success: true, activity: result.rows });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
@@ -1254,7 +1418,7 @@ export const getActivity = async (req: AuthRequest, res: Response) => {
 // BULK ACTIONS — star, trash, move multiple files at once
 // ─────────────────────────────────────────────────────────────────────────────
 export const bulkAction = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { ids, action, folder_id } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ success: false, error: 'ids array required' });
     if (ids.length > 200) return res.status(400).json({ success: false, error: 'max 200 ids per request' });
@@ -1300,13 +1464,24 @@ export const bulkAction = async (req: AuthRequest, res: Response) => {
                 )).rowCount || 0;
                 break;
             case 'delete':
-                // Hard delete from DB only (Telegram message stays — user may have shared it)
-                affected = (await pool.query(`DELETE FROM files WHERE id = ANY($1::uuid[]) AND user_id = $2 AND is_trashed = true`, [ids, req.user.id])).rowCount || 0;
+                {
+                    try {
+                        const result = await deleteTrashRowsAtomically(req.user.id, req.user.sessionString, { fileIds: ids });
+                        affected = result.deletedFiles;
+                    } catch (err: any) {
+                        const message = String(err?.message || 'Could not delete selected trash items.');
+                        const status = message.includes('no longer in trash') ? 409 : 502;
+                        return sendApiError(res, status, status === 409 ? 'conflict' : 'trash_delete_failed', message, {
+                            retryable: status >= 500,
+                        });
+                    }
+                }
                 break;
             default:
                 return res.status(400).json({ success: false, error: 'Unknown action. Use: trash, restore, star, unstar, move, delete' });
         }
         res.json({ success: true, affected });
+        invalidateUserPerformanceCaches(req.user.id);
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -1316,7 +1491,7 @@ export const bulkAction = async (req: AuthRequest, res: Response) => {
 // FILE TAGS
 // ─────────────────────────────────────────────────────────────────────────────
 export const addTag = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
     const { tag } = req.body;
     if (!tag?.trim()) return res.status(400).json({ success: false, error: 'tag required' });
@@ -1330,7 +1505,7 @@ export const addTag = async (req: AuthRequest, res: Response) => {
 };
 
 export const removeTag = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id, tag } = req.params;
     try {
         await pool.query(`DELETE FROM file_tags WHERE file_id = $1 AND tag = $2 AND user_id = $3`, [id, tag, req.user.id]);
@@ -1339,7 +1514,7 @@ export const removeTag = async (req: AuthRequest, res: Response) => {
 };
 
 export const getFileTags = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
     try {
         const result = await pool.query(`SELECT tag FROM file_tags WHERE file_id = $1 AND user_id = $2 ORDER BY tag`, [id, req.user.id]);
@@ -1348,7 +1523,7 @@ export const getFileTags = async (req: AuthRequest, res: Response) => {
 };
 
 export const getFilesByTag = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { tag } = req.query;
     if (!tag) return res.status(400).json({ success: false, error: 'tag required' });
     try {
@@ -1362,7 +1537,7 @@ export const getFilesByTag = async (req: AuthRequest, res: Response) => {
 };
 
 export const getAllUserTags = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     try {
         const result = await pool.query(
             `SELECT tag, COUNT(*)::int as count FROM file_tags WHERE user_id = $1 GROUP BY tag ORDER BY count DESC`,
@@ -1376,7 +1551,7 @@ export const getAllUserTags = async (req: AuthRequest, res: Response) => {
 // RECENTLY ACCESSED — track when a file is opened
 // ─────────────────────────────────────────────────────────────────────────────
 export const markAccessed = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
     try {
         await pool.query(`UPDATE files SET last_accessed_at = NOW() WHERE id = $1 AND user_id = $2`, [id, req.user.id]);
@@ -1385,12 +1560,13 @@ export const markAccessed = async (req: AuthRequest, res: Response) => {
              SELECT id, user_id, NOW() FROM files WHERE id = $1 AND user_id = $2`,
             [id, req.user.id]
         );
+        invalidateUserPerformanceCaches(req.user.id);
         res.json({ success: true });
     } catch (err: any) { res.status(500).json({ success: false, error: err.message }); }
 };
 
 export const getRecentlyAccessed = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     try {
         const result = await pool.query(
             `SELECT * FROM files WHERE user_id = $1 AND is_trashed = false AND last_accessed_at IS NOT NULL
@@ -1402,7 +1578,7 @@ export const getRecentlyAccessed = async (req: AuthRequest, res: Response) => {
 };
 
 export const getFileHistory = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
     try {
         const exists = await pool.query(
@@ -1432,7 +1608,7 @@ export const getFileHistory = async (req: AuthRequest, res: Response) => {
 // FILE DETAILS (with tags + share link info + integrity)
 // ─────────────────────────────────────────────────────────────────────────────
 export const getFileDetails = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
     try {
         const [fileRes, tagsRes, shareRes] = await Promise.all([

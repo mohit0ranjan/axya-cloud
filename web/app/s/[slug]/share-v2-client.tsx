@@ -1,13 +1,30 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import dynamic from 'next/dynamic';
 import { API_URL as API_BASE } from '../../../lib/urls';
 import { ShareHeader } from '../../../components/share/ShareHeader';
 import { ShareCard } from '../../../components/share/ShareCard';
-import { FileGrid } from '../../../components/share/FileGrid';
-import { PreviewModal } from '../../../components/share/PreviewModal';
+import { usePreviewWarmup } from '../../../components/share/usePreviewWarmup';
 import { Lock, EyeOff, Search, FolderOpen, ChevronDown, ChevronRight } from 'lucide-react';
+
+const FileGrid = dynamic(
+  () => import('../../../components/share/FileGrid').then((m) => m.FileGrid),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="rounded-2xl border border-neutral-100 bg-white px-4 py-6 text-center text-sm text-brand-muted shadow-sm">
+        Loading files...
+      </div>
+    ),
+  }
+);
+
+const PreviewModal = dynamic(
+  () => import('../../../components/share/PreviewModal').then((m) => m.PreviewModal),
+  { ssr: false }
+);
 
 const activeTicketRequests = new Map<string, Promise<string>>();
 
@@ -73,13 +90,54 @@ type ApiFailure = {
   retryable: boolean;
 };
 
+type RequestOptions = {
+  retries?: number;
+  timeoutMs?: number;
+};
+
 const DEFAULT_LIMIT = 50;
+const SEARCH_DEBOUNCE_MS = 280;
+const REQUEST_TIMEOUT_MS = 20_000;
+const RETRY_BASE_DELAY_MS = 350;
+const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const SHARE_SESSION_STORAGE_PREFIX = 'axaya:share-session:';
 
 const isImage = (file: SharedFile) => String(file.mime_type || '').startsWith('image/');
 const isVideo = (file: SharedFile) => String(file.mime_type || '').startsWith('video/');
 const isPdf = (file: SharedFile) => String(file.mime_type || '').toLowerCase() === 'application/pdf';
 const supportsInlinePreview = (file: SharedFile) => isImage(file) || isVideo(file) || isPdf(file);
 const getFileLabel = (file: SharedFile) => String(file.display_name || file.relative_path || 'Untitled file').trim() || 'Untitled file';
+
+const getShareSessionStorageKey = (slug: string) => `${SHARE_SESSION_STORAGE_PREFIX}${slug}`;
+
+const readStoredSessionToken = (slug: string): string => {
+  if (typeof window === 'undefined') return '';
+  try {
+    return String(window.sessionStorage.getItem(getShareSessionStorageKey(slug)) || '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const writeStoredSessionToken = (slug: string, token: string) => {
+  if (typeof window === 'undefined') return;
+  try {
+    const key = getShareSessionStorageKey(slug);
+    if (token) {
+      window.sessionStorage.setItem(key, token);
+    } else {
+      window.sessionStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore storage failures; the share still works in-memory.
+  }
+};
+
+const revokeObjectUrl = (url: string | undefined) => {
+  if (url && url.startsWith('blob:')) {
+    URL.revokeObjectURL(url);
+  }
+};
 
 const formatSize = (bytes: number) => {
   if (!bytes) return '0 B';
@@ -88,11 +146,54 @@ const formatSize = (bytes: number) => {
   return `${(bytes / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 };
 
+const parseRetryAfterMs = (value: string | null): number | null => {
+  if (!value) return null;
+  const asSeconds = Number.parseInt(value, 10);
+  if (Number.isFinite(asSeconds) && asSeconds > 0) {
+    return asSeconds * 1000;
+  }
+  const asDate = new Date(value);
+  if (!Number.isNaN(asDate.getTime())) {
+    return Math.max(0, asDate.getTime() - Date.now());
+  }
+  return null;
+};
+
+const isAbortLikeError = (err: unknown): boolean => {
+  const name = String((err as any)?.name || '');
+  return name === 'AbortError';
+};
+
+const isTimeoutLikeError = (err: unknown): boolean => {
+  const message = String((err as any)?.message || '').toLowerCase();
+  return message.includes('timed out') || message.includes('timeout');
+};
+
+const sleepWithAbort = (ms: number, signal?: AbortSignal | null) => new Promise<void>((resolve, reject) => {
+  const timer = window.setTimeout(() => {
+    signal?.removeEventListener('abort', onAbort);
+    resolve();
+  }, ms);
+
+  const onAbort = () => {
+    window.clearTimeout(timer);
+    reject(new DOMException('Aborted', 'AbortError'));
+  };
+
+  if (signal) {
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+  }
+});
+
 export default function ShareV2Client({ slug }: { slug: string }) {
   const searchParams = useSearchParams();
   const secret = String(searchParams.get('k') || '').trim();
 
-  const [sessionToken, setSessionToken] = useState('');
+  const [sessionToken, setSessionToken] = useState(() => readStoredSessionToken(slug));
   const [share, setShare] = useState<ShareMeta | null>(null);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -101,25 +202,137 @@ export default function ShareV2Client({ slug }: { slug: string }) {
   const [error, setError] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
   const [requiresPassword, setRequiresPassword] = useState(false);
+  const [searchInput, setSearchInput] = useState('');
+  const deferredSearchInput = useDeferredValue(searchInput);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('name_asc');
+  const [networkNotice, setNetworkNotice] = useState('');
+  const [retryingRequest, setRetryingRequest] = useState(false);
 
   const [sections, setSections] = useState<Record<string, SectionState>>({});
   const sectionsRef = useRef<Record<string, SectionState>>({});
+  const sectionRequestSeqRef = useRef<Record<string, number>>({});
+  const sectionAbortRef = useRef<Record<string, AbortController>>({});
   useEffect(() => { sectionsRef.current = sections; }, [sections]);
 
   const [previewUrlMap, setPreviewUrlMap] = useState<Record<string, string>>({});
+  const [previewUrlExpiryMap, setPreviewUrlExpiryMap] = useState<Record<string, number>>({});
   const [ticketLoadingMap, setTicketLoadingMap] = useState<Record<string, boolean>>({});
   const [zipState, setZipState] = useState<{ loading: boolean; message: string }>({ loading: false, message: '' });
 
   const [imageModal, setImageModal] = useState<ImageModalState>({ open: false, items: [], index: 0 });
   const [previewErrorMap, setPreviewErrorMap] = useState<Record<string, string>>({});
 
-  const request = async (url: string, init?: RequestInit) => {
+  const previewUrlMapRef = useRef<Record<string, string>>({});
+  const previewUrlExpiryMapRef = useRef<Record<string, number>>({});
+  const sessionTokenRef = useRef(sessionToken);
+  const zipAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    previewUrlMapRef.current = previewUrlMap;
+  }, [previewUrlMap]);
+
+  useEffect(() => {
+    previewUrlExpiryMapRef.current = previewUrlExpiryMap;
+  }, [previewUrlExpiryMap]);
+
+  useEffect(() => {
+    sessionTokenRef.current = sessionToken;
+  }, [sessionToken]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(previewUrlMapRef.current).forEach(revokeObjectUrl);
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSearch(deferredSearchInput.trim());
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [deferredSearchInput]);
+
+  const fetchWithTimeout = useCallback(async (
+    url: string,
+    init: RequestInit,
+    timeoutMs: number,
+  ): Promise<Response> => {
+    const timeoutController = new AbortController();
+    const onAbort = () => timeoutController.abort();
+    if (init.signal) {
+      if (init.signal.aborted) timeoutController.abort();
+      else init.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    const timer = window.setTimeout(() => {
+      timeoutController.abort();
+    }, timeoutMs);
+
+    try {
+      const res = await fetch(url, {
+        ...init,
+        signal: timeoutController.signal,
+      });
+      return res;
+    } catch (err) {
+      if (isAbortLikeError(err) && !init.signal?.aborted) {
+        throw new Error(`Request timed out after ${Math.max(1000, timeoutMs)}ms`);
+      }
+      throw err;
+    } finally {
+      window.clearTimeout(timer);
+      init.signal?.removeEventListener('abort', onAbort);
+    }
+  }, []);
+
+  const request = useCallback(async (url: string, init?: RequestInit, options?: RequestOptions) => {
     const headers = new Headers(init?.headers || {});
     if (sessionToken) headers.set('Authorization', `Bearer ${sessionToken}`);
-    return fetch(url, { ...init, headers });
-  };
+
+    const method = String(init?.method || 'GET').toUpperCase();
+    const retries = options?.retries ?? (method === 'GET' || method === 'HEAD' ? 2 : 0);
+    const timeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS;
+    let attempt = 0;
+    let sawRetry = false;
+
+    try {
+      while (true) {
+        try {
+          const response = await fetchWithTimeout(url, { ...init, headers }, timeoutMs);
+          const shouldRetryByStatus = RETRYABLE_STATUS_CODES.has(response.status) && attempt < retries;
+          if (!shouldRetryByStatus) {
+            return response;
+          }
+
+          sawRetry = true;
+          setRetryingRequest(true);
+          setNetworkNotice('Network is slow. Retrying request...');
+          const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
+          const waitMs = retryAfterMs ?? RETRY_BASE_DELAY_MS * (attempt + 1);
+          attempt += 1;
+          await sleepWithAbort(waitMs, init?.signal);
+        } catch (err) {
+          if (isAbortLikeError(err)) {
+            throw err;
+          }
+          if (attempt >= retries) {
+            throw err;
+          }
+          sawRetry = true;
+          setRetryingRequest(true);
+          setNetworkNotice('Network is unstable. Retrying request...');
+          attempt += 1;
+          await sleepWithAbort(RETRY_BASE_DELAY_MS * attempt, init?.signal);
+        }
+      }
+    } finally {
+      if (sawRetry) {
+        setRetryingRequest(false);
+        setNetworkNotice('');
+      }
+    }
+  }, [fetchWithTimeout, sessionToken]);
 
   const toApiFailure = (res: Response, payload: any): ApiFailure => ({
     status: res.status,
@@ -128,8 +341,12 @@ export default function ShareV2Client({ slug }: { slug: string }) {
     retryable: Boolean(payload?.retryable),
   });
 
-  const applyAccessFailure = (failure: ApiFailure, fallbackMessage: string) => {
+  const applyAccessFailure = useCallback((failure: ApiFailure, fallbackMessage: string) => {
     const code = String(failure.code || '').toLowerCase();
+    const clearSession = () => {
+      setSessionToken('');
+      writeStoredSessionToken(slug, '');
+    };
 
     if (code === 'invalid_password') {
       setRequiresPassword(true);
@@ -137,25 +354,25 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       return;
     }
     if (code === 'share_expired') {
-      setSessionToken('');
+      clearSession();
       setRequiresPassword(false);
       setError('This share link has expired.');
       return;
     }
     if (code === 'share_revoked') {
-      setSessionToken('');
+      clearSession();
       setRequiresPassword(false);
       setError('This share link has been revoked.');
       return;
     }
     if (code === 'invalid_secret') {
-      setSessionToken('');
+      clearSession();
       setRequiresPassword(false);
       setError('Invalid share link. Please verify the link and try again.');
       return;
     }
     if (code.startsWith('share_session_')) {
-      setSessionToken('');
+      clearSession();
       setRequiresPassword(Boolean(share?.requiresPassword));
       setError('Your access session expired. Please unlock the share again.');
       return;
@@ -165,7 +382,13 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       return;
     }
     setError(failure.message || fallbackMessage);
-  };
+  }, [share?.requiresPassword, slug]);
+
+  const toNetworkMessage = useCallback((err: unknown, fallbackMessage: string) => {
+    if (isAbortLikeError(err)) return '';
+    if (isTimeoutLikeError(err)) return 'Request timed out. Please check your connection and try again.';
+    return fallbackMessage;
+  }, []);
 
   const openShare = async (passwordValue?: string) => {
     if (!slug || !secret) {
@@ -177,45 +400,72 @@ export default function ShareV2Client({ slug }: { slug: string }) {
     setOpening(true);
     setError('');
     setInfoMessage('');
+    let openedSuccessfully = false;
     try {
-      const res = await fetch(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/open`, {
+      const res = await request(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/open`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ secret, password: passwordValue || undefined }),
-      });
+      }, { retries: 1, timeoutMs: 15_000 });
       const payload = await res.json().catch(() => ({}));
 
       if (!res.ok) {
         applyAccessFailure(toApiFailure(res, payload), 'Unable to open share.');
         setSessionToken('');
+        writeStoredSessionToken(slug, '');
         return;
       }
 
-      setSessionToken(String(payload.session_token || payload.sessionToken || ''));
+      const nextToken = String(payload.session_token || payload.sessionToken || '').trim();
+      setSessionToken(nextToken);
+      writeStoredSessionToken(slug, nextToken);
       setShare(payload.share || null);
       setRequiresPassword(false);
       setPassword('');
-    } catch {
-      setError('Network error while opening share.');
+      openedSuccessfully = true;
+    } catch (err) {
+      const message = toNetworkMessage(err, 'Network error while opening share.');
+      if (message) setError(message);
     } finally {
       setOpening(false);
-      setLoading(false);
+      if (!openedSuccessfully) {
+        setLoading(false);
+      }
     }
   };
 
-  const loadMeta = async () => {
-    if (!sessionToken) return;
-    const res = await request(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/meta`);
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      applyAccessFailure(toApiFailure(res, payload), 'Unable to load share details.');
-      return;
+  const loadMeta = async (): Promise<boolean> => {
+    if (!sessionToken) return false;
+    try {
+      const res = await request(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/meta`);
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        applyAccessFailure(toApiFailure(res, payload), 'Unable to load share details.');
+        return false;
+      }
+      if (payload.share) setShare(payload.share);
+      return true;
+    } catch (err) {
+      const message = toNetworkMessage(err, 'Network error while loading share details.');
+      if (message) setError(message);
+      return false;
     }
-    if (payload.share) setShare(payload.share);
   };
 
   const loadSection = async (path: string, reset: boolean) => {
     if (!sessionToken) return;
+
+    const latest = sectionsRef.current[path];
+    if (!reset && latest?.loading) {
+      return;
+    }
+
+    sectionAbortRef.current[path]?.abort();
+    const abortController = new AbortController();
+    sectionAbortRef.current[path] = abortController;
+
+    const requestSeq = (sectionRequestSeqRef.current[path] || 0) + 1;
+    sectionRequestSeqRef.current[path] = requestSeq;
 
     setSections((curr) => ({
       ...curr,
@@ -231,7 +481,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       },
     }));
 
-    const current = sectionsRef.current[path];
+    const current = latest;
     const params = new URLSearchParams({
       path,
       limit: String(DEFAULT_LIMIT),
@@ -242,8 +492,17 @@ export default function ShareV2Client({ slug }: { slug: string }) {
     if (search.trim()) params.set('search', search.trim());
 
     try {
-      const res = await request(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/items?${params.toString()}`);
+      const res = await request(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/items?${params.toString()}`, {
+        signal: abortController.signal,
+      }, {
+        retries: 2,
+        timeoutMs: 20_000,
+      });
       const payload = await res.json().catch(() => ({}));
+
+      if (sectionRequestSeqRef.current[path] !== requestSeq) {
+        return;
+      }
 
       if (!res.ok) {
         const failure = toApiFailure(res, payload);
@@ -267,6 +526,10 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       const folders = Array.isArray(payload.folders) ? payload.folders : [];
 
       setSections((curr) => {
+        if (sectionRequestSeqRef.current[path] !== requestSeq) {
+          return curr;
+        }
+
         const prev = curr[path];
 
         const prevFiles = prev?.files || [];
@@ -291,21 +554,38 @@ export default function ShareV2Client({ slug }: { slug: string }) {
           },
         };
       });
-    } catch {
+    } catch (err) {
+      if (isAbortLikeError(err)) {
+        return;
+      }
+      if (sectionRequestSeqRef.current[path] !== requestSeq) {
+        return;
+      }
+      const message = toNetworkMessage(err, 'Network error while loading files.');
       setSections((curr) => ({
         ...curr,
         [path]: {
           ...(curr[path] || { path, folders: [], files: [], page: { offset: 0, limit: DEFAULT_LIMIT, total: 0, hasMore: false }, expanded: true }),
           loading: false,
-          error: 'Network error while loading files.',
+          error: message || 'Network error while loading files.',
         },
       }));
+    } finally {
+      if (sectionAbortRef.current[path] === abortController) {
+        delete sectionAbortRef.current[path];
+      }
     }
   };
 
-  const getTicketUrl = async (itemId: string, disposition: 'inline' | 'attachment' | 'thumbnail') => {
+  const getTicketUrl = useCallback(async (
+    itemId: string,
+    disposition: 'inline' | 'attachment' | 'thumbnail',
+    options?: { silent?: boolean; forceRefresh?: boolean }
+  ) => {
     const cacheKey = `${itemId}:${disposition}`;
-    if (previewUrlMap[cacheKey]) return previewUrlMap[cacheKey];
+    const cachedUrl = previewUrlMapRef.current[cacheKey];
+    const expiresAt = previewUrlExpiryMapRef.current[cacheKey] || 0;
+    if (cachedUrl && !options?.forceRefresh && expiresAt - Date.now() > 15_000) return cachedUrl;
 
     // Deduplicate identical simultaneous requests using a Promise map
     if (activeTicketRequests.has(cacheKey)) {
@@ -313,12 +593,17 @@ export default function ShareV2Client({ slug }: { slug: string }) {
     }
 
     const fetchTicket = async () => {
-      setTicketLoadingMap((curr) => ({ ...curr, [cacheKey]: true }));
+      if (!options?.silent) {
+        setTicketLoadingMap((curr) => ({ ...curr, [cacheKey]: true }));
+      }
       try {
         const res = await request(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/items/${encodeURIComponent(itemId)}/preview-ticket`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ disposition }),
+        }, {
+          retries: 1,
+          timeoutMs: 15_000,
         });
         const payload = await res.json().catch(() => ({}));
         if (!res.ok || !payload.ticket) {
@@ -326,7 +611,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
           if (failure.status === 401 || failure.status === 410 || String(failure.code || '').startsWith('share_session_')) {
             applyAccessFailure(failure, 'Preview access expired.');
           }
-          if (disposition === 'inline') {
+          if (disposition === 'inline' && !options?.silent) {
             setPreviewErrorMap((curr) => ({
               ...curr,
               [itemId]: failure.message || 'Preview temporarily unavailable for this file.',
@@ -336,12 +621,29 @@ export default function ShareV2Client({ slug }: { slug: string }) {
         }
 
         const url = `${API_BASE}/api/v2/public/stream/${encodeURIComponent(String(payload.ticket))}`;
-        setPreviewUrlMap((curr) => ({ ...curr, [cacheKey]: url }));
+        const ttlSeconds = Number(payload.expires_in_seconds || payload.expiresInSeconds || 0) || 120;
+        setPreviewUrlMap((curr) => {
+          const previous = curr[cacheKey];
+          if (previous && previous !== url && previous.startsWith('blob:')) {
+            URL.revokeObjectURL(previous);
+          }
+          return { ...curr, [cacheKey]: url };
+        });
+        setPreviewUrlExpiryMap((curr) => ({ ...curr, [cacheKey]: Date.now() + (ttlSeconds * 1000) }));
         return url;
-      } catch {
+      } catch (err) {
+        if (!options?.silent && disposition === 'inline') {
+          const fallback = toNetworkMessage(err, 'Preview temporarily unavailable for this file.');
+          setPreviewErrorMap((curr) => ({
+            ...curr,
+            [itemId]: fallback || curr[itemId] || 'Preview temporarily unavailable for this file.',
+          }));
+        }
         return '';
       } finally {
-        setTicketLoadingMap((curr) => ({ ...curr, [cacheKey]: false }));
+        if (!options?.silent) {
+          setTicketLoadingMap((curr) => ({ ...curr, [cacheKey]: false }));
+        }
         activeTicketRequests.delete(cacheKey);
       }
     };
@@ -349,9 +651,25 @@ export default function ShareV2Client({ slug }: { slug: string }) {
     const promise = fetchTicket();
     activeTicketRequests.set(cacheKey, promise);
     return promise;
-  };
+  }, [applyAccessFailure, request, slug]);
 
-  const handleDownloadItem = async (item: SharedFile) => {
+  const warmPreviewTicket = useCallback((file: SharedFile) => {
+    if (!supportsInlinePreview(file)) return;
+    void getTicketUrl(file.id, 'inline', { silent: true });
+  }, [getTicketUrl]);
+
+  const handleLoadThumbnail = useCallback((file: SharedFile) => {
+    void getTicketUrl(file.id, 'thumbnail');
+  }, [getTicketUrl]);
+
+  usePreviewWarmup({
+    enabled: imageModal.open,
+    files: imageModal.items,
+    currentIndex: imageModal.index,
+    onWarmPreview: warmPreviewTicket,
+  });
+
+  const handleDownloadItem = useCallback(async (item: SharedFile) => {
     if (!share?.allowDownload) return;
     const url = await getTicketUrl(item.id, 'attachment');
     if (!url) {
@@ -364,12 +682,16 @@ export default function ShareV2Client({ slug }: { slug: string }) {
     document.body.appendChild(a);
     a.click();
     a.remove();
-  };
+  }, [getTicketUrl, share?.allowDownload]);
 
-  const pollZipJob = async (pollingUrl: string) => {
+  const pollZipJob = async (pollingUrl: string, signal: AbortSignal) => {
     const started = Date.now();
     while (Date.now() - started < 10 * 60 * 1000) {
-      const res = await request(`${API_BASE}${pollingUrl}`);
+      if (signal.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+
+      const res = await request(`${API_BASE}${pollingUrl}`, { signal });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload?.message || payload?.error || 'ZIP job failed.');
 
@@ -377,7 +699,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       if (!job) throw new Error('Invalid ZIP job response.');
       if (job.status === 'failed') throw new Error(job.error_message || 'ZIP generation failed.');
       if (job.status === 'completed' && job.download_url) {
-        const dlRes = await request(`${API_BASE}${job.download_url}`);
+        const dlRes = await request(`${API_BASE}${job.download_url}`, { signal });
         if (!dlRes.ok) throw new Error('ZIP download failed.');
         const blob = await dlRes.blob();
         const obj = URL.createObjectURL(blob);
@@ -390,15 +712,24 @@ export default function ShareV2Client({ slug }: { slug: string }) {
         URL.revokeObjectURL(obj);
         return;
       }
-      await new Promise((r) => setTimeout(r, 2000));
+      await sleepWithAbort(2000, signal);
     }
     throw new Error('ZIP generation timed out.');
   };
 
   const handleDownloadAll = async () => {
+    zipAbortRef.current?.abort();
+    const abortController = new AbortController();
+    zipAbortRef.current = abortController;
+
     setZipState({ loading: true, message: 'Preparing ZIP...' });
     try {
-      const res = await request(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/download-all`);
+      const res = await request(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/download-all`, {
+        signal: abortController.signal,
+      }, {
+        retries: 2,
+        timeoutMs: 25_000,
+      });
       const contentType = String(res.headers.get('content-type') || '');
 
       if (res.status === 202 || contentType.includes('application/json')) {
@@ -407,7 +738,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
         const pollingUrl = String(payload?.polling_url || '');
         if (!pollingUrl) throw new Error('Missing ZIP polling URL.');
         setZipState({ loading: true, message: 'Generating ZIP...' });
-        await pollZipJob(pollingUrl);
+        await pollZipJob(pollingUrl, abortController.signal);
         setZipState({ loading: false, message: '' });
         return;
       }
@@ -424,8 +755,16 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       URL.revokeObjectURL(obj);
       setZipState({ loading: false, message: '' });
     } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        setZipState({ loading: false, message: '' });
+        return;
+      }
       setZipState({ loading: false, message: '' });
-      setError(String(err?.message || 'Failed to download ZIP.'));
+      setError(toNetworkMessage(err, String(err?.message || 'Failed to download ZIP.')) || 'Failed to download ZIP.');
+    } finally {
+      if (zipAbortRef.current === abortController) {
+        zipAbortRef.current = null;
+      }
     }
   };
 
@@ -436,17 +775,51 @@ export default function ShareV2Client({ slug }: { slug: string }) {
   }, [infoMessage]);
 
   useEffect(() => {
+    if (sessionToken) return;
     void openShare();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug, secret]);
+  }, [slug, secret, sessionToken]);
 
   useEffect(() => {
     if (!sessionToken) return;
-    void loadMeta();
-    setSections({});
-    void loadSection('/', true);
+    let cancelled = false;
+
+    const run = async () => {
+      try {
+        if (!share || share.slug !== slug) {
+          const metaLoaded = await loadMeta();
+          if (!metaLoaded || cancelled || !sessionTokenRef.current) return;
+        }
+
+        Object.values(sectionAbortRef.current).forEach((controller) => controller.abort());
+        sectionAbortRef.current = {};
+        setSections({});
+        await loadSection('/', true);
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionToken, sort, search]);
+  }, [sessionToken, sort, search, slug]);
+
+  useEffect(() => {
+    return () => {
+      zipAbortRef.current?.abort();
+      zipAbortRef.current = null;
+      Object.values(sectionAbortRef.current).forEach((controller) => controller.abort());
+      sectionAbortRef.current = {};
+    };
+  }, []);
+
+  const sectionEntries = useMemo(() => Object.entries(sections), [sections]);
 
   const allLoadedFiles = useMemo(() => {
     const list: SharedFile[] = [];
@@ -458,20 +831,20 @@ export default function ShareV2Client({ slug }: { slug: string }) {
 
   const activeImage = imageModal.items[imageModal.index];
 
-  const openImageModal = (item: SharedFile) => {
+  const openImageModal = useCallback((item: SharedFile) => {
     const idx = Math.max(0, allLoadedFiles.findIndex((x) => x.id === item.id));
     setImageModal({ open: true, items: allLoadedFiles, index: idx });
-  };
+  }, [allLoadedFiles]);
 
-  const handleImageNav = (delta: number) => {
+  const handleImageNav = useCallback((delta: number) => {
     setImageModal((curr) => {
       if (!curr.items.length) return curr;
       const next = (curr.index + delta + curr.items.length) % curr.items.length;
       return { ...curr, index: next };
     });
-  };
+  }, []);
 
-  const handleShareItem = async () => {
+  const handleShareItem = useCallback(async () => {
     if (typeof window === 'undefined') return;
     const shareUrl = window.location.href;
     const nav = navigator as Navigator & { share?: (data: { title?: string; text?: string; url?: string }) => Promise<void> };
@@ -489,7 +862,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
     } catch {
       setError('Unable to share link right now.');
     }
-  };
+  }, []);
 
 
   const renderLoadingScreen = () => (
@@ -576,6 +949,18 @@ export default function ShareV2Client({ slug }: { slug: string }) {
           <div className="p-4 mb-6 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-100 max-w-3xl mx-auto text-center">{infoMessage}</div>
         )}
 
+        {retryingRequest && networkNotice && !requiresPassword && (
+          <div className="p-3 mb-6 rounded-xl bg-amber-50 text-amber-700 border border-amber-100 max-w-3xl mx-auto text-center text-sm animate-pulse">
+            {networkNotice}
+          </div>
+        )}
+
+        {zipState.loading && zipState.message && !requiresPassword && (
+          <div className="p-3 mb-6 rounded-xl bg-sky-50 text-sky-700 border border-sky-100 max-w-3xl mx-auto text-center text-sm">
+            {zipState.message}
+          </div>
+        )}
+
         {sessionToken && !requiresPassword && (
           <div className="space-y-8 animate-in fade-in duration-500">
             {/* Toolbar */}
@@ -584,8 +969,8 @@ export default function ShareV2Client({ slug }: { slug: string }) {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-brand-muted" />
                 <input
                   className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-transparent border-transparent focus:bg-white focus:border-brand-start/30 focus:ring-2 focus:ring-brand-start/20 transition-all shadow-sm"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
                   placeholder="Search files..."
                 />
               </div>
@@ -603,11 +988,11 @@ export default function ShareV2Client({ slug }: { slug: string }) {
               </select>
             </div>
 
-            {Object.entries(sections).length === 0 && !loading && (
+            {sectionEntries.length === 0 && !loading && (
               <div className="text-center py-12 text-brand-muted">No content loaded.</div>
             )}
 
-            {Object.entries(sections).map(([key, section]) => (
+            {sectionEntries.map(([key, section]) => (
               <section key={key} className="space-y-4">
                 {key && key !== '/' && (
                   <button
@@ -666,7 +1051,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
                         onDownload={(file) => handleDownloadItem(file)}
                         ticketMap={ticketLoadingMap}
                         previewUrlMap={previewUrlMap}
-                        onLoadThumbnail={(file) => void getTicketUrl(file.id, 'thumbnail')}
+                        onLoadThumbnail={handleLoadThumbnail}
                         onEndReached={() => {
                           if (section.page?.hasMore && !section.loading) void loadSection(key, false);
                         }}
@@ -717,6 +1102,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
               ...curr,
               [file.id]: curr[file.id] || 'Preview temporarily unavailable for this file.',
             }));
+            return;
           }
         }}
       />

@@ -60,13 +60,12 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }, []);
 
     useEffect(() => {
-        const appStateRef = { current: AppState.currentState };
         const sub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
-            const wasBackground = /inactive|background/.test(appStateRef.current);
-            if (wasBackground && nextState === 'active') {
+            if (nextState === 'active') {
                 uploadManager.resumeAllBackground();
+                uploadManager.ensureProcessing();
+                return;
             }
-            appStateRef.current = nextState;
         });
         return () => sub.remove();
     }, []);

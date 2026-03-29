@@ -319,6 +319,12 @@ Mobile Build
 eas build
 ```
 
+Render deployment references:
+
+- Blueprint config: `render.yaml`
+- Deployment playbook: `docs/render-deployment-playbook.md`
+- Keep-alive guide: `docs/render-cronjob-setup.md`
+
 ---
 
 # 🔐 Security

@@ -167,6 +167,7 @@ export default function SharedLinksScreen({ navigation }: any) {
         const shareUrl = normalizeExternalShareUrl(
             String(item.share_url || item.shareUrl || buildExternalShareUrl(item.slug || '', item.secret || ''))
         ).trim();
+        const canCopyShareUrl = Boolean(shareUrl && /[?&]k=/.test(shareUrl));
         const isExpired = expiresAt ? new Date(expiresAt) < new Date() : false;
 
         return (
@@ -220,14 +221,14 @@ export default function SharedLinksScreen({ navigation }: any) {
                 <View style={[styles.actions, { borderTopColor: C.border }]}>
                     <TouchableOpacity
                         style={styles.actionBtn}
-                        disabled={!shareUrl}
+                        disabled={!canCopyShareUrl}
                         onPress={(e: any) => {
                             e?.stopPropagation?.();
                             void handleCopy(shareUrl);
                         }}
                     >
                         <LinkIcon color={C.primary} size={16} />
-                        <Text style={[styles.actionText, { color: shareUrl ? C.primary : C.textBody }]}>{shareUrl ? 'Copy Link' : 'Link unavailable'}</Text>
+                        <Text style={[styles.actionText, { color: canCopyShareUrl ? C.primary : C.textBody }]}>{canCopyShareUrl ? 'Copy Link' : 'Link unavailable'}</Text>
                     </TouchableOpacity>
                     <View style={[styles.divider, { backgroundColor: C.border }]} />
                     <TouchableOpacity

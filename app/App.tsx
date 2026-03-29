@@ -24,6 +24,7 @@ import FilesScreen from './src/screens/FilesScreen';
 import AllFilesScreen from './src/screens/AllFilesScreen';
 import SharedLinksScreen from './src/screens/SharedLinksScreen';
 import SharedLinkDetailScreen from './src/screens/SharedLinkDetailScreen';
+import UploadManagerScreen from './src/screens/UploadManagerScreen';
 import MainTabs from './src/navigation/MainTabs';
 import AnimatedSplashScreen from './src/screens/AnimatedSplashScreen';
 
@@ -32,6 +33,13 @@ import DownloadProgressOverlay from './src/components/DownloadProgressOverlay';
 import ServerWakingOverlay from './src/components/ServerWakingOverlay';
 import AppErrorBoundary from './src/components/AppErrorBoundary';
 import { logger } from './src/utils/logger';
+import {
+    handleUploadNotificationAction,
+    UPLOAD_NOTIFICATION_ACTION_CANCEL,
+    UPLOAD_NOTIFICATION_ACTION_PAUSE,
+    UPLOAD_NOTIFICATION_ACTION_RESUME,
+    UPLOAD_NOTIFICATION_CATEGORY_ID,
+} from './src/services/UploadManager';
 
 ExpoSplashScreen.preventAutoHideAsync().catch(() => { });
 
@@ -120,6 +128,7 @@ function RootNavigator() {
                             <Stack.Screen name="AllFiles" component={AllFilesScreen} />
                             <Stack.Screen name="SharedLinks" component={SharedLinksScreen} />
                             <Stack.Screen name="SharedLinkDetail" component={SharedLinkDetailScreen} />
+                            <Stack.Screen name="UploadManager" component={UploadManagerScreen} />
                         </>
                     )}
                 </Stack.Navigator>
@@ -162,6 +171,7 @@ export default function App() {
         const globalAny = global as any;
         const ErrorUtilsRef = globalAny?.ErrorUtils;
         const existingGlobalHandler = ErrorUtilsRef?.getGlobalHandler?.();
+        let notificationResponseSubscription: { remove: () => void } | null = null;
         if (ErrorUtilsRef?.setGlobalHandler) {
             ErrorUtilsRef.setGlobalHandler((error: Error, isFatal?: boolean) => {
                 logger.error('frontend.global_error', 'Global JS error', {
@@ -187,6 +197,22 @@ export default function App() {
                 });
             }
 
+            Notifications.setNotificationCategoryAsync(UPLOAD_NOTIFICATION_CATEGORY_ID, [
+                {
+                    identifier: UPLOAD_NOTIFICATION_ACTION_PAUSE,
+                    buttonTitle: 'Pause',
+                },
+                {
+                    identifier: UPLOAD_NOTIFICATION_ACTION_RESUME,
+                    buttonTitle: 'Resume',
+                },
+                {
+                    identifier: UPLOAD_NOTIFICATION_ACTION_CANCEL,
+                    buttonTitle: 'Cancel',
+                    options: { isDestructive: true },
+                },
+            ]).catch(() => { });
+
             Notifications.requestPermissionsAsync().then(({ status }: { status: string }) => {
                 if (status !== 'granted') console.warn('[Notifications] Permission not granted');
             });
@@ -200,9 +226,16 @@ export default function App() {
                     shouldSetBadge: false,
                 }),
             });
+
+            notificationResponseSubscription = Notifications.addNotificationResponseReceivedListener((response: any) => {
+                const actionId = String(response?.actionIdentifier || '');
+                if (!actionId || actionId === 'expo.modules.notifications.actions.DEFAULT') return;
+                handleUploadNotificationAction(actionId);
+            });
         }
 
         return () => {
+            notificationResponseSubscription?.remove();
             if (ErrorUtilsRef?.setGlobalHandler && existingGlobalHandler) {
                 ErrorUtilsRef.setGlobalHandler(existingGlobalHandler);
             }

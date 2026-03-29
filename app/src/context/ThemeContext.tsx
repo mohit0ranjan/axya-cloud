@@ -182,14 +182,11 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
         };
     }, []);
 
-    // Wait for theme to load before rendering children
-    // This prevents flash of wrong theme on app start
-    if (isDark === null) {
-        return null;
-    }
+    const themeReady = isDark !== null;
+    const resolvedIsDark = isDark === true;
 
     return (
-        <ThemeContext.Provider value={{ theme: isDark ? darkTheme : lightTheme, isDark, themeReady: true, toggleTheme, setThemeMode }}>
+        <ThemeContext.Provider value={{ theme: resolvedIsDark ? darkTheme : lightTheme, isDark: resolvedIsDark, themeReady, toggleTheme, setThemeMode }}>
             {children}
         </ThemeContext.Provider>
     );

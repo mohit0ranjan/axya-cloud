@@ -6,6 +6,7 @@ import {
 import {
     ChevronUp, ChevronDown, CheckCircle2, AlertTriangle, X
 } from 'lucide-react-native';
+import { useNavigation } from '@react-navigation/native';
 import { useUpload } from '../context/UploadContext';
 import UploadProgress from './UploadProgress';
 import { theme as staticTheme } from '../ui/theme';
@@ -27,6 +28,7 @@ function formatSpeed(bytesPerSecond: number, isIdle: boolean): string {
 }
 
 function UploadProgressOverlay() {
+    const navigation = useNavigation<any>();
     const { theme } = useTheme();
     const {
         tasks,
@@ -55,13 +57,6 @@ function UploadProgressOverlay() {
 
     const allDone = totalFiles > 0 && activeCount === 0 && queuedCount === 0;
     const isPerfectSuccess = allDone && failedCount === 0;
-
-    useEffect(() => {
-        if (isPerfectSuccess) {
-            const timer = setTimeout(() => setIsDismissed(true), 3000);
-            return () => clearTimeout(timer);
-        }
-    }, [isPerfectSuccess]);
 
     const hasFailed = failedCount > 0;
     const isIdle = activeCount === 0;
@@ -235,6 +230,17 @@ function UploadProgressOverlay() {
             fontWeight: '500',
             color: theme.colors.primary,
         },
+        managerBtn: {
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 4,
+            padding: 4,
+        },
+        managerBtnTxt: {
+            fontSize: 12,
+            fontWeight: '700',
+            color: theme.colors.primary,
+        },
         listContainer: {
             flex: 1,
             paddingHorizontal: staticTheme.spacing.lg,
@@ -317,9 +323,17 @@ function UploadProgressOverlay() {
 
                     <View style={s.actionsRow}>
                         <Text style={s.speedTxt}>{formatBytes(uploadedBytes)} / {formatBytes(totalBytes)} ({overallProgress}%)</Text>
-                        <TouchableOpacity style={s.clearBtn} onPress={clearCompleted}>
-                            <Text style={s.clearBtnTxt}>Clear completed</Text>
-                        </TouchableOpacity>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                            <TouchableOpacity
+                                style={s.managerBtn}
+                                onPress={() => navigation.navigate('UploadManager')}
+                            >
+                                <Text style={s.managerBtnTxt}>Open Manager</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={s.clearBtn} onPress={clearCompleted}>
+                                <Text style={s.clearBtnTxt}>Clear completed</Text>
+                            </TouchableOpacity>
+                        </View>
                     </View>
 
                     {visibleTasks.length > 0 ? (

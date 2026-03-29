@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback } from 'react';
 import { SharedFile, ShareMeta } from './types';
 import { FileCard } from './FileCard';
 import { VirtuosoGrid } from 'react-virtuoso';
@@ -6,7 +6,7 @@ import { VirtuosoGrid } from 'react-virtuoso';
 interface FileGridProps {
     files: SharedFile[];
     share: ShareMeta;
-    onPreview: (file: SharedFile, index: number) => void;
+    onPreview: (file: SharedFile) => void;
     onDownload: (file: SharedFile) => void;
     ticketMap: Record<string, boolean>;
     previewUrlMap: Record<string, string>;
@@ -14,7 +14,23 @@ interface FileGridProps {
     onEndReached?: () => void;
 }
 
-export function FileGrid({ files, share, onPreview, onDownload, ticketMap, previewUrlMap, onLoadThumbnail, onEndReached }: FileGridProps) {
+function FileGridComponent({ files, share, onPreview, onDownload, ticketMap, previewUrlMap, onLoadThumbnail, onEndReached }: FileGridProps) {
+    const renderItem = useCallback((index: number, file: SharedFile) => {
+        return (
+            <div className="w-full">
+                <FileCard
+                    file={file}
+                    share={share}
+                    onPreview={onPreview}
+                    onDownload={onDownload}
+                    ticketMap={ticketMap}
+                    previewUrlMap={previewUrlMap}
+                    onLoadThumbnail={onLoadThumbnail}
+                />
+            </div>
+        );
+    }, [onDownload, onLoadThumbnail, onPreview, previewUrlMap, share, ticketMap]);
+
     if (!files || files.length === 0) {
         return (
             <div className="flex flex-col items-center justify-center py-20 px-4 text-center">
@@ -36,25 +52,12 @@ export function FileGrid({ files, share, onPreview, onDownload, ticketMap, previ
             useWindowScroll
             data={files}
             endReached={onEndReached}
-            overscan={200}
+            overscan={140}
             listClassName="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-6"
             itemClassName="flex" // Ensures item fills the grid cell properly
-            itemContent={(index, file) => (
-                <div className="w-full">
-                    <FileCard
-                        file={file}
-                        share={share}
-                        onClick={() => onPreview(file, index)}
-                        onDownload={(e) => {
-                            e.stopPropagation();
-                            onDownload(file);
-                        }}
-                        ticketMap={ticketMap}
-                        previewUrlMap={previewUrlMap}
-                        onLoadThumbnail={onLoadThumbnail}
-                    />
-                </div>
-            )}
+            itemContent={renderItem}
         />
     );
 }
+
+export const FileGrid = React.memo(FileGridComponent);

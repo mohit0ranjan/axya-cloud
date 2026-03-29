@@ -32,6 +32,10 @@ const pool = new Pool({
     min: 0,                        // Avoid holding idle connections on low-traffic instances
     idleTimeoutMillis: 20_000,     // ✅ Release idle connections after 20s
     connectionTimeoutMillis: 10_000, // 10s to get a connection from pool
+    query_timeout: 15_000,         // Guard against hung queries at client level
+    statement_timeout: 15_000,     // Ask Postgres to cancel very slow statements
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
     allowExitOnIdle: false,        // Don't exit during keep-alive between requests
 });
 

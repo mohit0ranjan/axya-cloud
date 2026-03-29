@@ -46,7 +46,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
                         if (status === 401 || status === 403) {
                             await logout();
                         } else {
-                            setIsAuthenticated(true);
+                            setUser(null);
+                            setIsAuthenticated(false);
                         }
                     }
                 }

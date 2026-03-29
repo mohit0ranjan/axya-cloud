@@ -54,7 +54,7 @@ router.delete('/folder/:id', trashFolder);
 
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import {
-    initUpload, uploadChunk, completeUpload, checkUploadStatus, cancelUpload
+    initUpload, uploadChunk, completeUpload, checkUploadStatus, cancelUpload, listUploadSessions
 } from '../controllers/upload.controller';
 
 const uploadLimiter = rateLimit({
@@ -80,12 +80,21 @@ const chunkLimiter = rateLimit({
     message: { success: false, error: 'Chunk upload rate limit reached.' },
 });
 
+const chunkUpload = multer({
+    dest: 'uploads/',
+    limits: {
+        // Keep chunk payload bounded to avoid memory pressure from oversized chunk retries.
+        fileSize: 12 * 1024 * 1024,
+    },
+});
+
 // ── File Upload & List ───────────────────────────────────────────────────────
 router.post('/upload/init', uploadLimiter, initUpload);
-router.post('/upload/chunk', chunkLimiter, upload.single('chunk'), uploadChunk);
+router.post('/upload/chunk', chunkLimiter, chunkUpload.single('chunk'), uploadChunk);
 router.post('/upload/complete', uploadLimiter, completeUpload);
 router.post('/upload/cancel', uploadLimiter, cancelUpload);
 router.get('/upload/status/:uploadId', checkUploadStatus);
+router.get('/upload/sessions', listUploadSessions);
 
 router.post('/upload', upload.single('file'), (req, res, next) => {
     res.set('Deprecation', 'true');

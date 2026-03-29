@@ -33,6 +33,12 @@ services:
         value: https://axya-web.onrender.com
       - key: SERVER_BASE_URL
         value: https://axya-server.onrender.com
+      - key: SHARE_V2_SESSION_SECRET
+        sync: false
+      - key: SHARE_V2_TICKET_SECRET
+        sync: false
+      - key: SHARE_V2_LINK_PEPPER
+        sync: false
       - key: SHARE_V2_META_CACHE_TTL_SECONDS
         value: 20
       - key: SHARE_V2_LOOKUP_CACHE_TTL_SECONDS

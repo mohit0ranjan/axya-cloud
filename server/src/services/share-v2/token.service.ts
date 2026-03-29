@@ -15,14 +15,24 @@ export type ShareV2TicketPayload = {
 };
 
 if (process.env.NODE_ENV === 'production') {
-    const missingSecrets = [
+    const missingDedicatedSecrets = [
         'SHARE_V2_SESSION_SECRET',
         'SHARE_V2_TICKET_SECRET',
         'SHARE_V2_LINK_PEPPER',
     ].filter((key) => !String(process.env[key] || '').trim());
 
-    if (missingSecrets.length > 0) {
-        throw new Error(`Missing required share-v2 secrets in production: ${missingSecrets.join(', ')}`);
+    const jwtSecret = String(process.env.JWT_SECRET || '').trim();
+    if (missingDedicatedSecrets.length > 0 && !jwtSecret) {
+        throw new Error(
+            `Missing share-v2 secrets in production and JWT_SECRET is not set: ${missingDedicatedSecrets.join(', ')}`
+        );
+    }
+
+    if (missingDedicatedSecrets.length > 0) {
+        // Keep startup resilient on hosts where only JWT_SECRET is configured.
+        console.warn(
+            `[share-v2] Missing dedicated secrets (${missingDedicatedSecrets.join(', ')}). Falling back to JWT_SECRET.`
+        );
     }
 }
 

@@ -3,10 +3,12 @@ import { View, Text, StyleSheet, Animated } from 'react-native';
 import { Image } from './AppImage';
 import { Shield, Zap, HardDrive } from 'lucide-react-native';
 
-const FEATURES = [
-    { icon: Shield, label: 'MTProto Encrypted', color: '#4B6EF5', bg: '#EEF1FD' },
-    { icon: Zap, label: 'Instant Upload', color: '#E5A400', bg: '#FFFBEB' },
-    { icon: HardDrive, label: 'Unlimited Space', color: '#16A34A', bg: '#F0FDF4' },
+import { useTheme } from '../context/ThemeContext';
+
+const getFeatures = (isDark: boolean, C: any) => [
+    { icon: Shield, label: 'MTProto Encrypted', color: C.primary || '#4B6EF5', bg: isDark ? (C.primary || '#4B6EF5') + '22' : '#EEF1FD' },
+    { icon: Zap, label: 'Instant Upload', color: '#E5A400', bg: isDark ? '#E5A40022' : '#FFFBEB' },
+    { icon: HardDrive, label: 'Unlimited Space', color: '#16A34A', bg: isDark ? '#16A34A22' : '#F0FDF4' },
 ];
 
 interface HeroSectionProps {
@@ -25,6 +27,10 @@ export default React.memo(function HeroSection({
     heroShrink,
     heroFadeOut,
 }: HeroSectionProps) {
+    const { theme, isDark } = useTheme();
+    const C = theme.colors;
+    const styles = React.useMemo(() => createStyles(C, isDark), [C, isDark]);
+    const features = React.useMemo(() => getFeatures(isDark, C), [isDark, C]);
     const floatAnim = useRef(new Animated.Value(0)).current;
 
     useEffect(() => {
@@ -68,7 +74,7 @@ export default React.memo(function HeroSection({
                 <Text style={styles.heroSubtitle}>Unlimited encrypted storage powered by Telegram</Text>
 
                 <View style={styles.featureRow}>
-                    {FEATURES.map((f) => {
+                    {features.map((f) => {
                         const FIcon = f.icon;
                         return (
                             <View key={f.label} style={[styles.featurePill, { backgroundColor: f.bg }]}>
@@ -83,7 +89,7 @@ export default React.memo(function HeroSection({
     );
 });
 
-const styles = StyleSheet.create({
+const createStyles = (C: any, isDark: boolean) => StyleSheet.create({
     heroArea: {
         flex: 1,
         alignItems: 'center',
@@ -102,7 +108,7 @@ const styles = StyleSheet.create({
         position: 'absolute',
         width: 320, height: 320,
         borderRadius: 9999,
-        backgroundColor: '#E8EFFE',
+        backgroundColor: isDark ? C.primary + '22' : '#E8EFFE',
         opacity: 0.35,
         top: -60,
     },
@@ -110,18 +116,18 @@ const styles = StyleSheet.create({
         position: 'absolute',
         width: 220, height: 220,
         borderRadius: 9999,
-        backgroundColor: '#D6DFFD',
+        backgroundColor: isDark ? C.primary + '33' : '#D6DFFD',
         opacity: 0.30,
         top: -10,
     },
     logoCircle: {
         width: 96, height: 96,
         borderRadius: 28,
-        backgroundColor: '#fff',
+        backgroundColor: isDark ? '#1E293B' : '#fff',
         justifyContent: 'center', alignItems: 'center',
-        shadowColor: '#4B6EF5',
+        shadowColor: C.primary || '#4B6EF5',
         shadowOffset: { width: 0, height: 16 },
-        shadowOpacity: 0.20,
+        shadowOpacity: isDark ? 0.40 : 0.20,
         shadowRadius: 32,
         elevation: 12,
         marginBottom: 24,
@@ -130,13 +136,13 @@ const styles = StyleSheet.create({
     heroTitle: {
         fontSize: 26,
         fontWeight: '700',
-        color: '#0F172A',
+        color: C.textHeading,
         letterSpacing: -0.3,
         marginBottom: 8,
     },
     heroSubtitle: {
         fontSize: 15,
-        color: '#64748B',
+        color: C.textBody,
         fontWeight: '400',
         marginBottom: 24,
         textAlign: 'center',

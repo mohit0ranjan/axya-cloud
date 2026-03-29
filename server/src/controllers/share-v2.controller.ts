@@ -30,6 +30,7 @@ import { getMessageCacheState } from '../services/share-v2/telegram-read-cache.s
 import { iterFileDownload } from '../services/telegram.service';
 import { sendApiError } from '../utils/apiError';
 import { FRONTEND_BASE_URL } from '../config/urls';
+import { logger } from '../utils/logger';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -185,13 +186,13 @@ const readShareSessionToken = (req: Request): string => {
 const resolvePublicSession = async (req: Request, res: Response): Promise<{ share: ShareLinkV2Row } | null> => {
     const token = readShareSessionToken(req);
     if (!token) {
-        sendApiError(res, 401, 'unauthorized', 'Share session token required.', { retryable: false });
+        sendApiError(res, 401, 'share_session_required', 'Share session token required.', { retryable: false });
         return null;
     }
 
     const payload = verifyShareV2SessionToken(token);
     if (!payload) {
-        sendApiError(res, 401, 'unauthorized', 'Invalid share session token.', { retryable: false });
+        sendApiError(res, 401, 'share_session_invalid', 'Invalid share session token.', { retryable: false });
         return null;
     }
 
@@ -207,7 +208,7 @@ const resolvePublicSession = async (req: Request, res: Response): Promise<{ shar
         [payload.sid, payload.shareId, sessionHash]
     );
     if (sessionRes.rowCount === 0) {
-        sendApiError(res, 401, 'unauthorized', 'Expired or revoked share session.', { retryable: false });
+        sendApiError(res, 401, 'share_session_expired', 'Expired or revoked share session.', { retryable: false });
         return null;
     }
 
@@ -217,16 +218,16 @@ const resolvePublicSession = async (req: Request, res: Response): Promise<{ shar
         return null;
     }
     if (share.revoked_at) {
-        sendApiError(res, 410, 'not_found', 'Share has been revoked.', { retryable: false });
+        sendApiError(res, 410, 'share_revoked', 'Share has been revoked.', { retryable: false });
         return null;
     }
     if (isShareExpired(share.expires_at)) {
-        sendApiError(res, 410, 'not_found', 'Share link has expired.', { retryable: false });
+        sendApiError(res, 410, 'share_expired', 'Share link has expired.', { retryable: false });
         return null;
     }
     const slugParam = String((req.params as any)?.slug || '').trim();
     if (slugParam && slugParam !== share.slug) {
-        sendApiError(res, 401, 'unauthorized', 'Share session does not match this link.', { retryable: false });
+        sendApiError(res, 401, 'share_session_mismatch', 'Share session does not match this link.', { retryable: false });
         return null;
     }
 
@@ -599,10 +600,10 @@ export const openPublicShareV2 = async (req: Request, res: Response) => {
             return sendApiError(res, 404, 'not_found', 'Share not found.', { retryable: false });
         }
         if (share.revoked_at) {
-            return sendApiError(res, 410, 'not_found', 'Share has been revoked.', { retryable: false });
+            return sendApiError(res, 410, 'share_revoked', 'Share has been revoked.', { retryable: false });
         }
         if (isShareExpired(share.expires_at)) {
-            return sendApiError(res, 410, 'not_found', 'Share has expired.', { retryable: false });
+            return sendApiError(res, 410, 'share_expired', 'Share has expired.', { retryable: false });
         }
 
         const expectedHash = share.link_secret_hash;
@@ -614,7 +615,7 @@ export const openPublicShareV2 = async (req: Request, res: Response) => {
                 statusCode: 401,
                 errorCode: 'invalid_secret',
             });
-            return sendApiError(res, 401, 'unauthorized', 'Invalid share secret.', { retryable: false });
+            return sendApiError(res, 401, 'invalid_secret', 'Invalid share secret.', { retryable: false });
         }
 
         if (share.password_hash) {
@@ -626,7 +627,7 @@ export const openPublicShareV2 = async (req: Request, res: Response) => {
                     statusCode: 401,
                     errorCode: 'invalid_password',
                 });
-                return sendApiError(res, 401, 'unauthorized', 'Incorrect share password.', { retryable: false });
+                return sendApiError(res, 401, 'invalid_password', 'Incorrect share password.', { retryable: false });
             }
         }
 
@@ -837,15 +838,15 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
     const ticket = String(req.params.ticket || '').trim();
     const payload = verifyShareV2Ticket(ticket);
     if (!payload) {
-        return sendApiError(res, 401, 'unauthorized', 'Invalid or expired stream ticket.', { retryable: false });
+        return sendApiError(res, 401, 'stream_ticket_invalid', 'Invalid or expired stream ticket.', { retryable: false });
     }
 
     try {
         const shareRes = await pool.query('SELECT * FROM share_links_v2 WHERE id = $1', [payload.shareId]);
         const share = (shareRes.rows[0] as ShareLinkV2Row | undefined) || null;
         if (!share) return sendApiError(res, 404, 'not_found', 'Share not found.', { retryable: false });
-        if (share.revoked_at) return sendApiError(res, 410, 'not_found', 'Share revoked.', { retryable: false });
-        if (isShareExpired(share.expires_at)) return sendApiError(res, 410, 'not_found', 'Share expired.', { retryable: false });
+        if (share.revoked_at) return sendApiError(res, 410, 'share_revoked', 'Share revoked.', { retryable: false });
+        if (isShareExpired(share.expires_at)) return sendApiError(res, 410, 'share_expired', 'Share expired.', { retryable: false });
 
         if (payload.disposition === 'inline' && !share.allow_preview) {
             return sendApiError(res, 403, 'forbidden', 'Preview is disabled for this share.', { retryable: false });
@@ -974,7 +975,15 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
                 nodeStream.pipe(transformer).pipe(res);
                 return;
             } catch (sharpErr: any) {
-                console.warn(`[Thumbnail Share] Sharp compression failed: ${sharpErr.message}`);
+                logger.warn(
+                    'share-v2',
+                    'thumbnail transform failed; falling back to original stream',
+                    {
+                        itemId: item.id,
+                        shareId: share.id,
+                        error: String(sharpErr?.message || sharpErr || 'unknown'),
+                    }
+                );
                 // Fallback to normal stream below
             }
         }

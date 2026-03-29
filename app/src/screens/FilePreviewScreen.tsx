@@ -50,7 +50,11 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
     const thumbUrl = buildApiFileUrl(API_BASE, item.id, 'thumbnail');
     const downloadUrl = buildApiFileUrl(API_BASE, item.id, 'download');
     const headers = useMemo(() => ({ Authorization: `Bearer ${jwt}` }), [jwt]);
-    const imageSource = useMemo(() => ({ uri: useFallback ? downloadUrl : thumbUrl, headers }), [downloadUrl, headers, thumbUrl, useFallback]);
+    const imageSource = useMemo(() => ({ 
+        uri: useFallback ? downloadUrl : thumbUrl, 
+        headers, 
+        cache: 'force-cache' as const 
+    }), [downloadUrl, headers, thumbUrl, useFallback]);
 
     const scale = useSharedValue(1);
     const savedScale = useSharedValue(1);
@@ -115,6 +119,11 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
             savedTransY.value = translateY.value;
         });
 
+    if (Platform.OS !== 'web') {
+        // Ensure pinch claims the stream first; pan activates only if pinch fails/ends.
+        pan.requireExternalGestureToFail(pinch);
+    }
+
     const doubleTap = Gesture.Tap()
         .numberOfTaps(2)
         .maxDelay(250)
@@ -169,7 +178,9 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
                 <Animated.View style={[styles.previewImageArea, { backgroundColor: CARD_BG }]}>
                     <Animated.View style={[{ flex: 1, overflow: 'hidden', justifyContent: 'center', alignItems: 'center' }, animStyle]}>
                         {loading && (
-                            <PreviewSkeleton />
+                            <Animated.View style={{ position: 'absolute', width: '100%', height: '100%', zIndex: 1 }} exiting={FadeOut.duration(240)}>
+                                <PreviewSkeleton />
+                            </Animated.View>
                         )}
                         <Animated.View style={[{ width: '100%', height: '100%' }, imageFadeStyle]}>
                             {previewFailed ? (
@@ -219,8 +230,8 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const insets = useSafeAreaInsets();
 
     // Data Maps
-    const routeFiles = Array.isArray(route?.params?.files) ? route.params.files : [];
-    const allFiles = routeFiles.filter((f: any) => f?.mime_type !== 'inode/directory');
+    const routeFiles = useMemo(() => Array.isArray(route?.params?.files) ? route.params.files : [], [route?.params?.files]);
+    const allFiles = useMemo(() => routeFiles.filter((f: any) => f?.mime_type !== 'inode/directory'), [routeFiles]);
     const fallbackFile = route?.params?.file ?? null;
     const initialIndex = Number.isInteger(route?.params?.initialIndex) ? route.params.initialIndex : 0;
     
@@ -265,45 +276,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
     const file = filesState[currentIndex] || null;
 
-    // Slide animation
-    const slideX = useSharedValue(0);
-
-    useEffect(() => {
-        setFilesState((prev) => {
-            if (prev.length === previewData.length && prev.every((entry, index) => entry?.id === previewData[index]?.id)) {
-                return prev;
-            }
-            return previewData;
-        });
-        if (previewData.length === 0) {
-            setCurrentIndex((prev) => (prev === 0 ? prev : 0));
-            return;
-        }
-        const safeIndex = Math.min(Math.max(initialIndex, 0), previewData.length - 1);
-        setCurrentIndex((prev) => (prev === safeIndex ? prev : safeIndex));
-    }, [previewData, initialIndex]);
-
-    const handleNext = useCallback(() => {
-        if (currentIndex >= filesState.length - 1) return;
-        // Slide left animation
-        slideX.value = 0;
-        slideX.value = withTiming(-width, { duration: 200 }, () => {
-            runOnJS(setCurrentIndex)(currentIndex + 1);
-            slideX.value = width;
-            slideX.value = withTiming(0, { duration: 200 });
-        });
-    }, [filesState.length, currentIndex, slideX]);
-
-    const handlePrev = useCallback(() => {
-        if (currentIndex <= 0) return;
-        // Slide right animation
-        slideX.value = 0;
-        slideX.value = withTiming(width, { duration: 200 }, () => {
-            runOnJS(setCurrentIndex)(currentIndex - 1);
-            slideX.value = -width;
-            slideX.value = withTiming(0, { duration: 200 });
-        });
-    }, [currentIndex, slideX]);
+    // slide animations removed in favor of FlatList
 
     const beginFileMutation = useCallback((fileId?: string | null) => {
         const id = String(fileId || '').trim();
@@ -318,18 +291,6 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         if (!id) return;
         mutationPendingRef.current.delete(id);
     }, []);
-
-    const swipePan = useMemo(() => Gesture.Pan()
-        .enabled(!isZoomed && Platform.OS !== 'web')
-        .activeOffsetX([-50, 50])
-        .onEnd((e) => {
-            'worklet';
-            if (e.translationX < -80) {
-                runOnJS(handleNext)();
-            } else if (e.translationX > 80) {
-                runOnJS(handlePrev)();
-            }
-        }), [isZoomed, handleNext, handlePrev]);
 
     useEffect(() => {
         if (!downloadTaskId) return;
@@ -360,9 +321,8 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         uiOpacity.value = withTiming(uiVisible ? 0 : 1, { duration: 250 });
     };
     const uiAnimStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
-    const slideAnimStyle = useAnimatedStyle(() => ({
-        transform: [{ translateX: slideX.value }],
-    }));
+    const flatListRef = useRef<FlatList>(null);
+    const didInitialScrollRef = useRef(false);
 
     const updateCurrentFile = useCallback((updater: (f: any) => any) => {
         setFilesState(prev => {
@@ -536,8 +496,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
     const renderFileItem = ({ item }: { item: any }) => {
         const mime = item?.mime_type || '';
+        let content;
         if (mime.startsWith('image/')) {
-            return (
+            content = (
                 <ImagePreviewItem 
                     item={item} jwt={jwt} 
                     isZoomed={isZoomed} 
@@ -546,10 +507,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     CARD_BG={CARD_BG}
                 />
             );
-        }
-        if (mime.startsWith('video/')) {
-            return (
-                <View style={styles.previewImageContainer}>
+        } else if (mime.startsWith('video/')) {
+            content = (
+                <View style={[styles.previewImageContainer, { width }]}>
                     <View style={[styles.previewImageArea, { backgroundColor: '#000' }]}>
                         <VideoPlayer 
                             url={buildApiFileUrl(API_BASE, item.id, 'stream')}
@@ -560,11 +520,10 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     </View>
                 </View>
             );
-        }
-        if (mime === 'application/pdf' || item?.type === 'pdf') {
+        } else if (mime === 'application/pdf' || item?.type === 'pdf') {
             const pdfUrl = buildApiFileUrl(API_BASE, item.id, 'download');
-            return (
-                <View style={styles.previewImageContainer}>
+            content = (
+                <View style={[styles.previewImageContainer, { width }]}>
                     <View style={[styles.previewImageArea, { backgroundColor: CARD_BG }]}>
                         {Platform.OS === 'web' ? (
                             <iframe src={pdfUrl} style={{ width: '100%', height: '100%', border: 'none' }} />
@@ -588,16 +547,18 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     </View>
                 </View>
             );
-        }
-        // Fallback generic
-        return (
-            <View style={styles.previewImageContainer}>
-                <View style={[styles.previewImageArea, { backgroundColor: CARD_BG, justifyContent: 'center', alignItems: 'center' }]}>
-                    <FileText color={TEXT_SUB} size={64} style={{ marginBottom: 16 }} />
-                    <Text style={{ color: TEXT_SUB, fontSize: 16 }}>Preview not available</Text>
+        } else {
+            content = (
+                <View style={[styles.previewImageContainer, { width }]}>
+                    <View style={[styles.previewImageArea, { backgroundColor: CARD_BG, justifyContent: 'center', alignItems: 'center' }]}>
+                        <FileText color={TEXT_SUB} size={64} style={{ marginBottom: 16 }} />
+                        <Text style={{ color: TEXT_SUB, fontSize: 16 }}>Preview not available</Text>
+                    </View>
                 </View>
-            </View>
-        );
+            );
+        }
+        
+        return <View style={{ width, height: '100%' }}>{content}</View>;
     };
 
     const formatBytes = (bytes: number) => {
@@ -612,16 +573,49 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     }).current;
 
     useEffect(() => {
+        setFilesState((prev) => {
+            if (prev.length === previewData.length && prev.every((entry, index) => entry?.id === previewData[index]?.id)) {
+                return prev;
+            }
+            return previewData;
+        });
+        
+        // Removed the setCurrentIndex clamping from here to avoid weird side effects.
+        // onViewableItemsChanged handles it now.
+    }, [previewData]);
+
+    useEffect(() => {
         if (filesState.length === 0) {
             navigation.goBack();
             return;
         }
-        if (currentIndex > filesState.length - 1) {
-            setCurrentIndex(filesState.length - 1);
-        }
-    }, [filesState.length, currentIndex, navigation]);
+    }, [filesState.length, navigation]);
 
     const hasMultipleFiles = filesState.length > 1;
+
+    // Handle scrollIndex on initial mount with Android layout phase consideration
+    const onScrollToIndexFailed = useCallback((info: any) => {
+        const wait = new Promise(resolve => setTimeout(resolve, 500));
+        wait.then(() => {
+            const fallbackIndex = Math.max(0, Math.min(info.index, Math.max(filesState.length - 1, 0)));
+            flatListRef.current?.scrollToIndex({ index: fallbackIndex, animated: false });
+        });
+    }, [filesState.length]);
+
+    const onPreviewListLayout = useCallback(() => {
+        if (didInitialScrollRef.current || filesState.length === 0) return;
+        const safeIndex = Math.max(0, Math.min(initialIndex, filesState.length - 1));
+        didInitialScrollRef.current = true;
+        requestAnimationFrame(() => {
+            flatListRef.current?.scrollToIndex({ index: safeIndex, animated: false });
+        });
+    }, [filesState.length, initialIndex]);
+
+    const getItemLayout = useCallback((data: any, index: number) => ({
+        length: width,
+        offset: width * index,
+        index,
+    }), []);
 
     return (
         <View style={[styles.container, { backgroundColor: BG_COLOR, paddingTop: insets.top }]}>
@@ -653,42 +647,29 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                 </View>
             </Animated.View>
 
-            {/* Preview Area with slide animation */}
-            <View style={styles.swiperArea}>
+            {/* Preview Area with FlatList */}
+            <View style={styles.swiperArea} onLayout={onPreviewListLayout}>
                 {filesState.length > 0 && file ? (
-                    <GestureDetector gesture={swipePan}>
-                        <Animated.View style={[{ flex: 1 }, slideAnimStyle]} key={file.id}>
-                            {renderFileItem({ item: file })}
-                        </Animated.View>
-                    </GestureDetector>
+                    <FlatList
+                        ref={flatListRef}
+                        data={filesState}
+                        horizontal
+                        pagingEnabled
+                        scrollEnabled={!isZoomed}
+                        showsHorizontalScrollIndicator={false}
+                        keyExtractor={(item) => String(item.id)}
+                        getItemLayout={getItemLayout}
+                        onScrollToIndexFailed={onScrollToIndexFailed}
+                        onViewableItemsChanged={handleViewableItemsChanged}
+                        initialNumToRender={1}
+                        maxToRenderPerBatch={2}
+                        windowSize={3}
+                        renderItem={renderFileItem}
+                    />
                 ) : (
                     <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
                         <ActivityIndicator size="large" color={ACCENT} />
                     </View>
-                )}
-
-                {/* Navigation arrows for multiple files */}
-                {hasMultipleFiles && uiVisible && (
-                    <>
-                        {currentIndex > 0 && (
-                            <TouchableOpacity 
-                                style={[styles.navArrow, styles.navArrowLeft, { backgroundColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.06)' }]} 
-                                onPress={handlePrev}
-                                activeOpacity={0.7}
-                            >
-                                <ChevronLeft color={TEXT_MAIN} size={20} />
-                            </TouchableOpacity>
-                        )}
-                        {currentIndex < filesState.length - 1 && (
-                            <TouchableOpacity 
-                                style={[styles.navArrow, styles.navArrowRight, { backgroundColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.06)' }]} 
-                                onPress={handleNext}
-                                activeOpacity={0.7}
-                            >
-                                <ChevronRight color={TEXT_MAIN} size={20} />
-                            </TouchableOpacity>
-                        )}
-                    </>
                 )}
             </View>
 

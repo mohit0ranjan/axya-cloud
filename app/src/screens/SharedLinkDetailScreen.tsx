@@ -36,6 +36,7 @@ export default function SharedLinkDetailScreen({ navigation, route }: any) {
     const { theme } = useTheme();
     const { showToast } = useToast();
     const C = theme.colors;
+    const styles = useMemo(() => createStyles(C), [C]);
     const insets = useSafeAreaInsets();
 
     const [loading, setLoading] = useState(true);
@@ -321,15 +322,21 @@ export default function SharedLinkDetailScreen({ navigation, route }: any) {
 }
 
 function DetailItem({ label, value, color }: { label: string; value: string; color: string }) {
+    const { theme } = useTheme();
+    const C = theme.colors;
+    const styles = useMemo(() => createStyles(C), [C]);
     return (
         <View style={styles.detailItem}>
-            <Text style={[styles.detailLabel, { color: '#64748B' }]}>{label}</Text>
+            <Text style={[styles.detailLabel, { color: C.textBody }]}>{label}</Text>
             <Text style={[styles.detailValue, { color }]}>{value}</Text>
         </View>
     );
 }
 
 function StatPill({ icon, label, value }: { icon: React.ReactNode; label: string; value: number }) {
+    const { theme } = useTheme();
+    const C = theme.colors;
+    const styles = useMemo(() => createStyles(C), [C]);
     return (
         <View style={styles.statPill}>
             <View style={styles.statPillTop}>
@@ -356,6 +363,9 @@ function SettingRow({
     onChange: (value: boolean) => void;
     disabled?: boolean;
 }) {
+    const { theme } = useTheme();
+    const C = theme.colors;
+    const styles = useMemo(() => createStyles(C), [C]);
     return (
         <View style={styles.settingRow}>
             <View style={styles.settingIcon}>{icon}</View>
@@ -368,7 +378,7 @@ function SettingRow({
     );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (C: any) => StyleSheet.create({
     container: { flex: 1 },
     center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
     header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 16 },
@@ -387,15 +397,15 @@ const styles = StyleSheet.create({
     detailValue: { fontSize: 14, fontWeight: '600' },
     sectionTitle: { fontSize: 16, fontWeight: '700' },
     statsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-    statPill: { minWidth: '47%', padding: 12, borderRadius: 14, backgroundColor: '#F8FAFC', gap: 10 },
+    statPill: { minWidth: '47%', padding: 12, borderRadius: 14, backgroundColor: C.surfaceMuted, gap: 10 },
     statPillTop: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    statPillLabel: { fontSize: 12, fontWeight: '600', color: '#475569' },
-    statPillValue: { fontSize: 22, fontWeight: '800', color: '#0F172A' },
+    statPillLabel: { fontSize: 12, fontWeight: '600', color: C.textBody },
+    statPillValue: { fontSize: 22, fontWeight: '800', color: C.textHeading },
     settingRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
     settingIcon: { width: 36, alignItems: 'center' },
     settingText: { flex: 1 },
-    settingTitle: { fontSize: 15, fontWeight: '600', color: '#0F172A' },
-    settingSubtitle: { fontSize: 12, color: '#64748B', marginTop: 2 },
+    settingTitle: { fontSize: 15, fontWeight: '600', color: C.textHeading },
+    settingSubtitle: { fontSize: 12, color: C.textBody, marginTop: 2 },
     passwordBlock: { gap: 12, marginTop: 4 },
     passwordHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     passwordTitle: { fontSize: 15, fontWeight: '600' },

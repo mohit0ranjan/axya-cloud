@@ -29,6 +29,7 @@ export default function TrashScreen({ navigation }: any) {
 
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
+    const [isEmptying, setIsEmptying] = useState(false);
     const [files, setFiles] = useState<any[]>([]);
 
     const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -64,7 +65,7 @@ export default function TrashScreen({ navigation }: any) {
         try {
             await apiClient.patch(`/files/${item.id}/restore`);
             setFiles((prev) => prev.filter((file) => file.id !== item.id));
-            syncAfterFileMutation();
+            syncAfterFileMutation({ clearCache: true });
             showToast('File restored');
         } catch {
             showToast('Could not restore file', 'error');
@@ -85,7 +86,7 @@ export default function TrashScreen({ navigation }: any) {
                         try {
                             await apiClient.delete(`/files/${item.id}`);
                             setFiles((prev) => prev.filter((file) => file.id !== item.id));
-                            syncAfterFileMutation();
+                            syncAfterFileMutation({ clearCache: true });
                             showToast('File deleted permanently');
                         } catch {
                             showToast('Could not delete file', 'error');
@@ -107,13 +108,18 @@ export default function TrashScreen({ navigation }: any) {
                     text: 'Empty trash',
                     style: 'destructive',
                     onPress: async () => {
+                        setIsEmptying(true);
                         try {
-                            await apiClient.delete('/files/trash');
-                            setFiles([]);
-                            syncAfterFileMutation();
-                            showToast('Trash emptied');
-                        } catch {
-                            showToast('Could not empty trash', 'error');
+                            const res = await apiClient.delete('/files/trash');
+                            if (res.data?.success) {
+                                showToast(res.data.message || 'Trash emptied');
+                            }
+                        } catch (err: any) {
+                            showToast(err.response?.data?.error || 'Could not empty trash completely', 'error');
+                        } finally {
+                            setIsEmptying(false);
+                            void loadTrash();
+                            syncAfterFileMutation({ clearCache: true });
                         }
                     },
                 },
@@ -149,12 +155,12 @@ export default function TrashScreen({ navigation }: any) {
                 </View>
                 <TouchableOpacity
                     style={st.emptyBtn}
-                    activeOpacity={files.length === 0 ? 1 : 0.7}
-                    disabled={files.length === 0}
+                    activeOpacity={files.length === 0 || isEmptying ? 1 : 0.7}
+                    disabled={files.length === 0 || isEmptying}
                     onPress={handleEmptyTrash}
                 >
                     <Text style={{ color: files.length === 0 ? C.border : '#EF4444', fontWeight: '700', fontSize: 14 }}>
-                        Empty
+                        {isEmptying ? 'Emptying...' : 'Empty'}
                     </Text>
                 </TouchableOpacity>
             </View>

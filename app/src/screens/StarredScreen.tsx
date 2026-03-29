@@ -33,6 +33,7 @@ export default function StarredScreen({ navigation }: any) {
     const { token } = useContext(AuthContext);
     const { theme, isDark } = useTheme();
     const C = theme.colors;
+    const styles = useMemo(() => createStyles(C), [C]);
     const insets = useSafeAreaInsets();
 
     const [isLoading, setIsLoading] = useState(true);
@@ -194,7 +195,7 @@ export default function StarredScreen({ navigation }: any) {
     );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (C: any) => StyleSheet.create({
     container: { flex: 1 },
     header: {
         flexDirection: 'row', alignItems: 'center',
@@ -204,7 +205,7 @@ const styles = StyleSheet.create({
     iconBtn: { width: 40, height: 40, justifyContent: 'center' },
     headerInfo: { flex: 1 },
     title: { fontSize: 24, fontWeight: '700' },
-    subtitle: { fontSize: 12, color: '#64748B', marginTop: 2, fontWeight: '500' },
+    subtitle: { fontSize: 12, color: C.textBody, marginTop: 2, fontWeight: '500' },
     sortBtn: {
         flexDirection: 'row', alignItems: 'center', gap: 5,
         paddingHorizontal: 12, height: 34, borderRadius: 20,

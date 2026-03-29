@@ -61,74 +61,83 @@ function formatSize(bytes: number) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + s[i];
 }
 
-// ? Fix: React.memo wrapper prevents unchanged files from re-rendering when selectedIds updates
 const MemoizedFileItem = React.memo(({ item, isSelected, isGridView, selectMode, theme, token, onAction }: any) => {
     const styles = useMemo(() => createStyles(theme), [theme]);
     const isFolder = item.result_type === 'folder' || item.mime_type === 'inode/directory';
+    const scale = useRef(new Animated.Value(1)).current;
+
+    const handlePressIn = () => { Animated.spring(scale, { toValue: 0.94, useNativeDriver: true }).start(); };
+    const handlePressOut = () => { Animated.spring(scale, { toValue: 1, useNativeDriver: true }).start(); };
 
     return (
-        <TouchableOpacity
-            style={[
-                isGridView ? styles.gridCard : styles.fileCard,
-                !isGridView && isFolder ? styles.folderRow : null,
-                { backgroundColor: theme.colors.card },
-                isSelected && styles.fileCardSelected,
-            ]}
-            onPress={() => onAction(selectMode ? 'toggle' : isFolder ? 'openFolder' : 'preview', item)}
-            onLongPress={() => onAction('longPress', item)}
-        >
-            {isGridView ? (
-                <>
-                    <View style={styles.gridIcon}>
-                        <FileIcon item={item} size={GRID_SIZE * 0.75} token={token} apiBase={apiClient.defaults.baseURL} themeColors={theme.colors} style={{ borderRadius: 0, width: '100%', height: '100%' }} />
-                    </View>
-                    <View style={styles.gridLabel}>
-                        <Text style={[styles.gridName, { color: theme.colors.textHeading }]} numberOfLines={1}>{sanitizeDisplayName(item.name || item.file_name || 'File', 'File')}</Text>
-                        <Text style={[styles.gridMeta, { color: theme.colors.textBody }]} numberOfLines={1}>
-                            {isFolder
-                                ? formatFolderMeta(item)
-                                : `${formatSize(item.size)} • ${new Date(item.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`.toUpperCase()}
-                        </Text>
-                    </View>
-                    {selectMode && (
-                        <View style={styles.gridCheckbox}>
-                            {isSelected && <Check color={theme.colors.primary} size={14} />}
+        <Animated.View style={[{ transform: [{ scale }] }, isGridView ? { width: GRID_SIZE } : {}]}>
+            <TouchableOpacity
+                style={[
+                    isGridView ? styles.gridCard : styles.fileCard,
+                    !isGridView && isFolder ? styles.folderRow : null,
+                    { backgroundColor: theme.colors.card },
+                    isSelected && styles.fileCardSelected,
+                    isGridView && { width: '100%' }
+                ]}
+                activeOpacity={0.8}
+                onPressIn={handlePressIn}
+                onPressOut={handlePressOut}
+                onPress={() => onAction(selectMode ? 'toggle' : isFolder ? 'openFolder' : 'preview', item)}
+                onLongPress={() => onAction('longPress', item)}
+            >
+                {isGridView ? (
+                    <>
+                        <View style={[styles.gridIcon, { backgroundColor: isFolder ? `${theme.colors.primary}15` : theme.colors.surfaceMuted }]}>
+                            {isFolder ? <Folder color={theme.colors.primary} size={40} fill={theme.colors.primary} /> : <FileIcon item={item} size={GRID_SIZE * 0.75} token={token} apiBase={apiClient.defaults.baseURL} themeColors={theme.colors} style={{ borderRadius: 0, width: '100%', height: '100%' }} />}
                         </View>
-                    )}
-                </>
-            ) : (
-                <View style={styles.fileCardInner}>
-                    <FileIcon item={item} size={42} token={token} apiBase={apiClient.defaults.baseURL} themeColors={theme.colors} style={{ marginRight: 16 }} />
-                    <View style={styles.fileDetails}>
-                        <Text style={[styles.fileName, { color: theme.colors.textHeading }]} numberOfLines={1}>{sanitizeDisplayName(item.name || item.file_name || 'File', 'File')}</Text>
-                        <Text style={[styles.fileMeta, { color: theme.colors.textBody }]}>
-                            {isFolder
-                                ? formatFolderMeta(item)
-                                : `${formatSize(item.size)} • ${new Date(item.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`.toUpperCase()
-                            }
-                        </Text>
-                    </View>
-                    {!selectMode && (
-                        <TouchableOpacity
-                            style={styles.moreBtn}
-                            hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}
-                            onPress={(e: any) => {
-                                if (e && e.stopPropagation) e.stopPropagation();
-                                if (e && e.preventDefault) e.preventDefault();
-                                onAction('options', item);
-                            }}
-                        >
-                            <MoreHorizontal color={theme.colors.border} size={20} />
-                        </TouchableOpacity >
-                    )}
-                    {selectMode && (
-                        <View style={{ paddingRight: 8 }}>
-                            {isSelected ? <CheckSquare color={theme.colors.primary} size={22} /> : <Square color={theme.colors.textBody} size={22} />}
+                        <View style={styles.gridLabel}>
+                            <Text style={[styles.gridName, { color: theme.colors.textHeading }]} numberOfLines={1}>{sanitizeDisplayName(item.name || item.file_name || 'File', 'File')}</Text>
+                            <Text style={[styles.gridMeta, { color: theme.colors.textBody }]} numberOfLines={1}>
+                                {isFolder
+                                    ? formatFolderMeta(item)
+                                    : `${formatSize(item.size)} • ${new Date(item.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`.toUpperCase()}
+                            </Text>
                         </View>
-                    )}
-                </View>
-            )}
-        </TouchableOpacity>
+                        {selectMode && (
+                            <View style={styles.gridCheckbox}>
+                                {isSelected && <Check color={theme.colors.primary} size={14} />}
+                            </View>
+                        )}
+                    </>
+                ) : (
+                    <View style={styles.fileCardInner}>
+                        <FileIcon item={item} size={42} token={token} apiBase={apiClient.defaults.baseURL} themeColors={theme.colors} style={{ marginRight: 16 }} />
+                        <View style={styles.fileDetails}>
+                            <Text style={[styles.fileName, { color: theme.colors.textHeading }]} numberOfLines={1}>{sanitizeDisplayName(item.name || item.file_name || 'File', 'File')}</Text>
+                            <Text style={[styles.fileMeta, { color: theme.colors.textBody }]}>
+                                {isFolder
+                                    ? formatFolderMeta(item)
+                                    : `${formatSize(item.size)} • ${new Date(item.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`.toUpperCase()
+                                }
+                            </Text>
+                        </View>
+                        {!selectMode && (
+                            <TouchableOpacity
+                                style={styles.moreBtn}
+                                hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}
+                                onPress={(e: any) => {
+                                    if (e && e.stopPropagation) e.stopPropagation();
+                                    if (e && e.preventDefault) e.preventDefault();
+                                    onAction('options', item);
+                                }}
+                            >
+                                <MoreHorizontal color={theme.colors.border} size={20} />
+                            </TouchableOpacity >
+                        )}
+                        {selectMode && (
+                            <View style={{ paddingRight: 8 }}>
+                                {isSelected ? <CheckSquare color={theme.colors.primary} size={22} /> : <Square color={theme.colors.textBody} size={22} />}
+                            </View>
+                        )}
+                    </View>
+                )}
+            </TouchableOpacity>
+        </Animated.View>
     );
 }, (prev, next) => {
     // Custom comparator to skip massive re-renders
@@ -816,7 +825,7 @@ export default function FolderFilesScreen({ route, navigation }: any) {
 }
 
 
-const GRID_SIZE = (width - 48 - 12) / 2;
+const GRID_SIZE = (width - 40 - 12) / 2; // Fixed spacing
 const createStyles = (theme: any) => StyleSheet.create({
     container: { flex: 1, backgroundColor: theme.colors.background },
     header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 12, gap: 8 },
@@ -841,12 +850,11 @@ const createStyles = (theme: any) => StyleSheet.create({
         flexDirection: 'row', 
         alignItems: 'center', 
         paddingVertical: 14, 
-        paddingHorizontal: 20, // Keep some padding for the screen edges since parent doesn't pad
+        paddingHorizontal: 20,
         borderBottomWidth: 1, 
         borderBottomColor: theme.colors.border 
     },
-    folderRow: {
-    },
+    folderRow: {},
     fileCardSelected: { backgroundColor: theme.colors.infoSoft },
     fileDetails: { flex: 1, justifyContent: 'center' },
     fileName: { fontSize: 16, fontWeight: '500', marginBottom: 2 },
@@ -855,18 +863,20 @@ const createStyles = (theme: any) => StyleSheet.create({
     gridContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
     gridCard: {
         width: GRID_SIZE,
-        borderRadius: 20,
+        borderRadius: 24,
         backgroundColor: theme.colors.card,
         overflow: 'hidden',
-        shadowColor: '#253057',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.06,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.04,
         shadowRadius: 10,
-        elevation: 3,
+        elevation: 2,
     },
-    gridIcon: { width: '100%', height: GRID_SIZE * 0.75, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.surfaceMuted },
-    gridLabel: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12, gap: 2 },
-    gridName: { fontSize: 13, fontWeight: '700', color: theme.colors.textHeading },
+    gridIcon: { width: '100%', height: GRID_SIZE * 0.7, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.inputBg },
+    gridLabel: { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 14, gap: 4 },
+    gridName: { fontSize: 14, fontWeight: '600', color: theme.colors.textHeading },
     gridMeta: { fontSize: 11, fontWeight: '500', color: theme.colors.textBody },
     gridCheckbox: { position: 'absolute', top: 8, right: 8, width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#fff', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.3)' },
     fab: { position: 'absolute', bottom: 40, right: 24, width: 64, height: 64, borderRadius: 32, backgroundColor: theme.colors.primary, justifyContent: 'center', alignItems: 'center', ...theme.shadows.soft, elevation: 10, zIndex: 10 },

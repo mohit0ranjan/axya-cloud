@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
     View, Text, StyleSheet,
     StatusBar, Animated, Easing, KeyboardAvoidingView, Platform,
@@ -7,6 +7,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft } from 'lucide-react-native';
 
+import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { sendOtp, verifyOtp } from '../services/authService';
 
@@ -18,6 +19,9 @@ import PrimaryButton from '../components/PrimaryButton';
 
 export default function AuthScreen({ navigation }: any) {
     const { login } = useAuth();
+    const { theme, isDark } = useTheme();
+    const C = theme.colors;
+    const styles = useMemo(() => createStyles(C, isDark), [C, isDark]);
 
     const [step, setStep] = useState<'phone' | 'otp'>('phone');
     const [isLoading, setIsLoading] = useState(false);
@@ -159,11 +163,11 @@ export default function AuthScreen({ navigation }: any) {
     // Fix #8: Interpolate dot colors
     const dot1BgColor = dot1Color.interpolate({
         inputRange: [0, 1],
-        outputRange: ['#E2E8F0', '#4B6EF5'],
+        outputRange: [isDark ? '#334155' : '#E2E8F0', C.primary],
     });
     const dot2BgColor = dot2Color.interpolate({
         inputRange: [0, 1],
-        outputRange: ['#E2E8F0', '#4B6EF5'],
+        outputRange: [isDark ? '#334155' : '#E2E8F0', C.primary],
     });
 
     // Fix #5: Compute autoFocus only once on mount
@@ -172,12 +176,12 @@ export default function AuthScreen({ navigation }: any) {
 
     return (
         <SafeAreaView style={styles.root} edges={['top', 'left', 'right']}>
-            <StatusBar barStyle="dark-content" backgroundColor="#F4F6FB" />
+            <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor={C.background} />
 
             {/* Back Button */}
             <TouchableOpacity style={styles.backBtn} onPress={() => navigation?.goBack()}>
                 <View style={styles.backIconCircle}>
-                    <ArrowLeft color="#1A1F36" size={22} strokeWidth={2.5} />
+                    <ArrowLeft color={C.textHeading} size={22} strokeWidth={2.5} />
                 </View>
             </TouchableOpacity>
 
@@ -300,10 +304,10 @@ export default function AuthScreen({ navigation }: any) {
     );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (C: any, isDark: boolean) => StyleSheet.create({
     root: {
         flex: 1,
-        backgroundColor: '#F4F6FB'
+        backgroundColor: C.background
     },
     keyboardContainer: {
         flex: 1
@@ -326,7 +330,7 @@ const styles = StyleSheet.create({
         width: 44,
         height: 44,
         borderRadius: 22,
-        backgroundColor: 'rgba(255, 255, 255, 0.6)',
+        backgroundColor: isDark ? 'rgba(0, 0, 0, 0.4)' : 'rgba(255, 255, 255, 0.6)',
         justifyContent: 'center',
         alignItems: 'center',
     },
@@ -338,13 +342,13 @@ const styles = StyleSheet.create({
     sheetTitle: {
         fontSize: 26,
         fontWeight: '600',
-        color: '#0F172A',
+        color: C.textHeading,
         letterSpacing: -0.3,
         textAlign: 'center',
     },
     sheetSubtitle: {
         fontSize: 15,
-        color: '#64748B',
+        color: C.textBody,
         textAlign: 'center',
         lineHeight: 22,
         fontWeight: '400',
@@ -362,7 +366,6 @@ const styles = StyleSheet.create({
         width: '100%',
         gap: 16
     },
-    // Fix #10: StyleSheet spacer
     spacerSm: {
         height: 8,
     },
@@ -373,12 +376,12 @@ const styles = StyleSheet.create({
     },
     backLinkText: {
         fontSize: 15,
-        color: '#64748B',
+        color: C.textBody,
         fontWeight: '600'
     },
     finePrint: {
         fontSize: 12,
-        color: '#94A3B8',
+        color: C.muted || '#94A3B8',
         textAlign: 'center',
         marginTop: 8,
         fontWeight: '600',

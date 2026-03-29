@@ -1,21 +1,26 @@
+import winston from 'winston';
+
 type LogLevel = 'info' | 'warn' | 'error';
 
+const baseLogger = winston.createLogger({
+    level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
+    format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.errors({ stack: true }),
+        winston.format.json()
+    ),
+    defaultMeta: {
+        service: 'axya-api',
+        env: process.env.NODE_ENV || 'development',
+    },
+    transports: [new winston.transports.Console()],
+});
+
 const write = (level: LogLevel, scope: string, message: string, meta?: unknown) => {
-    const payload = {
-        ts: new Date().toISOString(),
-        level,
+    baseLogger.log(level, message, {
         scope,
-        message,
         meta,
-    };
-    const line = JSON.stringify(payload);
-    if (level === 'error') {
-        console.error(line);
-    } else if (level === 'warn') {
-        console.warn(line);
-    } else {
-        console.log(line);
-    }
+    });
 };
 
 export const logger = {

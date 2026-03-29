@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
+import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { initSchema } from './services/db.service';
 import pool from './config/db';
@@ -40,6 +41,14 @@ let schemaState: 'starting' | 'ready' | 'degraded' = 'starting';
 let telegramWarmupStatus: 'idle' | 'ready' | 'partial' | 'failed' | 'skipped' = 'idle';
 
 app.disable('x-powered-by');
+
+app.use(morgan(':method :url :status :response-time ms', {
+    stream: {
+        write: (line: string) => {
+            logger.info('backend.http', 'request.access', { line: line.trim() });
+        },
+    },
+}));
 
 // Logging all incoming requests (less verbose in production)
 app.use((req, res, next) => {
@@ -238,13 +247,38 @@ app.use('/api/v2', shareV2Routes);
 app.use('/stream', streamRoutes);
 
 // ── Health Check (Render keep-alive friendly) ────────────────────────────────
-app.get('/health', (req: Request, res: Response) => {
+app.get('/health', async (req: Request, res: Response) => {
+    const startedAt = Date.now();
+    let dbStatus: 'up' | 'down' = 'down';
+    let dbLatencyMs: number | null = null;
+    let dbError: string | null = null;
+
+    try {
+        const dbStartedAt = Date.now();
+        await pool.query('SELECT 1');
+        dbStatus = 'up';
+        dbLatencyMs = Date.now() - dbStartedAt;
+    } catch (err: any) {
+        dbStatus = 'down';
+        dbError = err?.message || 'unknown';
+    }
+
+    const responseTimeMs = Date.now() - startedAt;
     res.json({
         status: schemaReady ? 'OK' : 'DEGRADED',
         service: 'Axya API',
         timestamp: new Date(),
         uptime: Math.floor(process.uptime()),
         memory: process.memoryUsage().heapUsed,
+        responseTimeMs,
+        db: {
+            status: dbStatus,
+            latencyMs: dbLatencyMs,
+            error: dbError,
+        },
+        telegram: {
+            warmupStatus: telegramWarmupStatus,
+        },
         schemaState,
         schemaReady,
         schemaInitAttempts,
@@ -278,10 +312,10 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 
 // ── Graceful Shutdown ────────────────────────────────────────────────────────
 const shutdown = async (signal: string) => {
-    console.log(`\n🛑 ${signal} received. Cleaning up...`);
+    logger.info('backend.process', 'shutdown_signal', { signal });
     try {
         await pool.end();
-        console.log('✅ Database connections closed.');
+        logger.info('backend.process', 'db_pool_closed');
     } catch (e) { }
     process.exit(0);
 };
@@ -311,12 +345,15 @@ function cleanOrphanedUploads(): void {
     try {
         if (fs.existsSync(tmpDir)) {
             fs.rmSync(tmpDir, { recursive: true, force: true });
-            console.log('🧹 Cleaned orphaned upload temp directory.');
+            logger.info('backend.startup', 'orphaned_uploads_cleaned', { tmpDir });
         }
         fs.mkdirSync(tmpDir, { recursive: true });
     } catch (e: any) {
         // Non-fatal — log and continue
-        console.warn('⚠️  Could not clean temp uploads dir:', e.message);
+        logger.warn('backend.startup', 'orphaned_uploads_cleanup_failed', {
+            tmpDir,
+            message: e?.message,
+        });
     }
 }
 
@@ -426,17 +463,22 @@ const initializeCoreServices = async () => {
 
 const start = async () => {
     try {
-        console.log(`⏳ Starting Axya on Port ${port}...`);
+        logger.info('backend.startup', 'server_starting', { port });
         enforceSupportedNodeRuntime();
         cleanOrphanedUploads();
         app.listen(port, '0.0.0.0', () => {
-            console.log(`🚀 Axya Server is READY!`);
-            console.log(`🔗 Interface: http://0.0.0.0:${port}`);
-            console.log(`📊 Node: ${process.version} | Env: ${process.env.NODE_ENV || 'development'}`);
+            logger.info('backend.startup', 'server_ready', {
+                bind: `http://0.0.0.0:${port}`,
+                node: process.version,
+                env: process.env.NODE_ENV || 'development',
+            });
         });
         void initializeCoreServices();
     } catch (error: any) {
-        console.error('❌ Failed to bind server:', error.message);
+        logger.error('backend.startup', 'server_bind_failed', {
+            message: error?.message,
+            stack: error?.stack,
+        });
         process.exit(1);
     }
 };

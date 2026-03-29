@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, Animated } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import { useTheme } from '../context/ThemeContext';
 
 interface OTPInputProps {
     value: string;
@@ -21,6 +22,10 @@ export default React.memo(function OTPInput({
     resendSeconds = 30,
     length = 5,
 }: OTPInputProps) {
+    const { theme, isDark } = useTheme();
+    const C = theme.colors;
+    const styles = React.useMemo(() => createStyles(C, isDark), [C, isDark]);
+
     const [timer, setTimer] = useState(resendSeconds);
     const [otp, setOtp] = useState<string[]>(Array(length).fill(''));
     const inputRefs = useRef<TextInput[]>([]);
@@ -127,10 +132,10 @@ export default React.memo(function OTPInput({
             <View style={styles.otpRow}>
                 {otp.map((digit, i) => {
                     const borderColor = error
-                        ? '#EF4444'
+                        ? C.danger || '#EF4444'
                         : focusAnims[i].interpolate({
                             inputRange: [0, 1],
-                            outputRange: ['#CBD5E1', '#4B6EF5']
+                            outputRange: [C.border || '#CBD5E1', C.primary || '#4B6EF5']
                         });
 
                     return (
@@ -179,7 +184,7 @@ export default React.memo(function OTPInput({
     );
 });
 
-const styles = StyleSheet.create({
+const createStyles = (C: any, isDark: boolean) => StyleSheet.create({
     container: {
         width: '100%',
         gap: 24,
@@ -207,13 +212,13 @@ const styles = StyleSheet.create({
     input: {
         fontSize: 32,
         fontWeight: '700',
-        color: '#0F172A',
+        color: C.textHeading,
         textAlign: 'center',
         width: '100%',
         height: '100%',
     },
     errorText: {
-        color: '#EF4444',
+        color: C.danger || '#EF4444',
         fontSize: 14,
         fontWeight: '500',
         textAlign: 'center',
@@ -226,18 +231,18 @@ const styles = StyleSheet.create({
         fontSize: 15,
     },
     timerSub: {
-        color: '#64748B',
+        color: C.textBody,
         fontWeight: '500',
     },
     timerBold: {
-        color: '#0F172A',
+        color: C.textHeading,
         fontWeight: '700',
     },
     resendBtn: {
         paddingVertical: 8,
     },
     resendBtnText: {
-        color: '#4B6EF5',
+        color: C.primary || '#4B6EF5',
         fontSize: 15,
         fontWeight: '700',
     },

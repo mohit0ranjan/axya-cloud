@@ -2,7 +2,7 @@ import { Fragment, useState, useEffect, useContext, useCallback, useRef, useMemo
 import {
     View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet,
     SafeAreaView, RefreshControl, Platform, Modal, KeyboardAvoidingView,
-    Dimensions, Animated, Easing, Image as RNImage,
+    Dimensions, Animated, Easing, Image as RNImage, PanResponder, Vibration,
 } from 'react-native';
 import {
     Search, Folder, Upload, HardDrive,
@@ -219,20 +219,6 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
     emptyTitle: { fontSize: 17, fontWeight: '600', color: C.text, marginBottom: 8 },
     emptyBody: { fontSize: 14, color: C.muted, textAlign: 'center', lineHeight: 20 },
 
-    /* Bottom nav */
-    navBar: {
-        position: 'absolute', bottom: 0, left: 0, right: 0,
-        height: 86,
-        backgroundColor: '#FFFFFF',
-        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around',
-        paddingBottom: 14,
-        paddingHorizontal: 8,
-        borderTopWidth: 1, borderTopColor: '#F1F5F9',
-        shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
-        shadowOpacity: 0.04, shadowRadius: 16, elevation: 12,
-    },
-    navItem: { alignItems: 'center', gap: 5, flex: 1 },
-    navLabel: { fontSize: 11, fontWeight: '600', color: '#64748B' },
     fab: {
         width: 56, height: 56, borderRadius: 28, backgroundColor: '#5B7CFF',
         justifyContent: 'center', alignItems: 'center',
@@ -316,6 +302,51 @@ const createStyles = (C: Record<string, string>) => StyleSheet.create({
 });
 
 // ------------------------------------------------------------------------------
+const AnimatedFolderCard = ({ folder, isAllFiles = false, idx = 0, s, C, onPress, onMoreOptions }: any) => {
+    const scale = useRef(new Animated.Value(1)).current;
+    
+    const handlePressIn = () => { Animated.spring(scale, { toValue: 0.95, useNativeDriver: true }).start(); };
+    const handlePressOut = () => { Animated.spring(scale, { toValue: 1, useNativeDriver: true }).start(); };
+
+    const FOLDER_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#F43F5E', '#8B5CF6'];
+    const rawColor = isAllFiles ? '#2563EB' : FOLDER_COLORS[idx % FOLDER_COLORS.length];
+    const iconBg = isAllFiles ? C.bg : `${rawColor}15`;
+
+    return (
+        <Animated.View style={[{ width: '47%', minHeight: 140 }, { transform: [{ scale }] }]}>
+            <TouchableOpacity
+                activeOpacity={0.9}
+                onPressIn={handlePressIn}
+                onPressOut={handlePressOut}
+                onPress={onPress}
+                style={[s.folderGridCard, { width: '100%', overflow: 'hidden' }]}
+            >
+                <LinearGradient
+                    colors={[`${rawColor}15`, `${rawColor}00`]}
+                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                    style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+                />
+                <View style={s.folderGridTop}>
+                    <View style={[s.folderIconBox, { backgroundColor: iconBg }]}>
+                        <Folder color={rawColor} size={24} fill={rawColor} />
+                    </View>
+                    <IconButton
+                        variant="ghost"
+                        size={36}
+                        style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: 'transparent' }}
+                        onPress={onMoreOptions}
+                        icon={<MoreHorizontal color="#94A3B8" size={18} opacity={1} />}
+                    />
+                </View>
+                <View>
+                    <Text style={s.folderGridName} numberOfLines={1}>{isAllFiles ? 'All Files' : (folder?.name || '')}</Text>
+                    <Text style={s.folderGridMeta}>{isAllFiles ? 'Folder' : `${formatFolderMeta(folder)} files`}</Text>
+                </View>
+            </TouchableOpacity>
+        </Animated.View>
+    );
+};
+
 export default function HomeScreen({ navigation, route }: any) {
     const { logout, user, token } = useContext(AuthContext);
     const { showToast } = useToast();
@@ -373,6 +404,8 @@ export default function HomeScreen({ navigation, route }: any) {
 
     // FAB
     const [fabOpen, setFabOpen] = useState(false);
+    const fabSheetTranslateY = useRef(new Animated.Value(48)).current;
+    const fabSheetBackdrop = useRef(new Animated.Value(0)).current;
 
     // Upload modal
     const [uploadModal, setUploadModal] = useState(false);
@@ -448,6 +481,80 @@ export default function HomeScreen({ navigation, route }: any) {
         setFabOpen(true);
         navigation.setParams?.({ openFabAt: undefined });
     }, [route?.params?.openFabAt, navigation]);
+
+    const triggerHaptic = useCallback((ms: number = 8) => {
+        if (Platform.OS === 'web') return;
+        Vibration.vibrate(ms);
+    }, []);
+
+    useEffect(() => {
+        if (!fabOpen) return;
+        fabSheetTranslateY.setValue(48);
+        fabSheetBackdrop.setValue(0);
+        Animated.parallel([
+            Animated.spring(fabSheetTranslateY, {
+                toValue: 0,
+                damping: 18,
+                stiffness: 220,
+                mass: 0.9,
+                useNativeDriver: true,
+            }),
+            Animated.timing(fabSheetBackdrop, {
+                toValue: 1,
+                duration: 220,
+                useNativeDriver: true,
+            }),
+        ]).start();
+    }, [fabOpen, fabSheetBackdrop, fabSheetTranslateY]);
+
+    const closeFabSheet = useCallback((onClosed?: () => void) => {
+        Animated.parallel([
+            Animated.timing(fabSheetBackdrop, {
+                toValue: 0,
+                duration: 170,
+                useNativeDriver: true,
+            }),
+            Animated.timing(fabSheetTranslateY, {
+                toValue: 64,
+                duration: 170,
+                useNativeDriver: true,
+            }),
+        ]).start(() => {
+            setFabOpen(false);
+            onClosed?.();
+        });
+    }, [fabSheetBackdrop, fabSheetTranslateY]);
+
+    const fabSheetPanResponder = useMemo(() => PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) => (
+            Math.abs(gesture.dy) > 6 && Math.abs(gesture.dy) > Math.abs(gesture.dx)
+        ),
+        onPanResponderMove: (_, gesture) => {
+            if (gesture.dy <= 0) return;
+            fabSheetTranslateY.setValue(Math.min(gesture.dy, 220));
+            fabSheetBackdrop.setValue(Math.max(0, 1 - (gesture.dy / 240)));
+        },
+        onPanResponderRelease: (_, gesture) => {
+            if (gesture.dy > 90 || gesture.vy > 0.9) {
+                closeFabSheet();
+                return;
+            }
+            Animated.parallel([
+                Animated.spring(fabSheetTranslateY, {
+                    toValue: 0,
+                    damping: 18,
+                    stiffness: 220,
+                    mass: 0.9,
+                    useNativeDriver: true,
+                }),
+                Animated.timing(fabSheetBackdrop, {
+                    toValue: 1,
+                    duration: 140,
+                    useNativeDriver: true,
+                }),
+            ]).start();
+        },
+    }), [closeFabSheet, fabSheetBackdrop, fabSheetTranslateY]);
 
     useEffect(() => {
         const unsubscribe = navigation?.addListener?.('focus', () => {
@@ -586,7 +693,6 @@ export default function HomeScreen({ navigation, route }: any) {
     }, [navigation, recentFiles]);
 
     const handlePickFile = async () => {
-        setFabOpen(false);
         try {
             const res = await DocumentPicker.getDocumentAsync({ type: '*/*', multiple: true, copyToCacheDirectory: true });
             if (res.canceled) return;
@@ -621,12 +727,21 @@ export default function HomeScreen({ navigation, route }: any) {
         if (!folderName.trim() || isCreatingFolder) return;
         setIsCreatingFolder(true);
         try {
-            const res = await apiClient.post('/files/folder', { name: folderName.trim() });
+            const nextName = folderName.trim();
+            const res = await apiClient.post('/files/folder', { name: nextName });
             if (res.data.success) {
                 showToast('Folder created!');
                 setFolderName('');
                 setFolderModal(false);
-                load();
+                const createdFolder = res.data.folder;
+                if (createdFolder?.id) {
+                    setAllFolders((prev) => {
+                        const dedupedPrev = prev.filter((item) => String(item?.id) !== String(createdFolder.id));
+                        return normalizeItems([createdFolder, ...dedupedPrev], 'created_at_DESC');
+                    });
+                }
+                // Keep UI responsive with optimistic update, then reconcile in background.
+                void load(true);
                 syncAfterFileMutation();
             }
         } catch (e: any) {
@@ -654,6 +769,17 @@ export default function HomeScreen({ navigation, route }: any) {
             setIsRenamingFolder(false);
         }
     };
+
+    const handleAllFilesOptions = useCallback(() => {
+        showActionSheet(
+            'All Files',
+            'Choose an action',
+            [
+                { text: 'Open All Files', onPress: () => navigation.navigate('AllFiles') },
+                { text: 'Open Folders', onPress: () => navigation.navigate('Folders') },
+            ]
+        );
+    }, [navigation]);
 
     // Options Modal
     const [optionsTarget, setOptionsTarget] = useState<any>(null);
@@ -707,6 +833,22 @@ export default function HomeScreen({ navigation, route }: any) {
         [recentFiles, searchQuery, searchResults]
     );
 
+    const memoizedFileList = useMemo(() => {
+        return displayItems.map((item: any) => (
+            <FileListItem
+                key={item.id}
+                item={item}
+                variant="card"
+                token={token}
+                apiBaseUrl={apiClient.defaults.baseURL || ''}
+                theme={theme}
+                isDark={isDark}
+                onPress={(item) => handleFileItemPress(item, false)}
+                onOptionsPress={(item) => setOptionsTarget(item)}
+            />
+        ));
+    }, [displayItems, token, apiClient.defaults.baseURL, theme, isDark, handleFileItemPress]);
+
     return (
         <SafeAreaView style={[s.root, { backgroundColor: C.bg }]}>
 
@@ -714,11 +856,11 @@ export default function HomeScreen({ navigation, route }: any) {
             <View style={[s.header, { paddingTop: Math.max(insets.top + 8, 16) }]}>
                 {showSearch ? (
                     <View style={s.searchBar}>
-                        <Search color="#64748B" size={18} />
+                        <Search color={C.muted} size={18} />
                         <TextInput
                             style={s.searchInput}
                             placeholder="Search files & folders…"
-                            placeholderTextColor="#64748B"
+                            placeholderTextColor={C.muted}
                             value={searchQuery}
                             onChangeText={setSearchQuery}
                             autoFocus
@@ -726,7 +868,7 @@ export default function HomeScreen({ navigation, route }: any) {
                         <IconButton
                             variant="ghost"
                             onPress={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}
-                            icon={<X color="#64748B" size={20} />}
+                            icon={<X color={C.muted} size={20} />}
                         />
                     </View>
                 ) : (
@@ -748,7 +890,7 @@ export default function HomeScreen({ navigation, route }: any) {
                             variant="surface"
                             style={s.headerIconBtn}
                             onPress={() => setShowSearch(true)}
-                            icon={<Search color="#111827" size={20} />}
+                            icon={<Search color={C.text} size={20} />}
                         />
                         <View style={{ width: 12 }} />
                         <IconButton
@@ -765,7 +907,7 @@ export default function HomeScreen({ navigation, route }: any) {
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={s.scrollContent}
                 refreshControl={
-                    <RefreshControl refreshing={refreshing} tintColor="#5B7CFF"
+                    <RefreshControl refreshing={refreshing} tintColor={C.primary}
                         onRefresh={() => { setRefreshing(true); load(true); }} />
                 }
             >
@@ -832,7 +974,7 @@ export default function HomeScreen({ navigation, route }: any) {
                             <Text style={s.sectionLabel}>FOLDERS</Text>
                             <TouchableOpacity style={s.seeAllBtn} onPress={() => navigation.navigate('Folders')}>
                                 <Text style={s.seeAllText}>See all</Text>
-                                <MoreHorizontal color="#64748B" size={14} />
+                                <MoreHorizontal color={C.muted} size={14} />
                             </TouchableOpacity>
                         </View>
 
@@ -854,101 +996,63 @@ export default function HomeScreen({ navigation, route }: any) {
                         ) : (
                             <ContentFadeIn visible={!loading}>
                             <View style={s.folderGrid}>
-                                <TouchableOpacity style={s.folderGridCard} onPress={() => navigation.navigate('AllFiles')}>
-                                    <View style={s.folderGridTop}>
-                                        <View style={[s.folderIconBox, { backgroundColor: C.bg }]}>
-                                            <Folder color="#2563EB" size={24} fill="#2563EB" />
-                                        </View>
-                                        <IconButton
-                                            variant="ghost"
-                                            size={36}
-                                            style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: 'transparent' }}
-                                            onPress={() => {}}
-                                            icon={<MoreHorizontal color="#94A3B8" size={18} />}
-                                        />
-                                    </View>
-                                    <View>
-                                        <Text style={s.folderGridName} numberOfLines={1}>All Files</Text>
-                                        <Text style={s.folderGridMeta}>Folder</Text>
-                                    </View>
-                                </TouchableOpacity>
-                                {folders.map((folder, idx) => {
-                                    // Soft pastel colors matching the design image theme
-                                    const FOLDER_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#F43F5E', '#8B5CF6'];
-                                    const rawColor = FOLDER_COLORS[idx % FOLDER_COLORS.length];
-                                    const iconBg = `${rawColor}15`;
-
-                                    return (
-                                        <TouchableOpacity
-                                            key={folder.id}
-                                            style={s.folderGridCard}
-                                            activeOpacity={0.7}
-                                            onPress={() => navigation.navigate('FolderFiles', { folderId: folder.id, folderName: folder.name })}
-                                        >
-                                            <View style={s.folderGridTop}>
-                                                <View style={[s.folderIconBox, { backgroundColor: iconBg }]}>
-                                                    <Folder color={rawColor} size={24} fill={rawColor} />
-                                                </View>
-                                                <IconButton
-                                                    variant="ghost"
-                                                    size={36}
-                                                    style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: 'transparent' }}
-                                                    onPress={() => {
-                                                        if (Platform.OS === 'web') {
-                                                            setOptionsTarget(folder);
-                                                        } else {
-                                                            showActionSheet(
-                                                                "Folder Options",
-                                                                `Manage "${folder.name}"`,
-                                                                [
-                                                                    {
-                                                                        text: pinnedFolderIds.includes(normalizeFolderId(folder.id))
-                                                                            ? "Remove from Home"
-                                                                            : "Pin to Home",
-                                                                        onPress: () => toggleFolderPinned(folder)
-                                                                    },
-                                                                    {
-                                                                        text: "Rename",
-                                                                        onPress: () => {
-                                                                            setRenameFolderTarget(folder);
-                                                                            setRenameFolderName(folder.name);
-                                                                            setRenameFolderModal(true);
-                                                                        }
-                                                                    },
-                                                                    {
-                                                                        text: "Delete Folder",
-                                                                        destructive: true,
-                                                                        onPress: async () => {
-                                                                            try {
-                                                                                const res = await apiClient.delete(`/files/folder/${folder.id}`);
-                                                                                if (res.data.success) {
-                                                                                    showToast('Folder moved to trash');
-                                                                                    load();
-                                                                                    syncAfterFileMutation();
-                                                                                }
-                                                                            } catch (e: any) {
-                                                                                showToast(e.response?.data?.error || 'Could not delete folder', 'error');
-                                                                            }
-                                                                        }
+                                <AnimatedFolderCard
+                                    isAllFiles={true}
+                                    s={s} C={C}
+                                    onPress={() => navigation.navigate('AllFiles')}
+                                    onMoreOptions={handleAllFilesOptions}
+                                />
+                                {folders.map((folder, idx) => (
+                                    <AnimatedFolderCard
+                                        key={folder.id}
+                                        folder={folder}
+                                        idx={idx}
+                                        s={s} C={C}
+                                        onPress={() => navigation.navigate('FolderFiles', { folderId: folder.id, folderName: folder.name })}
+                                        onMoreOptions={() => {
+                                            if (Platform.OS === 'web') {
+                                                setOptionsTarget(folder);
+                                            } else {
+                                                showActionSheet(
+                                                    "Folder Options",
+                                                    `Manage "${folder.name}"`,
+                                                    [
+                                                        {
+                                                            text: pinnedFolderIds.includes(normalizeFolderId(folder.id))
+                                                                ? "Remove from Home"
+                                                                : "Pin to Home",
+                                                            onPress: () => toggleFolderPinned(folder)
+                                                        },
+                                                        {
+                                                            text: "Rename",
+                                                            onPress: () => {
+                                                                setRenameFolderTarget(folder);
+                                                                setRenameFolderName(folder.name);
+                                                                setRenameFolderModal(true);
+                                                            }
+                                                        },
+                                                        {
+                                                            text: "Delete Folder",
+                                                            destructive: true,
+                                                            onPress: async () => {
+                                                                try {
+                                                                    const res = await apiClient.delete(`/files/folder/${folder.id}`);
+                                                                    if (res.data.success) {
+                                                                        showToast('Folder moved to trash');
+                                                                        load();
+                                                                        syncAfterFileMutation();
                                                                     }
-                                                                ]
-                                                            );
+                                                                } catch (e: any) {
+                                                                    showToast(e.response?.data?.error || 'Could not delete folder', 'error');
+                                                                }
+                                                            }
                                                         }
-                                                    }}
-                                                    icon={<MoreHorizontal color="#94A3B8" size={18} opacity={1} />}
-                                                />
-                                            </View>
-                                            <View>
-                                                <Text style={s.folderGridName} numberOfLines={1}>
-                                                    {folder.name}
-                                                </Text>
-                                                <Text style={s.folderGridMeta}>
-                                                    {formatFolderMeta(folder)} files
-                                                </Text>
-                                            </View>
-                                        </TouchableOpacity>
-                                    );
-                                })}
+                                                    ]
+                                                );
+                                            }
+                                        }}
+                                    />
+                                ))}
                             </View>
                             </ContentFadeIn>
                         )}
@@ -965,7 +1069,7 @@ export default function HomeScreen({ navigation, route }: any) {
                     {!searchQuery && (
                         <TouchableOpacity style={s.seeAllBtn} onPress={() => navigation.navigate('AllFiles')}>
                             <Text style={s.seeAllText}>See all</Text>
-                            <MoreHorizontal color="#64748B" size={14} />
+                            <MoreHorizontal color={C.muted} size={14} />
                         </TouchableOpacity>
                     )}
                 </View>
@@ -984,19 +1088,7 @@ export default function HomeScreen({ navigation, route }: any) {
                 ) : (
                     <ContentFadeIn visible={!loading && !searching}>
                     <View style={s.fileList}>
-                        {displayItems.map((item: any) => (
-                            <FileListItem
-                                key={item.id}
-                                item={item}
-                                variant="card"
-                                token={token}
-                                apiBaseUrl={apiClient.defaults.baseURL || ''}
-                                theme={theme}
-                                isDark={isDark}
-                                onPress={(item) => handleFileItemPress(item, false)}
-                                onOptionsPress={(item) => setOptionsTarget(item)}
-                            />
-                        ))}
+                        {memoizedFileList}
                     </View>
                     </ContentFadeIn>
                 )}
@@ -1008,13 +1100,29 @@ export default function HomeScreen({ navigation, route }: any) {
             {/* ---------------------------------------------------------------
                 FAB ACTION SHEET
             --------------------------------------------------------------- */}
-            <Modal visible={fabOpen} transparent animationType="slide">
-                <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setFabOpen(false)}>
-                    <View style={[s.sheet, { backgroundColor: C.card }]}>
+            <Modal visible={fabOpen} transparent animationType="none" onRequestClose={() => closeFabSheet()}>
+                <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+                    <Animated.View
+                        pointerEvents="none"
+                        style={[StyleSheet.absoluteFillObject, { backgroundColor: '#000', opacity: fabSheetBackdrop }]}
+                    />
+                    <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={() => closeFabSheet()} />
+
+                    <Animated.View
+                        {...fabSheetPanResponder.panHandlers}
+                        style={[s.sheet, { backgroundColor: C.card, transform: [{ translateY: fabSheetTranslateY }] }]}
+                    >
                         <View style={s.sheetHandle} />
                         <Text style={[s.sheetTitle, { color: C.text }]}>Create New</Text>
 
-                        <TouchableOpacity style={s.sheetRow} onPress={handlePickFile} activeOpacity={0.7}>
+                        <TouchableOpacity
+                            style={s.sheetRow}
+                            onPress={() => {
+                                triggerHaptic();
+                                closeFabSheet(() => { void handlePickFile(); });
+                            }}
+                            activeOpacity={0.7}
+                        >
                             <View style={[s.sheetRowIcon, { backgroundColor: C.primarySoft }]}>
                                 <Upload color={C.primary} size={22} />
                             </View>
@@ -1025,8 +1133,14 @@ export default function HomeScreen({ navigation, route }: any) {
                             <MoreHorizontal color={C.muted} size={18} />
                         </TouchableOpacity>
 
-                        <TouchableOpacity style={s.sheetRow}
-                            onPress={() => { setFabOpen(false); setFolderModal(true); }} activeOpacity={0.7}>
+                        <TouchableOpacity
+                            style={s.sheetRow}
+                            onPress={() => {
+                                triggerHaptic();
+                                closeFabSheet(() => setFolderModal(true));
+                            }}
+                            activeOpacity={0.7}
+                        >
                             <View style={[s.sheetRowIcon, { backgroundColor: C.warningSoft }]}>
                                 <Folder color={C.warning} size={22} />
                             </View>
@@ -1036,8 +1150,8 @@ export default function HomeScreen({ navigation, route }: any) {
                             </View>
                             <MoreHorizontal color={C.muted} size={18} />
                         </TouchableOpacity>
-                    </View>
-                </TouchableOpacity>
+                    </Animated.View>
+                </View>
             </Modal>
 
             {/* ---------------------------------------------------------------

@@ -208,7 +208,13 @@ export const uploadFile = async (req: AuthRequest, res: Response) => {
         res.status(201).json({ success: true, file: formatFileRow(result.rows[0]) });
     } catch (err: any) {
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        console.error("Upload error:", err);
+        logger.error('backend.upload', 'upload_failed', {
+            userId: req.user?.id,
+            fileName: originalname,
+            mimeType: mimetype,
+            message: err?.message,
+            stack: err?.stack,
+        });
         res.status(500).json({ success: false, error: err.message });
     }
 };
@@ -576,39 +582,57 @@ export const emptyTrash = async (req: AuthRequest, res: Response) => {
         );
         const files = result.rows;
 
-        const telegramPointers = files
-            .map((f) => ({
-                chatId: String(f.telegram_chat_id || '').trim(),
-                messageId: Number.parseInt(String(f.telegram_message_id || ''), 10),
-            }))
-            .filter((ptr) => ptr.chatId && Number.isFinite(ptr.messageId) && ptr.messageId > 0);
+        const toDeleteIds: string[] = [];
+        const failedPointers: Array<{ chatId: string; messageId: number }> = [];
 
-        if (telegramPointers.length > 0) {
-            let clients: TelegramReadClient[] = [];
+        let clients: TelegramReadClient[] = [];
+        let hasClients = false;
+
+        if (files.some(f => {
+            const mId = Number.parseInt(String(f.telegram_message_id || ''), 10);
+            return f.telegram_chat_id && Number.isFinite(mId) && mId > 0;
+        })) {
             try {
                 clients = await getTelegramReadClients(req.user.sessionString);
+                hasClients = true;
             } catch {
-                return res.status(502).json({ success: false, error: 'Could not connect Telegram session for empty trash. Please retry.' });
-            }
-
-            const failedPointers: Array<{ chatId: string; messageId: number }> = [];
-            for (const pointer of telegramPointers) {
-                const deleted = await deleteMessageAcrossTelegramClients(clients, pointer.chatId, pointer.messageId);
-                if (!deleted) {
-                    failedPointers.push(pointer);
-                }
-            }
-
-            if (failedPointers.length > 0) {
-                return res.status(502).json({
-                    success: false,
-                    error: `Could not delete ${failedPointers.length} Telegram message(s). Trash was not cleared.`,
-                });
+                // Ignore, handled in the loop
             }
         }
 
-        await pool.query('DELETE FROM files WHERE user_id = $1 AND is_trashed = true', [req.user.id]);
+        for (const f of files) {
+            const chatId = String(f.telegram_chat_id || '').trim();
+            const messageId = Number.parseInt(String(f.telegram_message_id || ''), 10);
+
+            if (chatId && Number.isFinite(messageId) && messageId > 0) {
+                if (!hasClients) {
+                    failedPointers.push({ chatId, messageId });
+                    continue;
+                }
+                const deleted = await deleteMessageAcrossTelegramClients(clients, chatId, messageId);
+                if (!deleted) {
+                    failedPointers.push({ chatId, messageId });
+                } else {
+                    toDeleteIds.push(f.id);
+                }
+            } else {
+                toDeleteIds.push(f.id);
+            }
+        }
+
+        if (toDeleteIds.length > 0) {
+            await pool.query('DELETE FROM files WHERE id = ANY($1)', [toDeleteIds]);
+        }
+
+        // Folders don't have Telegram pointers to clean up, they can be safely deleted
         await pool.query('DELETE FROM folders WHERE user_id = $1 AND is_trashed = true', [req.user.id]);
+
+        if (failedPointers.length > 0) {
+            return res.status(502).json({
+                success: false, // Keeping false to trigger catch block in UI, but UI can show the message
+                error: `Partially cleared. ${failedPointers.length} item(s) could not be deleted from Telegram.`,
+            });
+        }
 
         await logActivity(req.user.id, 'empty_trash');
         res.json({ success: true, message: 'Trash cleared permanently.' });
@@ -794,7 +818,11 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
             }
             buffer = (await client.downloadMedia(message as any, { thumb: thumbIndex })) as Buffer | undefined;
         } catch (e: any) {
-            console.warn(`[Thumbnail] Native thumb fetch rejected: ${e.message}`);
+            logger.warn('backend.thumbnail', 'native_thumb_fetch_rejected', {
+                fileId: id,
+                userId: req.user.id,
+                message: e?.message,
+            });
         }
 
         // 2. Fallback: download full image and compress
@@ -823,7 +851,11 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
             return res.send(optimizedBuffer);
 
         } catch (sharpError: any) {
-            console.warn(`[Thumbnail] Sharp compression failed/skipped:`, sharpError.message);
+            logger.warn('backend.thumbnail', 'sharp_compression_failed', {
+                fileId: id,
+                userId: req.user.id,
+                message: sharpError?.message,
+            });
             // Increment fail count
             await pool.query('UPDATE files SET thumbnail_failed_count = thumbnail_failed_count + 1 WHERE id = $1', [id]);
             res.setHeader('Content-Type', mime_type || 'application/octet-stream');

@@ -18,6 +18,10 @@
         "applinks:axyzcloud.com",
         "applinks:axya-web.onrender.com",
         "applinks:axyzcloud.com",
+        "applinks:axya-web.onrender.com",
+        "applinks:axyzcloud.com",
+        "applinks:axya-web.onrender.com",
+        "applinks:axyzcloud.com",
         "applinks:axya-web.onrender.com"
       ],
       "infoPlist": {
@@ -71,7 +75,8 @@
     "updates": {
       "enabled": true,
       "checkAutomatically": "ON_LOAD",
-      "fallbackToCacheTimeout": 0
+      "fallbackToCacheTimeout": 0,
+      "url": "https://u.expo.dev/45b9b1cf-3739-4f90-82f0-e5c60b9cbdfd"
     },
     "plugins": [
       "expo-updates",

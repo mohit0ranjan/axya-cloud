@@ -12,6 +12,7 @@ import Animated, {
 import { File, Image as ImageIcon, Video, FileText } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ExpoSplashScreen from 'expo-splash-screen';
+import { useTheme } from '../context/ThemeContext';
 
 interface Props {
     onAnimationComplete: () => void;
@@ -21,7 +22,10 @@ interface Props {
 ExpoSplashScreen.preventAutoHideAsync().catch(() => { });
 
 export default function AnimatedSplashScreen({ onAnimationComplete, isAuthLoading }: Props) {
+    const { theme, isDark } = useTheme();
+    const C = theme.colors;
     const { height } = useWindowDimensions();
+    const styles = React.useMemo(() => createStyles(C, isDark), [C, isDark]);
     const [isAppReady, setIsAppReady] = useState(false);
     const [isAnimationFinished, setIsAnimationFinished] = useState(false);
 
@@ -149,7 +153,7 @@ export default function AnimatedSplashScreen({ onAnimationComplete, isAuthLoadin
         <Animated.View style={[styles.background, wrapperStyle, { zIndex: 99999 }]}>
             {/* Background Gradient */}
             <LinearGradient
-                colors={['#F8FAFF', '#EEF2FF']}
+                colors={[C.background, C.surfaceMuted]}
                 style={StyleSheet.absoluteFill}
             />
 
@@ -161,16 +165,16 @@ export default function AnimatedSplashScreen({ onAnimationComplete, isAuthLoadin
                 {/* 3. Floating Micro Elements on the Orbit */}
                 <Animated.View style={[particlesStyle, orbitStyle]}>
                     <View style={[styles.floatingIcon, { transform: [{ translateY: -orbitRadius }] }]}>
-                        <File color="#64748B" size={18} />
+                        <File color={C.textBody} size={18} />
                     </View>
                     <View style={[styles.floatingIcon, { transform: [{ translateY: orbitRadius }] }]}>
-                        <ImageIcon color="#64748B" size={18} />
+                        <ImageIcon color={C.textBody} size={18} />
                     </View>
                     <View style={[styles.floatingIcon, { transform: [{ translateX: -orbitRadius }] }]}>
-                        <Video color="#64748B" size={18} />
+                        <Video color={C.textBody} size={18} />
                     </View>
                     <View style={[styles.floatingIcon, { transform: [{ translateX: orbitRadius }] }]}>
-                        <FileText color="#64748B" size={18} />
+                        <FileText color={C.textBody} size={18} />
                     </View>
                 </Animated.View>
 
@@ -180,7 +184,7 @@ export default function AnimatedSplashScreen({ onAnimationComplete, isAuthLoadin
                 {/* 2. Icon Container with Glass Effect */}
                 <Animated.View style={[styles.glassContainer, iconContainerStyle]}>
                     <LinearGradient
-                        colors={['#FFFFFF', '#F3F4F6']}
+                        colors={[C.card, C.surfaceMuted]}
                         style={styles.glassGradient}
                     />
                     <Image
@@ -200,7 +204,7 @@ export default function AnimatedSplashScreen({ onAnimationComplete, isAuthLoadin
     );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (C: any, isDark: boolean) => StyleSheet.create({
     background: {
         flex: 1,
         width: '100%',
@@ -218,7 +222,7 @@ const styles = StyleSheet.create({
         height: 260,
         borderRadius: 130,
         borderWidth: 1.5,
-        borderColor: '#64748B',
+        borderColor: C.textBody,
         opacity: 0.06, // Very low 5-8% opacity
     },
     floatingIcon: {
@@ -230,8 +234,8 @@ const styles = StyleSheet.create({
         width: 280,
         height: 280,
         borderRadius: 140,
-        backgroundColor: '#D1DBFE', // Soft blueish glow matching Axya
-        opacity: 0.15, // Extremely faint
+        backgroundColor: C.primary,
+        opacity: isDark ? 0.08 : 0.15, // Extremely faint
         filter: 'blur(30px)', // Only works on web, simulated by radial gradient otherwise
     },
     glassContainer: {
@@ -241,14 +245,14 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
         overflow: 'hidden', // To keep gradient inside radius
-        backgroundColor: '#FFFFFF', // Fallback
-        shadowColor: '#1E293B',
+        backgroundColor: C.card,
+        shadowColor: C.textHeading,
         shadowOffset: { width: 0, height: 16 },
-        shadowOpacity: 0.08,
+        shadowOpacity: isDark ? 0.4 : 0.08,
         shadowRadius: 24,
         elevation: 8,
         borderWidth: 1,
-        borderColor: 'rgba(255, 255, 255, 0.7)', // Subtle glass edge
+        borderColor: C.border,
     },
     glassGradient: {
         ...StyleSheet.absoluteFillObject,
@@ -260,7 +264,7 @@ const styles = StyleSheet.create({
     title: {
         fontSize: 38,
         fontWeight: '900', // Pushed back to max weight
-        color: '#0F172A', // Slate 900 for absolute contrast
+        color: C.textHeading, // Slate 900 for absolute contrast
         letterSpacing: 6, // Punchy spacing
         marginBottom: 8,
         fontFamily: 'AvenirNext-Heavy', // User specifically requested this for both iOS and Android
@@ -269,7 +273,7 @@ const styles = StyleSheet.create({
     tagline: {
         fontSize: 14,
         fontWeight: '400',
-        color: '#64748B',
+        color: C.textBody,
         letterSpacing: 1,
     },
 });

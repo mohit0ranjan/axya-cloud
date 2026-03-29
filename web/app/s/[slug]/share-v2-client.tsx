@@ -66,6 +66,13 @@ type ImageModalState = {
   index: number;
 };
 
+type ApiFailure = {
+  status: number;
+  code: string;
+  message: string;
+  retryable: boolean;
+};
+
 const DEFAULT_LIMIT = 50;
 
 const isImage = (file: SharedFile) => String(file.mime_type || '').startsWith('image/');
@@ -92,6 +99,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
   const [loading, setLoading] = useState(true);
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState('');
+  const [infoMessage, setInfoMessage] = useState('');
   const [requiresPassword, setRequiresPassword] = useState(false);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('name_asc');
@@ -113,6 +121,52 @@ export default function ShareV2Client({ slug }: { slug: string }) {
     return fetch(url, { ...init, headers });
   };
 
+  const toApiFailure = (res: Response, payload: any): ApiFailure => ({
+    status: res.status,
+    code: String(payload?.code || ''),
+    message: String(payload?.message || payload?.error || 'Request failed.'),
+    retryable: Boolean(payload?.retryable),
+  });
+
+  const applyAccessFailure = (failure: ApiFailure, fallbackMessage: string) => {
+    const code = String(failure.code || '').toLowerCase();
+
+    if (code === 'invalid_password') {
+      setRequiresPassword(true);
+      setError('Incorrect password. Please try again.');
+      return;
+    }
+    if (code === 'share_expired') {
+      setSessionToken('');
+      setRequiresPassword(false);
+      setError('This share link has expired.');
+      return;
+    }
+    if (code === 'share_revoked') {
+      setSessionToken('');
+      setRequiresPassword(false);
+      setError('This share link has been revoked.');
+      return;
+    }
+    if (code === 'invalid_secret') {
+      setSessionToken('');
+      setRequiresPassword(false);
+      setError('Invalid share link. Please verify the link and try again.');
+      return;
+    }
+    if (code.startsWith('share_session_')) {
+      setSessionToken('');
+      setRequiresPassword(Boolean(share?.requiresPassword));
+      setError('Your access session expired. Please unlock the share again.');
+      return;
+    }
+    if (failure.status === 429 || code === 'rate_limited') {
+      setError('Too many requests. Please wait a moment and try again.');
+      return;
+    }
+    setError(failure.message || fallbackMessage);
+  };
+
   const openShare = async (passwordValue?: string) => {
     if (!slug || !secret) {
       setError('Invalid share link.');
@@ -122,6 +176,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
 
     setOpening(true);
     setError('');
+    setInfoMessage('');
     try {
       const res = await fetch(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/open`, {
         method: 'POST',
@@ -131,10 +186,8 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       const payload = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        const message = String(payload?.message || payload?.error || 'Unable to open share.');
-        setError(message);
+        applyAccessFailure(toApiFailure(res, payload), 'Unable to open share.');
         setSessionToken('');
-        setRequiresPassword(message.toLowerCase().includes('password'));
         return;
       }
 
@@ -154,7 +207,11 @@ export default function ShareV2Client({ slug }: { slug: string }) {
     if (!sessionToken) return;
     const res = await request(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/meta`);
     const payload = await res.json().catch(() => ({}));
-    if (res.ok && payload.share) setShare(payload.share);
+    if (!res.ok) {
+      applyAccessFailure(toApiFailure(res, payload), 'Unable to load share details.');
+      return;
+    }
+    if (payload.share) setShare(payload.share);
   };
 
   const loadSection = async (path: string, reset: boolean) => {
@@ -189,7 +246,11 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       const payload = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        const msg = String(payload?.message || payload?.error || 'Unable to load items.');
+        const failure = toApiFailure(res, payload);
+        if (failure.status === 401 || failure.status === 410 || String(failure.code || '').startsWith('share_session_')) {
+          applyAccessFailure(failure, 'Access to this share was lost.');
+        }
+        const msg = failure.message || 'Unable to load items.';
         setSections((curr) => ({
           ...curr,
           [path]: {
@@ -260,7 +321,19 @@ export default function ShareV2Client({ slug }: { slug: string }) {
           body: JSON.stringify({ disposition }),
         });
         const payload = await res.json().catch(() => ({}));
-        if (!res.ok || !payload.ticket) return '';
+        if (!res.ok || !payload.ticket) {
+          const failure = toApiFailure(res, payload);
+          if (failure.status === 401 || failure.status === 410 || String(failure.code || '').startsWith('share_session_')) {
+            applyAccessFailure(failure, 'Preview access expired.');
+          }
+          if (disposition === 'inline') {
+            setPreviewErrorMap((curr) => ({
+              ...curr,
+              [itemId]: failure.message || 'Preview temporarily unavailable for this file.',
+            }));
+          }
+          return '';
+        }
 
         const url = `${API_BASE}/api/v2/public/stream/${encodeURIComponent(String(payload.ticket))}`;
         setPreviewUrlMap((curr) => ({ ...curr, [cacheKey]: url }));
@@ -282,7 +355,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
     if (!share?.allowDownload) return;
     const url = await getTicketUrl(item.id, 'attachment');
     if (!url) {
-      setError('File temporarily unavailable');
+      setError('File temporarily unavailable. Please try again.');
       return;
     }
     const a = document.createElement('a');
@@ -357,6 +430,12 @@ export default function ShareV2Client({ slug }: { slug: string }) {
   };
 
   useEffect(() => {
+    if (!infoMessage) return;
+    const timer = window.setTimeout(() => setInfoMessage(''), 2500);
+    return () => window.clearTimeout(timer);
+  }, [infoMessage]);
+
+  useEffect(() => {
     void openShare();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug, secret]);
@@ -406,7 +485,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
         return;
       }
       await navigator.clipboard.writeText(shareUrl);
-      setError('Share link copied to clipboard.');
+      setInfoMessage('Share link copied to clipboard.');
     } catch {
       setError('Unable to share link right now.');
     }
@@ -491,6 +570,10 @@ export default function ShareV2Client({ slug }: { slug: string }) {
 
         {error && !requiresPassword && (
           <div className="p-4 mb-6 rounded-xl bg-red-50 text-red-600 border border-red-100 max-w-3xl mx-auto text-center">{error}</div>
+        )}
+
+        {infoMessage && !requiresPassword && (
+          <div className="p-4 mb-6 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-100 max-w-3xl mx-auto text-center">{infoMessage}</div>
         )}
 
         {sessionToken && !requiresPassword && (
@@ -624,7 +707,10 @@ export default function ShareV2Client({ slug }: { slug: string }) {
           setPreviewErrorMap((curr) => ({ ...curr, [file.id]: '' }));
           const url = await getTicketUrl(file.id, 'inline');
           if (!url) {
-            setPreviewErrorMap((curr) => ({ ...curr, [file.id]: 'Preview temporarily unavailable for this file.' }));
+            setPreviewErrorMap((curr) => ({
+              ...curr,
+              [file.id]: curr[file.id] || 'Preview temporarily unavailable for this file.',
+            }));
           }
         }}
       />

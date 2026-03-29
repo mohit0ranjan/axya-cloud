@@ -29,6 +29,7 @@ const REQUIRED_NODE_MAJOR = 20;
 const SCHEMA_RETRY_DELAY_MS = 5000;
 const SCHEMA_MAX_RETRIES = 12;
 const SCHEMA_RETRY_AFTER_SECONDS = Math.max(1, Math.ceil(SCHEMA_RETRY_DELAY_MS / 1000));
+const isHealthPath = (p: string) => p === '/health' || p === '/health/';
 const redactSensitiveQuery = (url: string) =>
     url
         .replace(/([?&](?:token|password|otp|code)=)[^&]*/gi, '$1[redacted]')
@@ -178,7 +179,7 @@ app.use(cookieParser(cookieSecret));
 // Keep process alive during transient DB outages; return 503 until schema/init is ready.
 app.use((req, res, next) => {
     if (schemaReady) return next();
-    if (req.path === '/' || req.path === '/health') return next();
+    if (req.path === '/' || isHealthPath(req.path)) return next();
     logger.warn('backend.http', 'schema_not_ready_reject', {
         method: req.method,
         url: redactSensitiveQuery(req.originalUrl || req.url || ''),
@@ -209,8 +210,8 @@ const globalLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     skip: (req) => {
-        // ✅ Skip rate limiting for health check endpoint
-        return req.path === '/health';
+        // Always skip rate limiting for lightweight health checks.
+        return isHealthPath(req.path);
     },
     message: { success: false, error: 'Too many requests, please try again in 15 minutes.' },
 });
@@ -246,45 +247,41 @@ app.use('/files', fileRoutes);
 app.use('/api/v2', shareV2Routes);
 app.use('/stream', streamRoutes);
 
-// ── Health Check (Render keep-alive friendly) ────────────────────────────────
-app.get('/health', async (req: Request, res: Response) => {
+// ── Lightweight Health Check (Render keep-alive friendly) ───────────────────
+// Keep this endpoint fast and dependency-free for external keep-alive pings.
+app.get('/health', (req: Request, res: Response) => {
     const startedAt = Date.now();
-    let dbStatus: 'up' | 'down' = 'down';
-    let dbLatencyMs: number | null = null;
-    let dbError: string | null = null;
+    const requestTimestamp = new Date().toISOString();
+
+    // Emit an explicit keep-alive log for cron monitoring and debugging.
+    res.on('finish', () => {
+        logger.info('backend.health', 'ping', {
+            requestTimestamp,
+            responseStatus: res.statusCode,
+            durationMs: Date.now() - startedAt,
+            ip: req.ip,
+            userAgent: req.headers['user-agent'] || null,
+        });
+    });
 
     try {
-        const dbStartedAt = Date.now();
-        await pool.query('SELECT 1');
-        dbStatus = 'up';
-        dbLatencyMs = Date.now() - dbStartedAt;
+        return res.status(200).json({
+            status: 'ok',
+            uptime: Math.floor(process.uptime()),
+            timestamp: requestTimestamp,
+        });
     } catch (err: any) {
-        dbStatus = 'down';
-        dbError = err?.message || 'unknown';
-    }
+        logger.error('backend.health', 'health_response_error', {
+            message: String(err?.message || err || 'unknown'),
+        });
 
-    const responseTimeMs = Date.now() - startedAt;
-    res.json({
-        status: schemaReady ? 'OK' : 'DEGRADED',
-        service: 'Axya API',
-        timestamp: new Date(),
-        uptime: Math.floor(process.uptime()),
-        memory: process.memoryUsage().heapUsed,
-        responseTimeMs,
-        db: {
-            status: dbStatus,
-            latencyMs: dbLatencyMs,
-            error: dbError,
-        },
-        telegram: {
-            warmupStatus: telegramWarmupStatus,
-        },
-        schemaState,
-        schemaReady,
-        schemaInitAttempts,
-        schemaLastError: schemaLastError || null,
-        telegramWarmupStatus,
-    });
+        // Fail gracefully for cron callers without heavy dependencies.
+        return res.status(200).json({
+            status: 'degraded',
+            uptime: Math.floor(process.uptime() || 0),
+            timestamp: requestTimestamp,
+        });
+    }
 });
 
 // ── Root route (prevents 404 on cold-start probe) ───────────────────────────

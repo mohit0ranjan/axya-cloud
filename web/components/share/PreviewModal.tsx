@@ -16,10 +16,11 @@ interface PreviewModalProps {
     previewUrlMap: Record<string, string>;
     previewErrors?: Record<string, string>;
     onLoadPreview: (file: SharedFile) => void;
+    onPreviewMediaError?: (file: SharedFile) => void;
 }
 
 export function PreviewModal({
-    isOpen, onClose, files, currentIndex, onNext, onPrev, onDownload, onShare, share, previewUrlMap, previewErrors, onLoadPreview
+    isOpen, onClose, files, currentIndex, onNext, onPrev, onDownload, onShare, share, previewUrlMap, previewErrors, onLoadPreview, onPreviewMediaError
 }: PreviewModalProps) {
 
     // Close on Escape key
@@ -73,6 +74,12 @@ export function PreviewModal({
                     <div>
                         <h3 className="text-xl font-semibold text-brand-text mb-1">Preview unavailable</h3>
                         <p className="text-brand-muted max-w-sm mx-auto">{previewError}</p>
+                        <button
+                            onClick={() => onLoadPreview(currentFile)}
+                            className="mt-5 inline-flex items-center justify-center rounded-lg bg-brand-start px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                        >
+                            Retry preview
+                        </button>
                     </div>
                 </div>
             );
@@ -93,6 +100,7 @@ export function PreviewModal({
                     src={previewUrl}
                     alt={getFileLabel(currentFile)}
                     className="max-h-[85vh] max-w-[90vw] object-contain rounded-xl shadow-2xl transition-transform duration-300"
+                    onError={() => onPreviewMediaError?.(currentFile)}
                 />
             );
         }
@@ -103,6 +111,7 @@ export function PreviewModal({
                     controls
                     className="max-h-[85vh] max-w-[90vw] rounded-xl shadow-2xl"
                     autoPlay
+                    onError={() => onPreviewMediaError?.(currentFile)}
                 />
             );
         }
@@ -112,6 +121,7 @@ export function PreviewModal({
                     src={previewUrl}
                     title={getFileLabel(currentFile)}
                     className="h-[85vh] w-[90vw] rounded-xl bg-white shadow-2xl"
+                    onError={() => onPreviewMediaError?.(currentFile)}
                 />
             );
         }

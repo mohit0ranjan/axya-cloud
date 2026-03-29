@@ -702,6 +702,12 @@ export default function ShareV2Client({ slug }: { slug: string }) {
         share={share as ShareMeta}
         previewUrlMap={previewUrlMap}
         previewErrors={previewErrorMap}
+        onPreviewMediaError={(file) => {
+          setPreviewErrorMap((curr) => ({
+            ...curr,
+            [file.id]: 'Preview session may have expired. Please retry preview.',
+          }));
+        }}
         onLoadPreview={async (file) => {
           if (!supportsInlinePreview(file)) return;
           setPreviewErrorMap((curr) => ({ ...curr, [file.id]: '' }));

@@ -582,7 +582,7 @@ export const emptyTrash = async (req: AuthRequest, res: Response) => {
         );
         const files = result.rows;
 
-        const toDeleteIds: string[] = [];
+        const allTrashedIds: string[] = files.map((f: any) => String(f.id)).filter(Boolean);
         const failedPointers: Array<{ chatId: string; messageId: number }> = [];
 
         let clients: TelegramReadClient[] = [];
@@ -612,29 +612,31 @@ export const emptyTrash = async (req: AuthRequest, res: Response) => {
                 const deleted = await deleteMessageAcrossTelegramClients(clients, chatId, messageId);
                 if (!deleted) {
                     failedPointers.push({ chatId, messageId });
-                } else {
-                    toDeleteIds.push(f.id);
                 }
-            } else {
-                toDeleteIds.push(f.id);
             }
         }
 
-        if (toDeleteIds.length > 0) {
-            await pool.query('DELETE FROM files WHERE id = ANY($1)', [toDeleteIds]);
+        if (allTrashedIds.length > 0) {
+            await pool.query('DELETE FROM files WHERE id = ANY($1) AND user_id = $2', [allTrashedIds, req.user.id]);
         }
 
         // Folders don't have Telegram pointers to clean up, they can be safely deleted
         await pool.query('DELETE FROM folders WHERE user_id = $1 AND is_trashed = true', [req.user.id]);
 
+        await logActivity(req.user.id, 'empty_trash');
         if (failedPointers.length > 0) {
-            return res.status(502).json({
-                success: false, // Keeping false to trigger catch block in UI, but UI can show the message
-                error: `Partially cleared. ${failedPointers.length} item(s) could not be deleted from Telegram.`,
+            logger.warn('backend.files', 'empty_trash_telegram_partial_failure', {
+                userId: req.user.id,
+                failedCount: failedPointers.length,
+            });
+            return res.json({
+                success: true,
+                warning: `Trash emptied locally. ${failedPointers.length} Telegram source message(s) could not be deleted.`,
+                message: 'Trash cleared permanently.',
+                failedTelegramDeletes: failedPointers.length,
             });
         }
 
-        await logActivity(req.user.id, 'empty_trash');
         res.json({ success: true, message: 'Trash cleared permanently.' });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });

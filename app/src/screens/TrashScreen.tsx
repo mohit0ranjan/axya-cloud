@@ -112,7 +112,7 @@ export default function TrashScreen({ navigation }: any) {
                         try {
                             const res = await apiClient.delete('/files/trash');
                             if (res.data?.success) {
-                                showToast(res.data.message || 'Trash emptied');
+                                showToast(res.data.warning || res.data.message || 'Trash emptied');
                             }
                         } catch (err: any) {
                             showToast(err.response?.data?.error || 'Could not empty trash completely', 'error');

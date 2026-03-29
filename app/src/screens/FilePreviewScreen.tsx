@@ -11,6 +11,7 @@ import {
     FileText, X, Image as ImageIcon, ChevronLeft, ChevronRight
 } from 'lucide-react-native';
 import { Image } from '../components/AppImage';
+import { Image as ExpoImage } from 'expo-image';
 import VideoPlayer from '../components/VideoPlayer';
 import PreviewSkeleton from '../components/PreviewSkeleton';
 import ShareFolderModal from '../components/ShareFolderModal';
@@ -38,23 +39,60 @@ const { width, height } = Dimensions.get('window');
 
 const MIN_SCALE = 1;
 const MAX_SCALE = 4;
-const IMG_H = height * 0.55; 
+const IMG_H = height * 0.55;
 const SPRING_CFG = { damping: 20, stiffness: 200 };
+const SLOW_PREVIEW_MS = 1500;
+const SWIPE_THRESHOLD_PX = Math.max(32, Math.round(width * 0.16));
+const SWIPE_VELOCITY_PX_PER_MS = 0.45;
 
-function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD_BG }: any) {
+const withRetryNonce = (url: string, nonce: number): string => {
+    if (!nonce) return url;
+    return url.includes('?') ? `${url}&r=${nonce}` : `${url}?r=${nonce}`;
+};
+
+const logPreview = (event: string, meta?: Record<string, unknown>) => {
+    if (__DEV__ || process.env.EXPO_PUBLIC_PREVIEW_DEBUG === '1') {
+        console.info('[preview]', event, meta || {});
+    }
+};
+
+type ImagePreviewItemProps = {
+    item: any;
+    jwt: string;
+    isZoomed: boolean;
+    onZoomChange?: (value: boolean) => void;
+    onSingleTap?: () => void;
+    CARD_BG: string;
+    shouldLoad: boolean;
+};
+
+const ImagePreviewItem = React.memo(function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD_BG, shouldLoad }: ImagePreviewItemProps) {
     const [loading, setLoading] = useState(true);
     const [useFallback, setUseFallback] = useState(false);
     const [previewFailed, setPreviewFailed] = useState(false);
-    
+    const [retryNonce, setRetryNonce] = useState(0);
+    const [showSlowNotice, setShowSlowNotice] = useState(false);
+    const loadStartedAtRef = useRef<number>(0);
+    const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
     // File URLs
     const thumbUrl = buildApiFileUrl(API_BASE, item.id, 'thumbnail');
     const downloadUrl = buildApiFileUrl(API_BASE, item.id, 'download');
     const headers = useMemo(() => ({ Authorization: `Bearer ${jwt}` }), [jwt]);
+    const activeUrl = useMemo(() => {
+        const raw = useFallback ? thumbUrl : downloadUrl;
+        return withRetryNonce(raw, retryNonce);
+    }, [downloadUrl, thumbUrl, useFallback, retryNonce]);
     const imageSource = useMemo(() => ({ 
-        uri: useFallback ? downloadUrl : thumbUrl, 
+        uri: activeUrl,
         headers, 
         cache: 'force-cache' as const 
-    }), [downloadUrl, headers, thumbUrl, useFallback]);
+    }), [activeUrl, headers]);
+    const placeholderSource = useMemo(() => ({
+        uri: withRetryNonce(thumbUrl, retryNonce),
+        headers,
+        cache: 'force-cache' as const,
+    }), [headers, retryNonce, thumbUrl]);
 
     const scale = useSharedValue(1);
     const savedScale = useSharedValue(1);
@@ -66,12 +104,40 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
 
     useEffect(() => {
         setLoading(true); setUseFallback(false); setPreviewFailed(false);
+        setRetryNonce(0); setShowSlowNotice(false);
         scale.value = 1; savedScale.value = 1;
         translateX.value = 0; translateY.value = 0;
         savedTransX.value = 0; savedTransY.value = 0;
         imageOpacity.value = 0;
+        loadStartedAtRef.current = Date.now();
         onZoomChange?.(false);
     }, [item?.id, onZoomChange]);
+
+    useEffect(() => {
+        if (!loading) {
+            if (slowTimerRef.current) {
+                clearTimeout(slowTimerRef.current);
+                slowTimerRef.current = null;
+            }
+            return;
+        }
+
+        slowTimerRef.current = setTimeout(() => {
+            setShowSlowNotice(true);
+        }, 3500);
+
+        return () => {
+            if (slowTimerRef.current) {
+                clearTimeout(slowTimerRef.current);
+                slowTimerRef.current = null;
+            }
+        };
+    }, [loading]);
+
+    useEffect(() => {
+        if (!shouldLoad) return;
+        ExpoImage.prefetch([thumbUrl, downloadUrl]).catch(() => undefined);
+    }, [downloadUrl, shouldLoad, thumbUrl]);
 
     const pinch = Gesture.Pinch()
         .enabled(Platform.OS !== 'web')
@@ -172,6 +238,16 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
         opacity: imageOpacity.value,
     }));
 
+    if (!shouldLoad) {
+        return (
+            <View style={styles.previewImageContainer}>
+                <View style={[styles.previewImageArea, { backgroundColor: CARD_BG }]}>
+                    <PreviewSkeleton />
+                </View>
+            </View>
+        );
+    }
+
     return (
         <View style={styles.previewImageContainer}>
             <GestureDetector gesture={composed}>
@@ -180,6 +256,12 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
                         {loading && (
                             <Animated.View style={{ position: 'absolute', width: '100%', height: '100%', zIndex: 1 }} exiting={FadeOut.duration(240)}>
                                 <PreviewSkeleton />
+                                <View style={styles.previewSpinnerWrap}>
+                                    <ActivityIndicator size="small" color="#60A5FA" />
+                                    {showSlowNotice && (
+                                        <Text style={styles.previewSlowText}>Server may be waking up...</Text>
+                                    )}
+                                </View>
                             </Animated.View>
                         )}
                         <Animated.View style={[{ width: '100%', height: '100%' }, imageFadeStyle]}>
@@ -187,17 +269,44 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
                                 <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
                                     <ImageIcon color="#F59E0B" size={48} style={{ marginBottom: 16 }} />
                                     <Text style={{ color: '#F59E0B', fontSize: 16 }}>Preview unavailable</Text>
+                                    <TouchableOpacity
+                                        onPress={() => {
+                                            setPreviewFailed(false);
+                                            setLoading(true);
+                                            setUseFallback(false);
+                                            setRetryNonce((v) => v + 1);
+                                            loadStartedAtRef.current = Date.now();
+                                        }}
+                                        style={styles.previewRetryBtn}
+                                    >
+                                        <Text style={styles.previewRetryText}>Retry</Text>
+                                    </TouchableOpacity>
                                 </View>
                             ) : (
                                 <Image
                                     source={imageSource}
+                                    placeholder={placeholderSource}
+                                    transition={220}
                                     style={{ width: '100%', height: '100%' }}
                                     contentFit="contain"
+                                    onLoadStart={() => {
+                                        loadStartedAtRef.current = Date.now();
+                                        setShowSlowNotice(false);
+                                        logPreview('image_load_start', { fileId: item?.id, usingFallback: useFallback });
+                                    }}
                                     onLoad={() => {
+                                        const durationMs = Date.now() - loadStartedAtRef.current;
+                                        logPreview('image_load_success', {
+                                            fileId: item?.id,
+                                            durationMs,
+                                            slow: durationMs > SLOW_PREVIEW_MS,
+                                            usingFallback: useFallback,
+                                        });
                                         setLoading(false);
                                         imageOpacity.value = withTiming(1, { duration: 240 });
                                     }}
                                     onError={() => {
+                                        logPreview('image_load_error', { fileId: item?.id, usingFallback: useFallback });
                                         if (!useFallback) {
                                             setUseFallback(true);
                                             setLoading(true);
@@ -216,7 +325,7 @@ function ImagePreviewItem({ item, jwt, isZoomed, onZoomChange, onSingleTap, CARD
             </GestureDetector>
         </View>
     );
-}
+});
 
 // --------------------------------------------------------------------------
 // Main Screen
@@ -248,9 +357,25 @@ export default function FilePreviewScreen({ route, navigation }: any) {
 
     useEffect(() => {
         if (!deepLinkedFileId || allFiles.length > 0 || fallbackFile) return;
+        let cancelled = false;
+        const startedAt = Date.now();
+
         apiClient.get(`/files/${deepLinkedFileId}/details`)
-            .then(res => setDeepLinkedFile(res.data?.file || res.data))
-            .catch(() => showToast('Could not load shared file', 'error'));
+            .then(res => {
+                if (cancelled) return;
+                const durationMs = Date.now() - startedAt;
+                logPreview('file_details_success', { fileId: deepLinkedFileId, durationMs, slow: durationMs > SLOW_PREVIEW_MS });
+                setDeepLinkedFile(res.data?.file || res.data);
+            })
+            .catch(() => {
+                if (cancelled) return;
+                logPreview('file_details_error', { fileId: deepLinkedFileId, durationMs: Date.now() - startedAt });
+                showToast('Could not load shared file', 'error');
+            });
+
+        return () => {
+            cancelled = true;
+        };
     }, [allFiles.length, deepLinkedFileId, fallbackFile, showToast]);
 
     // Local State
@@ -275,6 +400,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const mutationPendingRef = useRef<Set<string>>(new Set());
 
     const file = filesState[currentIndex] || null;
+    const dragStartRef = useRef<{ x: number; ts: number }>({ x: 0, ts: 0 });
 
     // slide animations removed in favor of FlatList
 
@@ -316,10 +442,13 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         if (Platform.OS === 'web') return;
         Vibration.vibrate(ms);
     }, []);
-    const toggleUI = () => {
-        setUiVisible(!uiVisible);
-        uiOpacity.value = withTiming(uiVisible ? 0 : 1, { duration: 250 });
-    };
+    const toggleUI = useCallback(() => {
+        setUiVisible((prev) => {
+            const next = !prev;
+            uiOpacity.value = withTiming(next ? 1 : 0, { duration: 250 });
+            return next;
+        });
+    }, [uiOpacity]);
     const uiAnimStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
     const flatListRef = useRef<FlatList>(null);
     const didInitialScrollRef = useRef(false);
@@ -494,8 +623,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     const DANGER = theme.colors.danger;
     const SURFACE_MUTED = theme.colors.surfaceMuted;
 
-    const renderFileItem = ({ item }: { item: any }) => {
+    const renderFileItem = useCallback(({ item, index }: { item: any; index: number }) => {
         const mime = item?.mime_type || '';
+        const shouldLoad = Math.abs(index - currentIndex) <= 1;
         let content;
         if (mime.startsWith('image/')) {
             content = (
@@ -505,6 +635,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                     onZoomChange={setIsZoomed} 
                     onSingleTap={toggleUI} 
                     CARD_BG={CARD_BG}
+                    shouldLoad={shouldLoad}
                 />
             );
         } else if (mime.startsWith('video/')) {
@@ -515,7 +646,7 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                             url={buildApiFileUrl(API_BASE, item.id, 'stream')}
                             token={jwt}
                             width={width}
-                            fileId={item.id} 
+                            fileId={item.id}
                         />
                     </View>
                 </View>
@@ -559,7 +690,9 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         }
         
         return <View style={{ width, height: '100%' }}>{content}</View>;
-    };
+    }, [CARD_BG, TEXT_MAIN, TEXT_SUB, ACCENT, currentIndex, handleDownload, isZoomed, jwt, toggleUI]);
+
+    const keyExtractor = useCallback((item: any) => String(item.id), []);
 
     const formatBytes = (bytes: number) => {
         if (!bytes) return '0 B';
@@ -569,7 +702,11 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     };
 
     const handleViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
-        if (viewableItems.length > 0) setCurrentIndex(viewableItems[0].index || 0);
+        if (viewableItems.length > 0) {
+            const next = viewableItems[0].index || 0;
+            setCurrentIndex(next);
+            logPreview('viewable_index_changed', { index: next });
+        }
     }).current;
 
     useEffect(() => {
@@ -617,6 +754,48 @@ export default function FilePreviewScreen({ route, navigation }: any) {
         index,
     }), []);
 
+    const onScrollBeginDrag = useCallback((e: any) => {
+        dragStartRef.current = {
+            x: Number(e?.nativeEvent?.contentOffset?.x || 0),
+            ts: Date.now(),
+        };
+    }, []);
+
+    const onMomentumScrollEnd = useCallback((e: any) => {
+        const x = Number(e?.nativeEvent?.contentOffset?.x || 0);
+        const startX = dragStartRef.current.x;
+        const dt = Math.max(1, Date.now() - dragStartRef.current.ts);
+        const deltaX = x - startX;
+        const velocity = deltaX / dt;
+        const roughIndex = Math.round(x / width);
+
+        let targetIndex = roughIndex;
+        if (Math.abs(deltaX) >= SWIPE_THRESHOLD_PX || Math.abs(velocity) >= SWIPE_VELOCITY_PX_PER_MS) {
+            const direction = deltaX > 0 ? 1 : -1;
+            targetIndex = currentIndex + direction;
+        }
+
+        const clamped = Math.max(0, Math.min(filesState.length - 1, targetIndex));
+        const expectedOffset = clamped * width;
+        const offsetDrift = Math.abs(expectedOffset - x);
+
+        if (offsetDrift > 2) {
+            flatListRef.current?.scrollToIndex({ index: clamped, animated: true });
+        }
+
+        if (clamped !== currentIndex) {
+            setCurrentIndex(clamped);
+        }
+
+        logPreview('swipe_resolved', {
+            from: currentIndex,
+            to: clamped,
+            deltaX,
+            velocity,
+            drift: offsetDrift,
+        });
+    }, [currentIndex, filesState.length]);
+
     return (
         <View style={[styles.container, { backgroundColor: BG_COLOR, paddingTop: insets.top }]}>
             
@@ -655,15 +834,22 @@ export default function FilePreviewScreen({ route, navigation }: any) {
                         data={filesState}
                         horizontal
                         pagingEnabled
+                        disableIntervalMomentum
+                        decelerationRate="fast"
+                        snapToAlignment="start"
+                        snapToInterval={width}
                         scrollEnabled={!isZoomed}
                         showsHorizontalScrollIndicator={false}
-                        keyExtractor={(item) => String(item.id)}
+                        keyExtractor={keyExtractor}
                         getItemLayout={getItemLayout}
                         onScrollToIndexFailed={onScrollToIndexFailed}
                         onViewableItemsChanged={handleViewableItemsChanged}
+                        onScrollBeginDrag={onScrollBeginDrag}
+                        onMomentumScrollEnd={onMomentumScrollEnd}
                         initialNumToRender={1}
                         maxToRenderPerBatch={2}
                         windowSize={3}
+                        removeClippedSubviews
                         renderItem={renderFileItem}
                     />
                 ) : (
@@ -854,6 +1040,34 @@ const styles = StyleSheet.create({
     previewImageArea: {
         width: '100%', height: '100%',
         overflow: 'hidden',
+    },
+    previewSpinnerWrap: {
+        position: 'absolute',
+        bottom: 24,
+        alignSelf: 'center',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 14,
+        backgroundColor: 'rgba(0,0,0,0.38)',
+    },
+    previewSlowText: {
+        marginTop: 6,
+        color: '#E2E8F0',
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    previewRetryBtn: {
+        marginTop: 14,
+        backgroundColor: '#F59E0B',
+        paddingHorizontal: 16,
+        paddingVertical: 10,
+        borderRadius: 10,
+    },
+    previewRetryText: {
+        color: '#111827',
+        fontWeight: '700',
     },
 
     /* Navigation Arrows */

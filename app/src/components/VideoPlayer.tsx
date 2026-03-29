@@ -36,7 +36,14 @@ export default function VideoPlayer({ url, token, width: w, fileId, onError }: V
     const [downloadProgress, setDownloadProgress] = useState(0);
     const loadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const statusInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+    const loadStartedAtRef = useRef<number>(Date.now());
     const safeUrl = sanitizeRemoteUri(url);
+
+    const logVideoPreview = useCallback((event: string, meta?: Record<string, unknown>) => {
+        if (__DEV__ || process.env.EXPO_PUBLIC_PREVIEW_DEBUG === '1') {
+            console.info('[preview-video]', event, meta || {});
+        }
+    }, []);
 
     const player = useVideoPlayer(
         { uri: safeUrl, headers: { Authorization: `Bearer ${token}` } },
@@ -116,21 +123,30 @@ export default function VideoPlayer({ url, token, width: w, fileId, onError }: V
         setLoading(true);
         setLoadError(null);
         setLoadingMsg('Preparing video…');
+        loadStartedAtRef.current = Date.now();
+        logVideoPreview('stream_load_start', { fileId, url: safeUrl });
 
         const sub = player.addListener('statusChange', (payload: any) => {
             if (payload?.error) {
                 const message = payload.error?.message || 'Video failed to load';
+                logVideoPreview('stream_load_error', {
+                    fileId,
+                    durationMs: Date.now() - loadStartedAtRef.current,
+                    error: message,
+                });
                 setLoadError(message);
                 setLoading(false);
                 onError?.(payload.error);
                 return;
             }
             if (payload?.status === 'readyToPlay') {
+                const durationMs = Date.now() - loadStartedAtRef.current;
+                logVideoPreview('stream_load_ready', { fileId, durationMs, slow: durationMs > 1500 });
                 setLoading(false);
             }
         });
         return () => sub.remove();
-    }, [player, onError]);
+    }, [player, onError, fileId, safeUrl, logVideoPreview]);
 
     useEffect(() => {
         const sub = player.addListener('playingChange', (payload) => {

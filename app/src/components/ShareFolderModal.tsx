@@ -23,7 +23,6 @@ const isFolderTarget = (target: any): boolean => {
     if (target.is_folder === true) return true;
     if (type === 'folder') return true;
     if (mime === 'inode/directory') return true;
-    if (target.folder_id && !target.file_id) return true;
     return false;
 };
 
@@ -46,6 +45,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
     const [enablePassword, setEnablePassword] = useState(false);
     const [password, setPassword] = useState('');
     const wasVisibleRef = useRef(false);
+    const targetIsFolder = isFolderTarget(activeTarget);
 
     // Reset and snapshot target only on visibility transitions to avoid churn/flicker.
     useEffect(() => {
@@ -168,7 +168,7 @@ export default function ShareFolderModal({ visible, onClose, targetItem }: Share
                     </View>
 
                     <Text style={[styles.description, { color: theme.colors.textBody }]}>
-                        Create a secure public link to share this {activeTarget.type === 'folder' || activeTarget.result_type === 'folder' || activeTarget.mime_type === 'inode/directory' ? 'folder' : 'file'}.
+                        Create a secure public link to share this {targetIsFolder ? 'folder' : 'file'}.
                     </Text>
 
                     {generatedLink ? (

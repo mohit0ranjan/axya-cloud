@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef, useEffect } from 'react';
 import {
     View,
     Text,
@@ -7,7 +7,7 @@ import {
     TouchableOpacity,
     ScrollView,
 } from 'react-native';
-import { ArrowLeft, RotateCcw, Trash2 } from 'lucide-react-native';
+import { ArrowLeft, RotateCcw, Trash2, CloudUpload } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUpload } from '../context/UploadContext';
 import UploadProgress from '../components/UploadProgress';
@@ -137,16 +137,19 @@ const createStyles = (theme: any) => StyleSheet.create({
     emptyWrap: {
         marginHorizontal: 20,
         marginTop: 20,
-        padding: 16,
+        padding: 30,
         borderRadius: 14,
         borderWidth: 1,
         borderColor: theme.colors.border,
         backgroundColor: theme.colors.card,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     emptyTxt: {
         color: theme.colors.textBody,
-        fontSize: 14,
+        fontSize: 15,
         fontWeight: '500',
+        marginTop: 12,
     },
 });
 
@@ -194,6 +197,16 @@ export default function UploadManagerScreen({ navigation }: any) {
         />
     );
 
+    const scrollRef = useRef<ScrollView>(null);
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            if (activeTasks.length > 0 && scrollRef.current) {
+                scrollRef.current.scrollTo({ y: 0, animated: true });
+            }
+        }, 150);
+        return () => clearTimeout(timer);
+    }, []);
+
     return (
         <SafeAreaView style={[s.root, { paddingTop: Math.max(insets.top, 0) }]}>
             <View style={s.header}>
@@ -237,10 +250,11 @@ export default function UploadManagerScreen({ navigation }: any) {
             <View style={s.sectionWrap}>
                 {!hasAny ? (
                     <View style={s.emptyWrap}>
+                        <CloudUpload size={42} color={theme.colors.muted || theme.colors.border} />
                         <Text style={s.emptyTxt}>No uploads in manager yet.</Text>
                     </View>
                 ) : (
-                    <ScrollView contentContainerStyle={s.list} showsVerticalScrollIndicator={false}>
+                    <ScrollView ref={scrollRef} contentContainerStyle={s.list} showsVerticalScrollIndicator={false}>
                         {activeTasks.length > 0 && (
                             <>
                                 <Text style={s.sectionTitle}>Active Uploads ({activeTasks.length})</Text>

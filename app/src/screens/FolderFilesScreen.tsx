@@ -608,9 +608,9 @@ export default function FolderFilesScreen({ route, navigation }: any) {
                     columnWrapperStyle={isGridView ? styles.gridContainer : undefined}
                     contentContainerStyle={{ paddingBottom: 100, paddingTop: isGridView ? 12 : 8 }}
                     showsVerticalScrollIndicator={false}
-                    windowSize={10}
-                    maxToRenderPerBatch={20}
-                    initialNumToRender={15}
+                    windowSize={5}
+                    maxToRenderPerBatch={8}
+                    initialNumToRender={10}
                     onEndReached={handleLoadMore}
                     onEndReachedThreshold={0.5}
                     ListFooterComponent={

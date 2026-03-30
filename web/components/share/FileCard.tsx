@@ -1,9 +1,7 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useCallback } from 'react';
 import { SharedFile, ShareMeta } from './types';
 import { isVideo, isImage, isPdf, formatSize, getFileLabel, cn } from '../../lib/utils';
-import { File, FileText, Film, Image as ImageIcon, Download, Maximize2 } from 'lucide-react';
-import Skeleton from 'react-loading-skeleton';
-import 'react-loading-skeleton/dist/skeleton.css';
+import { File, FileText, Film, Image as ImageIcon, Download, Maximize2, RefreshCw } from 'lucide-react';
 import { useViewportGate } from './useViewportGate';
 
 interface FileCardProps {
@@ -22,10 +20,12 @@ function FileCardComponent({ file, share, onPreview, onDownload, ticketMap, prev
     const isDoc = isPdf(file);
     const isDownloading = ticketMap[`${file.id}:attachment`];
     const [thumbFailed, setThumbFailed] = React.useState(false);
+    const [thumbLoaded, setThumbLoaded] = React.useState(false);
     const { ref, isVisible } = useViewportGate<HTMLDivElement>({ rootMargin: '320px' });
 
     const previewUrl = previewUrlMap[`${file.id}:thumbnail`] || previewUrlMap[`${file.id}:inline`];
     const fetchAttempted = React.useRef(false);
+    const isTicketLoading = ticketMap[`${file.id}:thumbnail`];
 
     useEffect(() => {
         if ((isImg || isDoc) && isVisible && !previewUrl && !fetchAttempted.current) {
@@ -37,13 +37,24 @@ function FileCardComponent({ file, share, onPreview, onDownload, ticketMap, prev
     useEffect(() => {
         fetchAttempted.current = false;
         setThumbFailed(false);
+        setThumbLoaded(false);
     }, [file.id]);
+
+    const handleRetryThumb = useCallback((e: React.MouseEvent) => {
+        e.stopPropagation();
+        setThumbFailed(false);
+        setThumbLoaded(false);
+        fetchAttempted.current = false;
+        onLoadThumbnail(file);
+    }, [file, onLoadThumbnail]);
 
     // Decide which icon to show
     let Icon = File;
     if (isImg) Icon = ImageIcon;
     if (isVid) Icon = Film;
     if (isDoc) Icon = FileText;
+
+    const showImage = previewUrl && !thumbFailed && isVisible;
 
     return (
         <div
@@ -57,23 +68,50 @@ function FileCardComponent({ file, share, onPreview, onDownload, ticketMap, prev
             >
                 <div className="absolute inset-0 bg-gradient-to-t from-black/5 to-transparent z-0 opacity-0 group-hover:opacity-100 transition-opacity" />
 
-                {(isImg || isDoc) && ticketMap[`${file.id}:thumbnail`] ? (
-                    <Skeleton className="absolute inset-0 w-full h-full" containerClassName="w-full h-full leading-none" />
-                ) : previewUrl && !thumbFailed && isVisible ? (
+                {/* Shimmer skeleton while loading ticket */}
+                {(isImg || isDoc) && isTicketLoading && (
+                    <div className="absolute inset-0 w-full h-full animate-pulse bg-gradient-to-r from-neutral-100 via-neutral-50 to-neutral-100 bg-[length:200%_100%] animate-shimmer" />
+                )}
+
+                {/* Image with blur-up fade-in */}
+                {showImage && (
                     <img
                         src={previewUrl}
                         alt={getFileLabel(file)}
                         loading="lazy"
                         decoding="async"
                         fetchPriority="low"
-                        className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                        className={cn(
+                            "absolute inset-0 w-full h-full object-cover transition-all duration-500 group-hover:scale-110",
+                            thumbLoaded ? "opacity-100 blur-0 scale-100" : "opacity-0 blur-sm scale-105"
+                        )}
+                        onLoad={() => setThumbLoaded(true)}
                         onError={() => setThumbFailed(true)}
                     />
-                ) : (
+                )}
+
+                {/* Icon fallback when no thumbnail available */}
+                {!showImage && !isTicketLoading && !thumbFailed && (
                     <Icon className={cn(
                         "w-12 h-12 z-10 transition-transform duration-300 group-hover:scale-110",
                         isImg ? "text-amber-500" : isVid ? "text-purple-500" : isDoc ? "text-red-500" : "text-brand-start"
                     )} />
+                )}
+
+                {/* Error state with retry */}
+                {thumbFailed && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-neutral-50/80 z-10">
+                        <Icon className={cn(
+                            "w-10 h-10 opacity-40",
+                            isImg ? "text-amber-500" : isDoc ? "text-red-500" : "text-brand-start"
+                        )} />
+                        <button
+                            onClick={handleRetryThumb}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand-muted bg-white rounded-full shadow-sm hover:shadow hover:text-brand-text transition-all"
+                        >
+                            <RefreshCw className="w-3 h-3" /> Retry
+                        </button>
+                    </div>
                 )}
 
                 {/* Hover Actions: Center */}
@@ -100,7 +138,7 @@ function FileCardComponent({ file, share, onPreview, onDownload, ticketMap, prev
                     {formatSize(file.size_bytes)}
                 </p>
 
-                {/* Download Button Component overlayed slightly or at bottom right */}
+                {/* Download Button */}
                 {share.allowDownload && (
                     <button
                         onClick={(e) => {
@@ -119,6 +157,17 @@ function FileCardComponent({ file, share, onPreview, onDownload, ticketMap, prev
                     </button>
                 )}
             </div>
+
+            {/* CSS shimmer animation */}
+            <style jsx>{`
+                @keyframes shimmer {
+                    0% { background-position: 200% 0; }
+                    100% { background-position: -200% 0; }
+                }
+                .animate-shimmer {
+                    animation: shimmer 1.5s ease-in-out infinite;
+                }
+            `}</style>
         </div>
     );
 }

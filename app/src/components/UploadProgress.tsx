@@ -1,11 +1,15 @@
 /**
  * UploadProgress.tsx
  *
- * Single upload task card.
- * Shows real byte-accurate progress, animated bar, and action buttons.
+ * Single upload task card — clean 3-row layout:
+ *   Row 1: [StatusIcon] FileName              Progress%
+ *   Row 2: ████████████████████░░░░░░░░░░░░░  (animated bar)
+ *   Row 3: Size · Status                   [Pause] [Cancel]
+ *
+ * Button colors: Pause=gray, Cancel=red, Retry=blue, Resume=green
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useMemo } from 'react';
 import {
     View, Text, StyleSheet, TouchableOpacity, Animated,
 } from 'react-native';
@@ -15,15 +19,14 @@ import {
 } from 'lucide-react-native';
 
 import { UploadTask } from '../services/UploadManager';
-import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function formatFileSize(bytes: number): string {
-    if (bytes === 0) return '0 B';
+    if (bytes <= 0) return '0 B';
     const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
     return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${sizes[i]}`;
 }
 
@@ -43,14 +46,14 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
     task, onCancel, onPause, onResume, onRetry,
 }) => {
     const { file, status, progress, bytesUploaded } = task;
-    const { theme } = useTheme();
+    const { theme, isDark } = useTheme();
 
     const animProgress = useRef(new Animated.Value(0)).current;
 
     useEffect(() => {
         Animated.timing(animProgress, {
             toValue: progress / 100,
-            duration: 250,
+            duration: 300,
             useNativeDriver: false,
         }).start();
     }, [progress]);
@@ -62,185 +65,215 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
     const isCompleted = status === 'completed';
     const isFailed = status === 'failed';
     const isCancelled = status === 'cancelled';
+    const isWaitingRetry = status === 'waiting_retry';
+    const isTerminal = isCompleted || isCancelled;
 
-    const canPause = (isUploading || isQueued || isRetrying) && !!onPause;
-    const canResume = (isPaused || isFailed) && !!onResume;
+    const canPause = (isUploading || isQueued || isRetrying || isWaitingRetry) && !!onPause;
+    const canResume = isPaused && !!onResume;
     const canRetry = isFailed && !!onRetry;
-    const canCancel = !isCompleted && !isCancelled;
+    const canCancel = !isTerminal;
 
-    const getStatusLabel = (): string => {
+    // ── Status label (no duplicate %) ──
+    const statusLabel = useMemo((): string => {
         switch (status) {
             case 'uploading':
-                return `${progress}% \u00B7 ${formatFileSize(bytesUploaded ?? 0)} / ${formatFileSize(file.size)}`;
-            case 'queued': return 'Queued';
-            case 'retrying': return `Retrying\u2026 (${task.retryCount})`;
+                return `${formatFileSize(bytesUploaded ?? 0)} / ${formatFileSize(file.size)}`;
+            case 'queued': return 'Waiting in queue';
+            case 'retrying': return `Retrying (attempt ${task.retryCount})`;
+            case 'waiting_retry': return `Waiting to retry…`;
             case 'paused':
-                return `Paused \u00B7 ${formatFileSize(bytesUploaded ?? 0)} / ${formatFileSize(file.size)}`;
+                return `Paused · ${formatFileSize(bytesUploaded ?? 0)} / ${formatFileSize(file.size)}`;
             case 'completed':
-                return task.duplicate ? 'Already exists \u2713' : 'Uploaded \u2713';
-            case 'failed': return task.error || 'Failed';
+                return task.duplicate ? 'Duplicate — already exists' : 'Uploaded successfully';
+            case 'failed': return task.error || 'Upload failed';
             case 'cancelled': return 'Cancelled';
             default: return 'Pending';
         }
-    };
+    }, [status, bytesUploaded, file.size, task.retryCount, task.error, task.duplicate]);
 
-    const StatusIcon = () => {
-        if (isCompleted && task.duplicate) return <Copy size={16} color={theme.colors.primary} />;
-        if (isCompleted) return <CheckCircle size={16} color={theme.colors.success} />;
-        if (isFailed) return <AlertCircle size={16} color={theme.colors.danger} />;
-        if (isPaused) return <Pause size={16} color={theme.colors.accent} />;
-        if (isCancelled) return <X size={16} color={theme.colors.muted} />;
-        if (isRetrying) return <Loader size={16} color={theme.colors.accent} />;
-        if (isQueued) return <Clock size={16} color={theme.colors.muted} />;
-        return <CloudUpload size={16} color={theme.colors.primary} />;
-    };
+    // ── Status icon ──
+    const statusIcon = useMemo(() => {
+        const size = 15;
+        if (isCompleted && task.duplicate) return <Copy size={size} color={theme.colors.primary} />;
+        if (isCompleted) return <CheckCircle size={size} color={theme.colors.success} />;
+        if (isFailed) return <AlertCircle size={size} color={theme.colors.danger} />;
+        if (isPaused) return <Pause size={size} color={theme.colors.accent} />;
+        if (isCancelled) return <X size={size} color={theme.colors.muted} />;
+        if (isRetrying || isWaitingRetry) return <Loader size={size} color={theme.colors.accent} />;
+        if (isQueued) return <Clock size={size} color={theme.colors.muted} />;
+        return <CloudUpload size={size} color={theme.colors.primary} />;
+    }, [status, task.duplicate, theme, isDark]);
 
+    // ── Progress bar color ──
     const progressColor = isCompleted
         ? (task.duplicate ? theme.colors.primary : theme.colors.success)
         : isFailed ? theme.colors.danger
             : isPaused ? theme.colors.accent
                 : theme.colors.primary;
 
+    // ── Progress % display ──
+    const showPercent = isUploading || isRetrying || isPaused || isWaitingRetry;
+    const statusColor = isFailed ? theme.colors.danger
+        : isCompleted && !task.duplicate ? theme.colors.success
+            : isCompleted && task.duplicate ? theme.colors.primary
+                : isPaused ? theme.colors.accent
+                    : theme.colors.textBody;
+
+    const s = useMemo(() => createStyles(theme, isDark), [theme, isDark]);
+
     return (
-        <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-            <View style={styles.header}>
-                <View style={styles.info}>
-                    <Text style={[styles.fileName, { color: theme.colors.textHeading }]} numberOfLines={1}>{file.name}</Text>
-                    <View style={styles.statusRow}>
-                        <StatusIcon />
-                        <Text
-                            style={[
-                                styles.statusText,
-                                { color: theme.colors.primary },
-                                isFailed && { color: theme.colors.danger },
-                                isCompleted && !task.duplicate && { color: theme.colors.success },
-                                isCompleted && task.duplicate && { color: theme.colors.primary },
-                                isPaused && { color: theme.colors.accent },
-                            ]}
-                            numberOfLines={1}
-                        >
-                            {getStatusLabel()}
-                        </Text>
-                    </View>
+        <View style={s.card}>
+            {/* Row 1: Icon + Name + % */}
+            <View style={s.row1}>
+                <View style={s.iconWrap}>{statusIcon}</View>
+                <Text style={s.fileName} numberOfLines={1}>{file.name}</Text>
+                {showPercent && (
+                    <Text style={s.percent}>{progress}%</Text>
+                )}
+            </View>
+
+            {/* Row 2: Progress bar */}
+            {!isTerminal && (
+                <View style={s.progressTrack}>
+                    <Animated.View
+                        style={[
+                            s.progressFill,
+                            {
+                                backgroundColor: progressColor,
+                                width: animProgress.interpolate({
+                                    inputRange: [0, 1],
+                                    outputRange: ['0%', '100%'],
+                                }),
+                            },
+                        ]}
+                    />
                 </View>
-                <View style={styles.actions}>
-                    {canPause && (
-                        <TouchableOpacity
-                            onPress={() => onPause!(task.id)}
-                            style={[styles.iconBtn, { backgroundColor: theme.colors.inputBg }]}
-                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                            accessibilityLabel="Pause upload"
-                        >
-                            <Pause size={17} color={theme.colors.muted} />
-                        </TouchableOpacity>
-                    )}
-                    {canResume && !canRetry && (
+            )}
+
+            {/* Row 3: Status + Actions */}
+            <View style={s.row3}>
+                <Text style={[s.statusText, { color: statusColor }]} numberOfLines={1}>
+                    {statusLabel}
+                </Text>
+                <View style={s.actions}>
+                    {canResume && (
                         <TouchableOpacity
                             onPress={() => onResume!(task.id)}
-                            style={[styles.iconBtn, { backgroundColor: theme.colors.primaryLight }]}
-                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            style={[s.actionBtn, { backgroundColor: `${theme.colors.success}18` }]}
+                            hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
                             accessibilityLabel="Resume upload"
                         >
-                            <Play size={17} color={theme.colors.primary} />
+                            <Play size={15} color={theme.colors.success} />
                         </TouchableOpacity>
                     )}
                     {canRetry && (
                         <TouchableOpacity
                             onPress={() => onRetry!(task.id)}
-                            style={[styles.iconBtn, { backgroundColor: theme.colors.primaryLight }]}
-                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            style={[s.actionBtn, { backgroundColor: `${theme.colors.primary}18` }]}
+                            hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
                             accessibilityLabel="Retry upload"
                         >
-                            <RotateCcw size={17} color={theme.colors.primary} />
+                            <RotateCcw size={15} color={theme.colors.primary} />
+                        </TouchableOpacity>
+                    )}
+                    {canPause && (
+                        <TouchableOpacity
+                            onPress={() => onPause!(task.id)}
+                            style={[s.actionBtn, { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)' }]}
+                            hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                            accessibilityLabel="Pause upload"
+                        >
+                            <Pause size={15} color={theme.colors.muted} />
                         </TouchableOpacity>
                     )}
                     {canCancel && (
                         <TouchableOpacity
                             onPress={() => onCancel(task.id)}
-                            style={[styles.iconBtn, { backgroundColor: `${theme.colors.danger}1A` }]}
-                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            style={[s.actionBtn, { backgroundColor: `${theme.colors.danger}14` }]}
+                            hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
                             accessibilityLabel="Cancel upload"
                         >
-                            <X size={17} color={theme.colors.danger} />
+                            <X size={15} color={theme.colors.danger} />
                         </TouchableOpacity>
                     )}
                 </View>
             </View>
-            <View style={[styles.progressTrack, { backgroundColor: theme.colors.border }]}>
-                <Animated.View
-                    style={[
-                        styles.progressFill,
-                        {
-                            backgroundColor: progressColor,
-                            width: animProgress.interpolate({
-                                inputRange: [0, 1],
-                                outputRange: ['0%', '100%'],
-                            }),
-                        },
-                    ]}
-                />
-            </View>
-            <Text style={[styles.sizeText, { color: theme.colors.textBody }]}>{formatFileSize(file.size)}</Text>
         </View>
     );
 };
 
-const styles = StyleSheet.create({
+// ─── Styles ──────────────────────────────────────────────────────────────────
+
+const createStyles = (theme: any, isDark: boolean) => StyleSheet.create({
     card: {
-        borderRadius: staticTheme.radius.card,
-        padding: staticTheme.spacing.lg,
-        marginBottom: staticTheme.spacing.md,
-        ...staticTheme.shadows.elevation1,
+        backgroundColor: theme.colors.card,
+        borderRadius: 16,
+        padding: 14,
+        marginBottom: 10,
         borderWidth: 1,
+        borderColor: theme.colors.border,
     },
-    header: {
+    row1: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        marginBottom: 10,
+    },
+    iconWrap: {
+        width: 28,
+        height: 28,
+        borderRadius: 8,
+        backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    fileName: {
+        flex: 1,
+        fontSize: 14,
+        fontWeight: '600',
+        color: theme.colors.textHeading,
+    },
+    percent: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: theme.colors.primary,
+        minWidth: 38,
+        textAlign: 'right',
+    },
+    progressTrack: {
+        height: 5,
+        borderRadius: 999,
+        backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : theme.colors.border,
+        overflow: 'hidden',
+        marginBottom: 10,
+    },
+    progressFill: {
+        height: '100%',
+        borderRadius: 999,
+    },
+    row3: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        marginBottom: staticTheme.spacing.md,
-        gap: staticTheme.spacing.sm,
-    },
-    info: {
-        flex: 1,
-        gap: 4,
-        minWidth: 0,
-    },
-    fileName: {
-        fontSize: staticTheme.typography.body.fontSize,
-        fontWeight: staticTheme.typography.subtitle.fontWeight,
-    },
-    statusRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 5,
+        gap: 8,
     },
     statusText: {
         fontSize: 12,
-        fontWeight: '600',
-        flexShrink: 1,
+        fontWeight: '500',
+        flex: 1,
+        minWidth: 0,
     },
     actions: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 6,
     },
-    iconBtn: {
-        padding: staticTheme.spacing.sm,
-        borderRadius: staticTheme.radius.md,
-    },
-    progressTrack: {
-        height: 6,
-        borderRadius: staticTheme.radius.full,
-        overflow: 'hidden',
-        marginBottom: 6,
-    },
-    progressFill: {
-        height: '100%',
-        borderRadius: staticTheme.radius.full,
-    },
-    sizeText: {
-        fontSize: staticTheme.typography.metadata.fontSize,
-        fontWeight: staticTheme.typography.metadata.fontWeight,
+    actionBtn: {
+        width: 34,
+        height: 34,
+        borderRadius: 10,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
 });
 

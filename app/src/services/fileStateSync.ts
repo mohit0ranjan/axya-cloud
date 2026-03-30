@@ -1,5 +1,6 @@
 import { useApiCacheStore } from '../context/ApiCacheStore';
 import { triggerFileRefresh } from '../utils/events';
+import { serverReadiness } from './serverReadiness';
 
 type FileLike = {
     id?: string | number;
@@ -160,9 +161,22 @@ export const normalizeItems = <T extends FileLike>(items: T[], sortKey: ListSort
     return sortItems(dedupeFilesById((items || []).map((item) => normalizeFile(item))), sortKey);
 };
 
+let deferredRefreshPending = false;
+
 export const syncAfterFileMutation = (options?: { clearCache?: boolean }) => {
     if (options?.clearCache !== false) {
         useApiCacheStore.getState().clearCache();
     }
+
+    if (serverReadiness.isWakeInProgress()) {
+        if (deferredRefreshPending) return;
+        deferredRefreshPending = true;
+        serverReadiness.runWhenReady(() => {
+            deferredRefreshPending = false;
+            triggerFileRefresh();
+        });
+        return;
+    }
+
     triggerFileRefresh();
 };

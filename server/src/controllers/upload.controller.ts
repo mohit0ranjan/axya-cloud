@@ -1027,7 +1027,17 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             try {
                 const thumbDir = path.join(os.tmpdir(), 'axya_thumbs');
                 fs.mkdirSync(thumbDir, { recursive: true });
+                // Save with both generic and width-specific naming for cache compatibility
                 fs.writeFileSync(path.join(thumbDir, `${fileRow.id}.webp`), finalThumbBuffer);
+                fs.writeFileSync(path.join(thumbDir, `${fileRow.id}_1080.webp`), finalThumbBuffer);
+                // Generate a 240px micro-thumbnail for instant file list loading
+                try {
+                    const microThumb = await sharp(finalThumbBuffer, { failOnError: false })
+                        .resize(240, 240, { fit: 'inside', withoutEnlargement: true })
+                        .toFormat('webp', { quality: 70, effort: 2 })
+                        .toBuffer();
+                    fs.writeFileSync(path.join(thumbDir, `${fileRow.id}_240.webp`), microThumb);
+                } catch { /* micro-thumb generation is best-effort */ }
             } catch {
                 // best effort thumbnail cache
             }

@@ -107,6 +107,8 @@ Example response:
 - Keep `/health` public and lightweight (no DB calls, no heavy logic).
 - Do not require auth for `/health`.
 - A 5-minute ping helps reduce cold starts on free tiers, but does not guarantee zero cold starts.
+- Mobile app keepalive should pause while active uploads are running; only `/health` polling is allowed during upload wake-up windows.
+- External cron should remain unchanged and continue pinging only `/health`.
 
 ## 9) UptimeRobot Alternative
 

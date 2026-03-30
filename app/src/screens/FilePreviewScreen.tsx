@@ -25,7 +25,7 @@ import { usePreviewAssetCache } from '../hooks/usePreviewAssetCache';
 import { syncAfterFileMutation } from '../services/fileStateSync';
 import { emitFileDeleted, emitFileUpdated } from '../utils/events';
 import { buildApiFileUrl, sanitizeDisplayName, sanitizeFileName } from '../utils/fileSafety';
-import { buildPreviewMediaUrls, getCachedPreviewDetail, invalidatePreviewAssetCache, setCachedPreviewDetail } from '../utils/previewCache';
+import { buildPreviewMediaUrls, getCachedPreviewDetail, invalidatePreviewAssetCache, setCachedPreviewDetail, warmPreviewAssetUri } from '../utils/previewCache';
 
 import Animated, {
     useSharedValue, useAnimatedStyle, withSpring, withTiming, runOnJS, FadeIn, FadeOut
@@ -289,16 +289,16 @@ const ImagePreviewItem = React.memo(function ImagePreviewItem({ item, jwt, fileS
             <GestureDetector gesture={composed}>
                 <Animated.View style={[styles.previewImageArea, { backgroundColor: CARD_BG }]}>
                     <Animated.View style={[{ flex: 1, overflow: 'hidden', justifyContent: 'center', alignItems: 'center' }, animStyle]}>
+                        {/* Skeleton sits quietly in the background while expo-image handles placeholder -> source transitions */}
                         {loading && (
-                            <Animated.View style={{ position: 'absolute', width: '100%', height: '100%', zIndex: 1 }} exiting={FadeOut.duration(240)}>
+                            <View style={{ position: 'absolute', width: '100%', height: '100%', zIndex: -1 }}>
                                 <PreviewSkeleton />
-                                <View style={styles.previewSpinnerWrap}>
-                                    <ActivityIndicator size="small" color="#60A5FA" />
-                                    {showSlowNotice && (
-                                        <Text style={styles.previewSlowText}>Server may be waking up...</Text>
-                                    )}
-                                </View>
-                            </Animated.View>
+                                {showSlowNotice && (
+                                    <View style={styles.previewSpinnerWrap}>
+                                        <Text style={styles.previewSlowText}>Server waking up...</Text>
+                                    </View>
+                                )}
+                            </View>
                         )}
                         <Animated.View style={[{ width: '100%', height: '100%' }, imageFadeStyle]}>
                             {previewFailed ? (
@@ -829,6 +829,26 @@ export default function FilePreviewScreen({ route, navigation }: any) {
     }, [filesState.length, isResolvingDeepLink, navigation]);
 
     const hasMultipleFiles = filesState.length > 1;
+
+    // Background preload adjacent images for instant swiping
+    useEffect(() => {
+        if (!jwt || filesState.length === 0) return;
+
+        const preloadIndexes = [currentIndex + 1, currentIndex + 2, currentIndex - 1].filter(
+            (i) => i >= 0 && i < filesState.length
+        );
+
+        preloadIndexes.forEach((idx) => {
+            const f = filesState[idx];
+            if (f && String(f.mime_type || '').startsWith('image/')) {
+                const previewWidth = Platform.OS === 'web' ? 2048 : 1080;
+                // Warm up the high-res view
+                warmPreviewAssetUri(API_BASE, f.id, jwt, 'thumbnail', { width: previewWidth, mimeType: 'image/webp' }).catch(() => {});
+                // Also warm up the small thumb as fallback
+                warmPreviewAssetUri(API_BASE, f.id, jwt, 'thumbnail', { width: 480, mimeType: 'image/webp' }).catch(() => {});
+            }
+        });
+    }, [currentIndex, filesState, jwt]);
 
     // Handle scrollIndex on initial mount with Android layout phase consideration
     const onScrollToIndexFailed = useCallback((info: any) => {

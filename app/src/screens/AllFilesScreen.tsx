@@ -169,8 +169,9 @@ export default function AllFilesScreen({ navigation }: any) {
                     refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.primary} />}
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={styles.listPad}
-                    windowSize={10}
-                    maxToRenderPerBatch={20}
+                    windowSize={5}
+                    maxToRenderPerBatch={8}
+                    initialNumToRender={10}
                     removeClippedSubviews
                 />
                 </ContentFadeIn>

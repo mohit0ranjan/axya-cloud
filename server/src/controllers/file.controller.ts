@@ -1,4 +1,4 @@
-﻿import { Response } from 'express';
+import { Response } from 'express';
 import { AuthRequest } from '../middlewares/auth.middleware';
 import { getDynamicClient } from '../services/telegram.service';
 import { CustomFile } from 'telegram/client/uploads';
@@ -237,6 +237,30 @@ const deleteTrashRowsAtomically = async (
             }
         }
 
+        // ✅ FIX: Delete share_links_v2 rows BEFORE deleting files/folders.
+        // Without this, `ON DELETE SET NULL` on root_file_id/root_folder_id sets both to NULL,
+        // violating the share_links_v2_root_xor CHECK constraint.
+        // Cascades automatically clean up share_items_v2, share_access_sessions_v2, share_events_v2.
+        if (fileRows.length > 0) {
+            const fileIds = fileRows.map((row) => row.id);
+            await client.query(
+                `DELETE FROM share_links_v2
+                 WHERE owner_user_id = $1
+                   AND root_file_id = ANY($2::uuid[])`,
+                [userId, fileIds]
+            );
+        }
+
+        if (folderRows.length > 0) {
+            const folderIds = folderRows.map((row) => row.id);
+            await client.query(
+                `DELETE FROM share_links_v2
+                 WHERE owner_user_id = $1
+                   AND root_folder_id = ANY($2::uuid[])`,
+                [userId, folderIds]
+            );
+        }
+
         const deletedFilesRes = fileRows.length > 0
             ? await client.query(
                 `DELETE FROM files
@@ -262,8 +286,19 @@ const deleteTrashRowsAtomically = async (
             deletedFiles: Number(deletedFilesRes.rowCount || 0),
             deletedFolders: Number(deletedFoldersRes.rowCount || 0),
         };
-    } catch (err) {
+    } catch (err: any) {
         await client.query('ROLLBACK').catch(() => undefined);
+        // Log structured error for constraint violations
+        const errMessage = String(err?.message || '');
+        if (errMessage.includes('share_links_v2_root_xor') || errMessage.includes('violates check constraint')) {
+            logger.error('trash.delete', 'constraint_violation_during_delete', {
+                userId,
+                fileCount: fileIdsFilter.length || 'all',
+                constraint: 'share_links_v2_root_xor',
+                originalError: errMessage,
+            });
+            throw new Error('Could not delete: linked share data conflict. Please retry — the issue has been logged.');
+        }
         throw err;
     } finally {
         client.release();
@@ -686,11 +721,26 @@ export const deleteFile = async (req: AuthRequest, res: Response) => {
             }
         }
 
+        // ✅ FIX: Delete share_links_v2 for this file BEFORE deleting the file row.
+        // Without this, ON DELETE SET NULL on root_file_id violates the share_links_v2_root_xor constraint.
+        await pool.query(
+            `DELETE FROM share_links_v2 WHERE owner_user_id = $2 AND root_file_id = $1`,
+            [id, req.user.id]
+        );
+
         await pool.query('DELETE FROM files WHERE id = $1 AND user_id = $2', [id, req.user.id]);
         await logActivity(req.user.id, 'delete_permanent', String(id));
         invalidateUserPerformanceCaches(req.user.id);
         res.json({ success: true, message: 'File permanently deleted.' });
     } catch (err: any) {
+        const message = String(err?.message || '');
+        // Catch constraint violations and return a structured error
+        if (message.includes('share_links_v2_root_xor') || message.includes('violates check constraint')) {
+            return sendApiError(res, 500, 'constraint_error',
+                'Could not delete due to linked share data. Please try again.',
+                { retryable: true }
+            );
+        }
         res.status(500).json({ success: false, error: err.message });
     }
 };
@@ -850,17 +900,24 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
 
     try {
         // ✅ Check disk cache first — avoid Telegram download on repeated requests
+        // Check both width-specific and generic cache files (upload saves ${id}.webp, endpoint uses ${id}_${width}.webp)
         const cacheFile = path.join(THUMB_CACHE_DIR, `${id}_${requestedWidth}.webp`);
-        if (fs.existsSync(cacheFile)) {
-            const stat = fs.statSync(cacheFile);
-            const age = Date.now() - stat.mtimeMs;
-            if (age < THUMB_CACHE_TTL_MS && stat.size > 0) {
-                res.setHeader('Content-Type', 'image/webp');
-                res.setHeader('Cache-Control', 'public, max-age=31536000, s-maxage=604800, stale-while-revalidate=86400, immutable');
-                res.setHeader('ETag', `W/"${id}-thumb"`);
-                res.setHeader('X-Cache', 'HIT');
-                return fs.createReadStream(cacheFile).pipe(res);
-            }
+        const uploadCacheFile = path.join(THUMB_CACHE_DIR, `${id}.webp`);
+        const cacheFileCandidates = [cacheFile, uploadCacheFile];
+        for (const candidate of cacheFileCandidates) {
+            try {
+                if (fs.existsSync(candidate)) {
+                    const stat = fs.statSync(candidate);
+                    const age = Date.now() - stat.mtimeMs;
+                    if (age < THUMB_CACHE_TTL_MS && stat.size > 0) {
+                        res.setHeader('Content-Type', 'image/webp');
+                        res.setHeader('Cache-Control', 'public, max-age=31536000, s-maxage=604800, stale-while-revalidate=86400, immutable');
+                        res.setHeader('ETag', `W/"${id}-thumb-${stat.size}"`);
+                        res.setHeader('X-Cache', 'HIT');
+                        return fs.createReadStream(candidate).pipe(res);
+                    }
+                }
+            } catch { /* candidate not readable, try next */ }
         }
 
         const fileResult = await pool.query(
@@ -937,8 +994,12 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
                 .toFormat('webp', { quality: 85, effort: 3 })
                 .toBuffer();
 
-            // ✅ Save to disk cache for next request
-            fs.writeFileSync(cacheFile, optimizedBuffer);
+            // ✅ Save to disk cache for next request (both width-specific and generic)
+            try { fs.writeFileSync(cacheFile, optimizedBuffer); } catch { /* best effort */ }
+            // Also save generic cache file if it doesn't exist (so upload-path cache hits work)
+            if (!fs.existsSync(uploadCacheFile)) {
+                try { fs.writeFileSync(uploadCacheFile, optimizedBuffer); } catch { /* best effort */ }
+            }
 
             // Successful render should clear prior failure counts.
             pool.query('UPDATE files SET thumbnail_failed_count = 0 WHERE id = $1', [id]).catch(() => { });

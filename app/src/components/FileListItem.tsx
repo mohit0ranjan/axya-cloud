@@ -1,9 +1,11 @@
 import React, { memo, useRef, useEffect, useState, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image as RNImage, Animated } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Animated } from 'react-native';
 import { Folder, Star, FileText, Image as ImageIcon, Film, Music, Archive, MoreHorizontal } from 'lucide-react-native';
+import { Image } from './AppImage';
 import { lightTheme } from '../context/ThemeContext';
 import { formatFolderMeta } from '../utils/folderMeta';
 import { buildApiFileUrl, sanitizeDisplayName } from '../utils/fileSafety';
+import { useServerStatus } from '../context/ServerStatusContext';
 
 type Theme = typeof lightTheme;
 
@@ -19,6 +21,7 @@ export interface FileItem {
     file_count?: number;
     total_file_count?: number;
     folder_count?: number;
+    blurhash?: string;
 }
 
 interface FileListItemProps {
@@ -104,6 +107,7 @@ const createStyles = (theme: Theme) => StyleSheet.create({
 
 const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress, onOptionsPress, variant = 'default' }: FileListItemProps) => {
     const styles = React.useMemo(() => createStyles(theme), [theme]);
+    const { isWaking } = useServerStatus();
 
     // ── Fade-in animation ─────────────────────────────────────────────────
     const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -148,7 +152,7 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress, onOptio
     const { Icon, color, bg } = cfg;
 
     const mimeType = String(item.mime_type || '').toLowerCase();
-    const canShowThumb = !isFolder && !thumbFailed && (
+    const canShowThumb = !isFolder && !thumbFailed && !isWaking && (
         mimeType.startsWith('image/')
         || mimeType.startsWith('video/')
         || mimeType === 'application/pdf'
@@ -157,6 +161,15 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress, onOptio
     const handlePress = () => {
         onPress(item, isFolder);
     };
+
+    // Build thumbnail source with auth headers for expo-image
+    const thumbSource = React.useMemo(() => {
+        if (!canShowThumb || !token || !apiBaseUrl) return null;
+        return {
+            uri: buildApiFileUrl(apiBaseUrl, item.id, 'thumbnail'),
+            headers: { Authorization: `Bearer ${token}` },
+        };
+    }, [canShowThumb, token, apiBaseUrl, item.id]);
 
     return (
         <Animated.View style={{ opacity: fadeAnim, transform: [{ scale: rowScale }] }}>
@@ -174,14 +187,14 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress, onOptio
                     variant === 'card' && styles.fileIconCard,
                     variant === 'card' && !isFolder ? { borderRadius: 16 } : null
                 ]}>
-                    {canShowThumb ? (
-                        <RNImage
-                            source={{
-                                uri: buildApiFileUrl(apiBaseUrl, item.id, 'thumbnail'),
-                                headers: { Authorization: `Bearer ${token}` },
-                            }}
+                    {thumbSource ? (
+                        <Image
+                            source={thumbSource}
+                            placeholder={item.blurhash || undefined}
                             style={{ width: '100%', height: '100%' }}
-                            resizeMode="cover"
+                            contentFit="cover"
+                            cachePolicy="disk"
+                            transition={200}
                             onError={handleThumbError}
                         />
                     ) : (
@@ -227,6 +240,7 @@ function arePropsEqual(prev: FileListItemProps, next: FileListItemProps): boolea
         prev.item.file_count === next.item.file_count &&
         prev.item.total_file_count === next.item.total_file_count &&
         prev.item.folder_count === next.item.folder_count &&
+        prev.item.blurhash === next.item.blurhash &&
         prev.theme === next.theme &&
         prev.isDark === next.isDark &&
         prev.token === next.token &&
@@ -235,3 +249,4 @@ function arePropsEqual(prev: FileListItemProps, next: FileListItemProps): boolea
 }
 
 export default memo(FileListItem, arePropsEqual);
+

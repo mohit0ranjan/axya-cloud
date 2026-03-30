@@ -7,6 +7,7 @@ import { API_URL as API_BASE } from '../../../lib/urls';
 import { ShareHeader } from '../../../components/share/ShareHeader';
 import { ShareCard } from '../../../components/share/ShareCard';
 import { usePreviewWarmup } from '../../../components/share/usePreviewWarmup';
+import { ErrorBoundary } from '../../../components/ErrorBoundary';
 import { Lock, EyeOff, Search, FolderOpen, ChevronDown, ChevronRight } from 'lucide-react';
 
 const FileGrid = dynamic(
@@ -1044,18 +1045,20 @@ export default function ShareV2Client({ slug }: { slug: string }) {
                     )}
 
                     {section.files.length > 0 && (
-                      <FileGrid
-                        files={section.files}
-                        share={share as ShareMeta}
-                        onPreview={(file) => openImageModal(file)}
-                        onDownload={(file) => handleDownloadItem(file)}
-                        ticketMap={ticketLoadingMap}
-                        previewUrlMap={previewUrlMap}
-                        onLoadThumbnail={handleLoadThumbnail}
-                        onEndReached={() => {
-                          if (section.page?.hasMore && !section.loading) void loadSection(key, false);
-                        }}
-                      />
+                      <ErrorBoundary fallbackMessage="Failed to load file grid. Please refresh the page.">
+                        <FileGrid
+                          files={section.files}
+                          share={share as ShareMeta}
+                          onPreview={(file) => openImageModal(file)}
+                          onDownload={(file) => handleDownloadItem(file)}
+                          ticketMap={ticketLoadingMap}
+                          previewUrlMap={previewUrlMap}
+                          onLoadThumbnail={handleLoadThumbnail}
+                          onEndReached={() => {
+                            if (section.page?.hasMore && !section.loading) void loadSection(key, false);
+                          }}
+                        />
+                      </ErrorBoundary>
                     )}
 
                     {!section.loading && section.files.length === 0 && section.folders.length === 0 && (
@@ -1075,37 +1078,45 @@ export default function ShareV2Client({ slug }: { slug: string }) {
         )}
       </main>
 
-      <PreviewModal
-        isOpen={imageModal.open}
-        onClose={() => setImageModal({ open: false, items: [], index: 0 })}
-        files={imageModal.items}
-        currentIndex={imageModal.index}
-        onNext={() => handleImageNav(1)}
-        onPrev={() => handleImageNav(-1)}
-        onDownload={handleDownloadItem}
-        onShare={handleShareItem}
-        share={share as ShareMeta}
-        previewUrlMap={previewUrlMap}
-        previewErrors={previewErrorMap}
-        onPreviewMediaError={(file) => {
-          setPreviewErrorMap((curr) => ({
-            ...curr,
-            [file.id]: 'Preview session may have expired. Please retry preview.',
-          }));
-        }}
-        onLoadPreview={async (file) => {
-          if (!supportsInlinePreview(file)) return;
-          setPreviewErrorMap((curr) => ({ ...curr, [file.id]: '' }));
-          const url = await getTicketUrl(file.id, 'inline');
-          if (!url) {
+      <ErrorBoundary fallbackMessage="Failed to load preview modal. Please refresh the page.">
+        <PreviewModal
+          isOpen={imageModal.open}
+          onClose={() => setImageModal({ open: false, items: [], index: 0 })}
+          files={imageModal.items}
+          currentIndex={imageModal.index}
+          onNext={() => handleImageNav(1)}
+          onPrev={() => handleImageNav(-1)}
+          onDownload={handleDownloadItem}
+          onShare={handleShareItem}
+          share={share as ShareMeta}
+          previewUrlMap={previewUrlMap}
+          previewErrors={previewErrorMap}
+          onPreviewMediaError={(file) => {
+            // Clear stale preview URLs so retry fetches fresh tickets
+            setPreviewUrlMap((curr) => {
+              const next = { ...curr };
+              delete next[`${file.id}:inline`];
+              return next;
+            });
             setPreviewErrorMap((curr) => ({
               ...curr,
-              [file.id]: curr[file.id] || 'Preview temporarily unavailable for this file.',
+              [file.id]: 'Preview failed to load. Please retry.',
             }));
-            return;
-          }
-        }}
-      />
+          }}
+          onLoadPreview={async (file) => {
+            if (!supportsInlinePreview(file)) return;
+            setPreviewErrorMap((curr) => ({ ...curr, [file.id]: '' }));
+            const url = await getTicketUrl(file.id, 'inline');
+            if (!url) {
+              setPreviewErrorMap((curr) => ({
+                ...curr,
+                [file.id]: curr[file.id] || 'Preview temporarily unavailable for this file.',
+              }));
+              return;
+            }
+          }}
+        />
+      </ErrorBoundary>
     </div>
   );
 }

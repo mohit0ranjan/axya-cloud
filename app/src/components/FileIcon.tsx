@@ -3,8 +3,20 @@ import { View, StyleSheet } from 'react-native';
 import { Image } from './AppImage';
 import { Folder, Image as ImageIcon, FileText, Film, Music, Archive } from 'lucide-react-native';
 import { buildApiFileUrl } from '../utils/fileSafety';
+import { useServerStatus } from '../context/ServerStatusContext';
 
-const failedThumbnailIds = new Set<string>();
+const failedThumbnailIds = new Map<string, number>();
+const THUMB_RETRY_AFTER_MS = 60_000; // retry failed thumbnails after 60s
+
+const isThumbBlacklisted = (id: string): boolean => {
+    const failedAt = failedThumbnailIds.get(id);
+    if (!failedAt) return false;
+    if (Date.now() - failedAt > THUMB_RETRY_AFTER_MS) {
+        failedThumbnailIds.delete(id);
+        return false;
+    }
+    return true;
+};
 
 export function getIconConfig(mime: string, themeColors: any) {
     if (!mime || mime === 'inode/directory') return { color: themeColors.primary, bg: 'transparent', Icon: Folder };
@@ -17,13 +29,14 @@ export function getIconConfig(mime: string, themeColors: any) {
 }
 
 export const FileIcon = ({ item = {}, size = 46, token, apiBase, themeColors = { primary: '#4B6EF5' }, style }: any) => {
+    const { isWaking } = useServerStatus();
     const itemId = String(item?.id || '');
-    const [imgError, setImgError] = useState(itemId ? failedThumbnailIds.has(itemId) : false);
+    const [imgError, setImgError] = useState(itemId ? isThumbBlacklisted(itemId) : false);
 
     const isFolder = item?.result_type === 'folder' || item?.mime_type === 'inode/directory';
     const mimeType = String(item?.mime_type || '').toLowerCase();
     const canPreviewThumb = mimeType.startsWith('image/') || mimeType.startsWith('video/') || mimeType === 'application/pdf';
-    const canLoadThumb = canPreviewThumb && !isFolder && !!token && !!apiBase && !!itemId && !imgError;
+    const canLoadThumb = canPreviewThumb && !isFolder && !!token && !!apiBase && !!itemId && !imgError && !isWaking;
 
     const { color, bg, Icon } = getIconConfig(item?.mime_type || '', themeColors);
 
@@ -44,7 +57,7 @@ export const FileIcon = ({ item = {}, size = 46, token, apiBase, themeColors = {
                     cachePolicy="disk"
                     transition={200}
                     onError={() => {
-                        if (itemId) failedThumbnailIds.add(itemId);
+                        if (itemId) failedThumbnailIds.set(itemId, Date.now());
                         setImgError(true);
                     }}
                 />

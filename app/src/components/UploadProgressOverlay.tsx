@@ -7,6 +7,7 @@ import {
     ChevronUp, ChevronDown, CheckCircle2, AlertTriangle, X
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUpload } from '../context/UploadContext';
 import UploadProgress from './UploadProgress';
 import { theme as staticTheme } from '../ui/theme';
@@ -29,6 +30,7 @@ function formatSpeed(bytesPerSecond: number, isIdle: boolean): string {
 
 function UploadProgressOverlay() {
     const navigation = useNavigation<any>();
+    const insets = useSafeAreaInsets();
     const { theme } = useTheme();
     const {
         tasks,
@@ -72,7 +74,7 @@ function UploadProgressOverlay() {
         bannerTitle = 'Uploads complete';
         bannerIcon = <CheckCircle2 color={theme.colors.success} size={18} />;
     } else {
-        bannerTitle = `Uploading ${activeCount} item${activeCount > 1 ? 's' : ''}`;
+        bannerTitle = `Uploading ${activeCount} item${activeCount > 1 ? 's' : ''} · ${overallProgress}% · ${formatSpeed(avgUploadSpeedBps, isIdle)}`;
     }
 
     const expandedHeight = Math.min(
@@ -128,7 +130,7 @@ function UploadProgressOverlay() {
     const s = React.useMemo(() => StyleSheet.create({
         container: {
             position: 'absolute',
-            bottom: 90,
+            bottom: Math.max(insets.bottom, 0) + 70,
             left: staticTheme.spacing.lg,
             right: staticTheme.spacing.lg,
             backgroundColor: theme.colors.card,
@@ -262,7 +264,7 @@ function UploadProgressOverlay() {
             color: theme.colors.textBody,
             fontWeight: '500',
         },
-    }), [theme]);
+    }), [theme, insets.bottom]);
 
     const StatPill = React.memo(function StatPill({
         label, value, color
@@ -284,7 +286,7 @@ function UploadProgressOverlay() {
             <View style={s.bannerRow}>
                 <View style={s.bannerLeft}>
                     {bannerIcon}
-                    <Text style={s.bannerTitle}>{bannerTitle}</Text>
+                    <Text style={s.bannerTitle} numberOfLines={1}>{bannerTitle}</Text>
                 </View>
                 <View style={s.bannerRight}>
                     <TouchableOpacity style={s.chevronBox} onPress={toggleExpand}>

@@ -1272,20 +1272,63 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
             if (totalSize > MAX_THUMBNAIL_BYTES) {
                 return sendApiError(res, 400, 'thumbnail_unavailable', 'File too large for thumbnail.', { retryable: false });
             }
+
+            // ✅ Check disk cache first to avoid re-downloading from Telegram (using app-wide cache)
+            const SHARE_THUMB_CACHE_DIR = path.join(os.tmpdir(), 'axya_thumbs');
+            const SHARE_THUMB_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+            try { fs.mkdirSync(SHARE_THUMB_CACHE_DIR, { recursive: true }); } catch { /* best effort */ }
+
+            // Check primary ID or fallback generic variant
+            const thumbCandidates = [
+                path.join(SHARE_THUMB_CACHE_DIR, `${item.file_id || item.id}_480.webp`),
+                path.join(SHARE_THUMB_CACHE_DIR, `${item.file_id || item.id}_1080.webp`),
+                path.join(SHARE_THUMB_CACHE_DIR, `${item.file_id || item.id}.webp`),
+            ];
+
             try {
-                // Pipe stream through Sharp
+                for (const thumbCacheFile of thumbCandidates) {
+                    if (fs.existsSync(thumbCacheFile)) {
+                        const stat = fs.statSync(thumbCacheFile);
+                        if (stat.size > 0 && (Date.now() - stat.mtimeMs) < SHARE_THUMB_TTL_MS) {
+                            res.setHeader('Content-Type', 'image/webp');
+                            res.setHeader('X-Cache', 'HIT');
+                            res.setHeader('Content-Length', String(stat.size));
+                            return fs.createReadStream(thumbCacheFile).pipe(res);
+                        }
+                    }
+                }
+            } catch { /* cache miss, proceed normally */ }
+
+            try {
+                // Pipe stream through Sharp — quality bumped from 50→75 for better clarity
                 const transformer = sharp({ failOnError: false })
                     .resize(480, 480, { fit: 'inside', withoutEnlargement: true })
-                    .toFormat('webp', { quality: 50, effort: 3 });
+                    .toFormat('webp', { quality: 75, effort: 3 });
 
                 // We need to set a different content type for Thumbnails (WebP) and drop Content-Length since Sharp compresses it dynamically
                 res.setHeader('Content-Type', 'image/webp');
                 res.removeHeader('Content-Length');
                 res.removeHeader('Content-Range');
+                res.setHeader('X-Cache', 'MISS');
                 if (res.statusCode === 206) res.status(200);
 
+                const cacheFileToWrite = thumbCandidates[0]; // Save to the expected schema
+
+                // Collect the transformed output to save to cache, then write to response
+                const chunks: Buffer[] = [];
                 const nodeStream = require('stream').Readable.from(stream);
-                nodeStream.pipe(transformer).pipe(res);
+                const transformed = nodeStream.pipe(transformer);
+                transformed.on('data', (chunk: Buffer) => { chunks.push(chunk); });
+                transformed.on('end', () => {
+                    // Best-effort cache write
+                    try {
+                        const fullBuffer = Buffer.concat(chunks);
+                        if (fullBuffer.length > 0) {
+                            fs.writeFileSync(cacheFileToWrite, fullBuffer);
+                        }
+                    } catch { /* best effort */ }
+                });
+                transformed.pipe(res);
                 return;
             } catch (sharpErr: any) {
                 logger.warn(
@@ -1373,12 +1416,13 @@ const runAsyncZipJob = async (jobId: string, share: ShareLinkV2Row, items: Share
     try {
         await new Promise<void>(async (resolve, reject) => {
             const output = fs.createWriteStream(tmpPath, { flags: 'w' });
-            const archive = archiver('zip', { zlib: { level: 9 } });
+            const archive = archiver('zip', { zlib: { level: 9 }, highWaterMark: 16384 }); // 16KB backpressure limit
             let ended = false;
 
             const fail = (err: unknown) => {
                 if (ended) return;
                 ended = true;
+                archive.abort();
                 reject(err);
             };
             const done = () => {
@@ -1390,6 +1434,7 @@ const runAsyncZipJob = async (jobId: string, share: ShareLinkV2Row, items: Share
             output.on('close', done);
             output.on('error', fail);
             archive.on('error', fail);
+            archive.on('warning', (w) => logger.warn('share-zip-warning', w?.message));
             archive.pipe(output);
 
             try {
@@ -1487,7 +1532,8 @@ export const downloadAllShareZipV2 = async (req: Request, res: Response) => {
         req.socket.setTimeout(10 * 60 * 1000);
         req.socket.on('timeout', () => req.destroy(new Error('zip_stream_timeout')));
 
-        const archive = archiver('zip', { zlib: { level: 9 } });
+        const archive = archiver('zip', { zlib: { level: 9 }, highWaterMark: 16384 });
+        archive.on('warning', (w) => logger.warn('share-zip-warning', w?.message));
         archive.on('error', () => {
             if (!res.headersSent) {
                 sendApiError(res, 500, 'internal_error', 'Failed to build ZIP.', { retryable: true });
@@ -1497,17 +1543,22 @@ export const downloadAllShareZipV2 = async (req: Request, res: Response) => {
         });
         archive.pipe(res);
 
-        const appended = await addItemsToArchive(share, items, archive);
-        if (appended === 0) {
-            if (!res.headersSent) {
-                return sendApiError(res, 404, 'telegram_message_not_found', 'No downloadable files found.', { retryable: false });
+        try {
+            const appended = await addItemsToArchive(share, items, archive);
+            if (appended === 0) {
+                if (!res.headersSent) {
+                    return sendApiError(res, 404, 'telegram_message_not_found', 'No downloadable files found.', { retryable: false });
+                }
+                archive.abort();
+                return;
             }
-            archive.abort();
-            return;
-        }
 
-        await logShareV2Event({ shareId: share.id, eventType: 'download_zip', statusCode: 200, meta: { fileCount: appended, async: false } });
-        await archive.finalize();
+            await logShareV2Event({ shareId: share.id, eventType: 'download_zip', statusCode: 200, meta: { fileCount: appended, async: false } });
+            await archive.finalize();
+        } catch (err) {
+            archive.abort();
+            throw err;
+        }
     } catch {
         if (res.headersSent) {
             req.destroy();

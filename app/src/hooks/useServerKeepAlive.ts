@@ -10,6 +10,8 @@
 import { useEffect, useRef } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import apiClient from '../services/apiClient';
+import { uploadManager } from '../services/UploadManager';
+import { serverReadiness } from '../services/serverReadiness';
 
 const PING_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -19,6 +21,11 @@ export function useServerKeepAlive() {
     const pingInFlightRef = useRef(false);
 
     const ping = async () => {
+        const stats = uploadManager.getStats();
+        if (stats.activeCount > 0 || serverReadiness.isWakeInProgress()) {
+            return;
+        }
+
         if (pingInFlightRef.current) return;
         pingInFlightRef.current = true;
         try {

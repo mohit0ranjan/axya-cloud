@@ -418,6 +418,35 @@ export const initSchema = async () => {
     `CREATE TRIGGER trg_user_storage_counters
      AFTER INSERT OR DELETE OR UPDATE OF is_trashed, file_size ON files
      FOR EACH ROW EXECUTE FUNCTION update_user_storage_counters()`,
+    // ✅ FIX: Change share_links_v2 FKs from ON DELETE SET NULL → ON DELETE CASCADE
+    // SET NULL violates the share_links_v2_root_xor CHECK constraint (both become NULL).
+    // CASCADE is correct: if a file/folder is permanently deleted, its share links should go too.
+    `DO $$
+     BEGIN
+       IF EXISTS (
+         SELECT 1 FROM information_schema.table_constraints
+         WHERE constraint_name = 'share_links_v2_root_file_id_fkey'
+           AND table_name = 'share_links_v2'
+       ) THEN
+         ALTER TABLE share_links_v2 DROP CONSTRAINT share_links_v2_root_file_id_fkey;
+         ALTER TABLE share_links_v2
+           ADD CONSTRAINT share_links_v2_root_file_id_fkey
+           FOREIGN KEY (root_file_id) REFERENCES files(id) ON DELETE CASCADE;
+       END IF;
+     END $$`,
+    `DO $$
+     BEGIN
+       IF EXISTS (
+         SELECT 1 FROM information_schema.table_constraints
+         WHERE constraint_name = 'share_links_v2_root_folder_id_fkey'
+           AND table_name = 'share_links_v2'
+       ) THEN
+         ALTER TABLE share_links_v2 DROP CONSTRAINT share_links_v2_root_folder_id_fkey;
+         ALTER TABLE share_links_v2
+           ADD CONSTRAINT share_links_v2_root_folder_id_fkey
+           FOREIGN KEY (root_folder_id) REFERENCES folders(id) ON DELETE CASCADE;
+       END IF;
+     END $$`,
   ];
 
   const cleanupLegacy = [

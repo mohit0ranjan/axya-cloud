@@ -100,17 +100,24 @@ export default function TrashScreen({ navigation }: any) {
                     style: 'destructive',
                     onPress: async () => {
                         setPendingActionId(item.id);
+                        setLoadError('');
                         try {
                             const res = await apiClient.post('/files/bulk', { ids: [item.id], action: 'delete' });
                             if (!res.data?.success) throw new Error(res.data?.error || 'Could not delete file');
                             setFiles((prev) => prev.filter((file) => file.id !== item.id));
                             syncAfterFileMutation({ clearCache: true });
-                            await loadTrash();
                             showToast('File deleted permanently');
                         } catch (err: any) {
-                            const message = err?.response?.data?.error || err?.message || 'Could not delete file';
-                            setLoadError(message);
-                            showToast(message, 'error');
+                            const serverMsg = err?.response?.data?.message || err?.response?.data?.error || err?.message || '';
+                            const isConstraintError = serverMsg.includes('constraint') || serverMsg.includes('share data');
+                            const displayMsg = isConstraintError
+                                ? 'This file has linked share data that was cleaned up. Please try again.'
+                                : serverMsg || 'Could not delete file. Please retry.';
+
+                            setLoadError(displayMsg);
+                            showToast(isConstraintError ? 'Share data cleaned up — please retry' : displayMsg, 'error');
+
+                            // Always refresh the list to show accurate state
                             await loadTrash();
                         } finally {
                             setPendingActionId(null);
@@ -139,24 +146,29 @@ export default function TrashScreen({ navigation }: any) {
                             if (res.data?.success) {
                                 setFiles([]);
                                 syncAfterFileMutation({ clearCache: true });
-                                await loadTrash();
                                 showToast(res.data.message || 'Trash emptied');
                             } else {
                                 throw new Error(res.data?.error || 'Could not empty trash completely');
                             }
                         } catch (err: any) {
-                            const message = err?.response?.data?.error || err?.message || 'Could not empty trash completely';
-                            setLoadError(message);
-                            showToast(message, 'error');
-                            await loadTrash();
+                            const serverMsg = err?.response?.data?.message || err?.response?.data?.error || err?.message || '';
+                            const isConstraintError = serverMsg.includes('constraint') || serverMsg.includes('share data');
+                            const displayMsg = isConstraintError
+                                ? 'Some files had linked shares that were cleaned up. Please try emptying trash again.'
+                                : serverMsg || 'Could not empty trash. Please retry.';
+
+                            setLoadError(displayMsg);
+                            showToast(isConstraintError ? 'Share data cleaned — retry to finish' : displayMsg, 'error');
                         } finally {
+                            // Always refresh to show accurate state
+                            await loadTrash();
                             setIsEmptying(false);
                         }
                     },
                 },
             ]
         );
-    }, [files.length, isEmptying, loadTrash, showToast]);
+    }, [files.length, isBusy, loadTrash, showToast]);
 
     const handleBack = useCallback(() => {
         if (navigation?.canGoBack?.()) { navigation.goBack(); return; }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { InteractionManager, Platform } from 'react-native';
 import { getCachedPreviewAssetUri, resolvePreviewAssetUri, warmPreviewAssetUri } from '../utils/previewCache';
+import { useServerStatus } from '../context/ServerStatusContext';
 
 type PreviewAssetOptions = {
     baseUrl: string;
@@ -53,6 +54,7 @@ export function usePreviewAssetCache({
     shouldLoad,
     thumbWidth,
 }: PreviewAssetOptions) {
+    const { isWaking } = useServerStatus();
     const headers = useMemo(() => ({ Authorization: `Bearer ${jwt}` }), [jwt]);
     const previewIsImage = isImageMime(mimeType);
     const [cacheVersion, setCacheVersion] = useState(0);
@@ -62,15 +64,19 @@ export function usePreviewAssetCache({
         resolvePreviewAssetUri(baseUrl, fileId, 'thumbnail', { width: thumbWidth, mimeType: 'image/webp' })
     ), [baseUrl, cacheVersion, fileId, retryNonce, thumbWidth]);
 
-    const activeUri = useMemo(() => (
-        isCurrent
-            ? (getCachedPreviewAssetUri(baseUrl, fileId, 'download', { mimeType: String(mimeType || '') }) ||
-                resolvePreviewAssetUri(baseUrl, fileId, 'download', { mimeType: String(mimeType || '') }))
-            : thumbUri
-    ), [baseUrl, fileId, isCurrent, mimeType, retryNonce, thumbUri, cacheVersion]);
+    const previewWidth = Platform.OS === 'web' ? 2048 : 1080;
+    const activeUri = useMemo(() => {
+        if (!isCurrent) return thumbUri;
+        if (previewIsImage) {
+            return getCachedPreviewAssetUri(baseUrl, fileId, 'thumbnail', { width: previewWidth, mimeType: 'image/webp' }) ||
+                resolvePreviewAssetUri(baseUrl, fileId, 'thumbnail', { width: previewWidth, mimeType: 'image/webp' });
+        }
+        return getCachedPreviewAssetUri(baseUrl, fileId, 'download', { mimeType: String(mimeType || '') }) ||
+            resolvePreviewAssetUri(baseUrl, fileId, 'download', { mimeType: String(mimeType || '') });
+    }, [baseUrl, fileId, isCurrent, mimeType, previewIsImage, previewWidth, thumbUri, cacheVersion]);
 
     useEffect(() => {
-        if (!shouldLoad || !jwt) return;
+        if (!shouldLoad || !jwt || isWaking) return;
 
         let cancelled = false;
         const cancelWork = getLowPriorityHandle(() => {
@@ -106,7 +112,7 @@ export function usePreviewAssetCache({
             cancelled = true;
             cancelWork();
         };
-    }, [baseUrl, fileId, fileSizeBytes, isCurrent, jwt, mimeType, previewIsImage, retryNonce, shouldLoad, thumbWidth]);
+    }, [baseUrl, fileId, fileSizeBytes, isCurrent, isWaking, jwt, mimeType, previewIsImage, retryNonce, shouldLoad, thumbWidth]);
 
     return useMemo(() => ({
         headers,

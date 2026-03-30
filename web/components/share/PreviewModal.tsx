@@ -1,6 +1,6 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { SharedFile, ShareMeta } from './types';
-import { X, ChevronLeft, ChevronRight, Download, Info, Share2 } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, Download, Info, Share2, RefreshCw } from 'lucide-react';
 import { formatSize, getFileLabel, isImage, isPdf, isVideo, supportsInlinePreview } from '../../lib/utils';
 
 interface PreviewModalProps {
@@ -22,6 +22,8 @@ interface PreviewModalProps {
 export function PreviewModal({
     isOpen, onClose, files, currentIndex, onNext, onPrev, onDownload, onShare, share, previewUrlMap, previewErrors, onLoadPreview, onPreviewMediaError
 }: PreviewModalProps) {
+    const [imageLoaded, setImageLoaded] = useState(false);
+    const [animateIn, setAnimateIn] = useState(false);
 
     // Close on Escape key
     useEffect(() => {
@@ -38,20 +40,43 @@ export function PreviewModal({
 
     useEffect(() => {
         if (isOpen && currentFile) {
+            setImageLoaded(false);
             onLoadPreview(currentFile);
         }
     }, [isOpen, currentFile, onLoadPreview]);
 
+    // Animate modal entrance
+    useEffect(() => {
+        if (isOpen) {
+            requestAnimationFrame(() => setAnimateIn(true));
+        } else {
+            setAnimateIn(false);
+        }
+    }, [isOpen]);
+
+    // Reset image loaded state when changing files
+    useEffect(() => {
+        setImageLoaded(false);
+    }, [currentIndex]);
+
+    const handleRetry = useCallback(() => {
+        if (currentFile) {
+            setImageLoaded(false);
+            onLoadPreview(currentFile);
+        }
+    }, [currentFile, onLoadPreview]);
+
     if (!isOpen || !files.length || currentIndex < 0 || currentIndex >= files.length) return null;
 
     const previewUrl = previewUrlMap[`${currentFile.id}:inline`];
+    const thumbUrl = previewUrlMap[`${currentFile.id}:thumbnail`];
     const previewError = previewErrors?.[currentFile.id] || '';
     const canInlinePreview = supportsInlinePreview(currentFile);
 
     const renderContent = () => {
         if (!canInlinePreview) {
             return (
-                <div className="bg-white p-12 rounded-2xl shadow-xl flex flex-col items-center gap-4 text-center">
+                <div className="bg-white p-12 rounded-2xl shadow-xl flex flex-col items-center gap-4 text-center animate-fadeInUp">
                     <div className="w-20 h-20 bg-brand-light rounded-2xl flex items-center justify-center text-brand-start">
                         <Info className="w-10 h-10" />
                     </div>
@@ -67,7 +92,7 @@ export function PreviewModal({
 
         if (previewError) {
             return (
-                <div className="bg-white p-12 rounded-2xl shadow-xl flex flex-col items-center gap-4 text-center">
+                <div className="bg-white p-12 rounded-2xl shadow-xl flex flex-col items-center gap-4 text-center animate-fadeInUp">
                     <div className="w-20 h-20 bg-red-50 rounded-2xl flex items-center justify-center text-red-500">
                         <Info className="w-10 h-10" />
                     </div>
@@ -75,9 +100,10 @@ export function PreviewModal({
                         <h3 className="text-xl font-semibold text-brand-text mb-1">Preview unavailable</h3>
                         <p className="text-brand-muted max-w-sm mx-auto">{previewError}</p>
                         <button
-                            onClick={() => onLoadPreview(currentFile)}
-                            className="mt-5 inline-flex items-center justify-center rounded-lg bg-brand-start px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                            onClick={handleRetry}
+                            className="mt-5 inline-flex items-center gap-2 justify-center rounded-lg bg-brand-start px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity"
                         >
+                            <RefreshCw className="w-4 h-4" />
                             Retry preview
                         </button>
                     </div>
@@ -88,20 +114,56 @@ export function PreviewModal({
         if (!previewUrl) {
             return (
                 <div className="flex flex-col items-center justify-center p-12">
-                    <div className="w-12 h-12 border-4 border-brand-start border-t-white rounded-full animate-spin shadow-lg mb-6" />
-                    <p className="text-white font-medium drop-shadow-md">Loading secure preview...</p>
+                    {/* Progressive: show thumbnail blurred while full loads */}
+                    {thumbUrl ? (
+                        <div className="relative max-h-[85vh] max-w-[90vw] rounded-xl overflow-hidden shadow-2xl">
+                            <img
+                                src={thumbUrl}
+                                alt={getFileLabel(currentFile)}
+                                className="max-h-[85vh] max-w-[90vw] object-contain blur-md scale-105 brightness-90"
+                            />
+                            <div className="absolute inset-0 flex items-center justify-center">
+                                <div className="w-10 h-10 border-3 border-white/80 border-t-transparent rounded-full animate-spin" />
+                            </div>
+                        </div>
+                    ) : (
+                        <>
+                            {/* Skeleton placeholder with shimmer */}
+                            <div className="relative w-80 h-60 rounded-xl overflow-hidden bg-neutral-800/50 shadow-2xl">
+                                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent animate-shimmer bg-[length:200%_100%]" />
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                    <div className="w-10 h-10 border-3 border-white/60 border-t-transparent rounded-full animate-spin" />
+                                </div>
+                            </div>
+                            <p className="text-white/60 font-medium mt-4 text-sm">Loading preview…</p>
+                        </>
+                    )}
                 </div>
             );
         }
 
         if (isImage(currentFile)) {
             return (
-                <img
-                    src={previewUrl}
-                    alt={getFileLabel(currentFile)}
-                    className="max-h-[85vh] max-w-[90vw] object-contain rounded-xl shadow-2xl transition-transform duration-300"
-                    onError={() => onPreviewMediaError?.(currentFile)}
-                />
+                <div className="relative">
+                    {/* Blurred thumbnail underneath for progressive loading */}
+                    {thumbUrl && !imageLoaded && (
+                        <img
+                            src={thumbUrl}
+                            alt=""
+                            aria-hidden
+                            className="max-h-[85vh] max-w-[90vw] object-contain rounded-xl blur-md scale-105 brightness-90"
+                        />
+                    )}
+                    <img
+                        src={previewUrl}
+                        alt={getFileLabel(currentFile)}
+                        className={`max-h-[85vh] max-w-[90vw] object-contain rounded-xl shadow-2xl transition-all duration-500 ${
+                            thumbUrl && !imageLoaded ? 'absolute inset-0' : ''
+                        } ${imageLoaded ? 'opacity-100 blur-0' : thumbUrl ? 'opacity-0' : 'opacity-0 blur-sm'}`}
+                        onLoad={() => setImageLoaded(true)}
+                        onError={() => onPreviewMediaError?.(currentFile)}
+                    />
+                </div>
             );
         }
         if (isVideo(currentFile)) {
@@ -111,6 +173,7 @@ export function PreviewModal({
                     controls
                     className="max-h-[85vh] max-w-[90vw] rounded-xl shadow-2xl"
                     autoPlay
+                    poster={thumbUrl || undefined}
                     onError={() => onPreviewMediaError?.(currentFile)}
                 />
             );
@@ -141,18 +204,19 @@ export function PreviewModal({
         <div className="fixed inset-0 z-50 flex items-center justify-center">
             {/* Backdrop */}
             <div
-                className="absolute inset-0 bg-neutral-900/90 backdrop-blur-md transition-opacity"
+                className={`absolute inset-0 bg-neutral-900/90 backdrop-blur-md transition-opacity duration-300 ${animateIn ? 'opacity-100' : 'opacity-0'}`}
                 onClick={onClose}
             />
 
             {/* Header Bar */}
-            <div className="absolute top-0 left-0 right-0 h-20 bg-gradient-to-b from-black/50 to-transparent flex items-center justify-between px-6 z-10 transition-transform">
+            <div className={`absolute top-0 left-0 right-0 h-20 bg-gradient-to-b from-black/50 to-transparent flex items-center justify-between px-6 z-10 transition-all duration-300 ${animateIn ? 'translate-y-0 opacity-100' : '-translate-y-4 opacity-0'}`}>
                 <div className="flex flex-col text-white">
                     <span className="font-medium text-lg truncate max-w-[60vw]" title={getFileLabel(currentFile)}>
                         {getFileLabel(currentFile)}
                     </span>
                     <span className="text-sm text-white/70">
                         {formatSize(currentFile.size_bytes)}
+                        {files.length > 1 && ` · ${currentIndex + 1} of ${files.length}`}
                     </span>
                 </div>
 
@@ -206,9 +270,27 @@ export function PreviewModal({
             )}
 
             {/* Main Content Area */}
-            <div className="relative z-0 max-h-screen max-w-screen p-4 flex items-center justify-center">
+            <div className={`relative z-0 max-h-screen max-w-screen p-4 flex items-center justify-center transition-all duration-300 ${animateIn ? 'scale-100 opacity-100' : 'scale-95 opacity-0'}`}>
                 {renderContent()}
             </div>
+
+            {/* CSS animations */}
+            <style jsx>{`
+                @keyframes shimmer {
+                    0% { background-position: 200% 0; }
+                    100% { background-position: -200% 0; }
+                }
+                .animate-shimmer {
+                    animation: shimmer 1.5s ease-in-out infinite;
+                }
+                @keyframes fadeInUp {
+                    from { opacity: 0; transform: translateY(12px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+                .animate-fadeInUp {
+                    animation: fadeInUp 0.3s ease-out;
+                }
+            `}</style>
         </div>
     );
 }

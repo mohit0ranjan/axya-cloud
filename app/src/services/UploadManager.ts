@@ -26,6 +26,7 @@ import { Buffer } from 'buffer';
 import apiClient, { uploadClient } from './apiClient';
 import { syncAfterFileMutation } from './fileStateSync';
 import { sanitizeFileName } from '../utils/fileSafety';
+import { serverReadiness } from './serverReadiness';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -167,7 +168,7 @@ class UploadManager {
 
     private static VALID_TRANSITIONS: Record<UploadStatus, UploadStatus[]> = {
         queued: ['uploading', 'paused', 'cancelled'],
-        uploading: ['completed', 'waiting_retry', 'failed', 'paused', 'cancelled'],
+        uploading: ['completed', 'waiting_retry', 'failed', 'paused', 'cancelled', 'queued'],
         waiting_retry: ['retrying', 'cancelled', 'paused'],
         retrying: ['uploading', 'cancelled', 'paused'],
         paused: ['queued'],
@@ -212,6 +213,11 @@ class UploadManager {
     private pendingNotifyTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor() {
+        serverReadiness.subscribe((state) => {
+            if (state.phase !== 'ready') return;
+            if (!this.tasks.some((task) => task.status === 'queued' || task.status === 'retrying')) return;
+            void this.processQueue();
+        });
         this.loadQueue();
     }
 
@@ -270,7 +276,10 @@ class UploadManager {
         if (candidates.length === 0) return;
 
         try {
-            const response = await apiClient.get('/files/upload/sessions', { _maxRetries: 0 } as any);
+            const response = await apiClient.get('/files/upload/sessions', {
+                _maxRetries: 0,
+                timeout: 60_000,
+            } as any);
             const sessions = Array.isArray(response?.data?.sessions) ? response.data.sessions : [];
             const byUploadId = new Map<string, any>();
             for (const session of sessions) {
@@ -348,7 +357,7 @@ class UploadManager {
         const retryable = (error?.response?.data?.retryable);
 
         if (retryable === false) return true;
-        if (code === 'TELEGRAM_SESSION_EXPIRED' || code === 'SCHEMA_NOT_READY') return true;
+        if (code === 'TELEGRAM_SESSION_EXPIRED') return true;
         if (status === 400 || status === 401 || status === 403 || status === 404 || status === 409 || status === 413 || status === 422) {
             return true;
         }
@@ -359,8 +368,7 @@ class UploadManager {
             || message.includes('unauthorized')
             || message.includes('forbidden')
             || message.includes('quota exceeded')
-            || message.includes('empty file')
-            || message.includes('schema_not_ready');
+            || message.includes('empty file');
     }
 
     private toUserFacingUploadError(error: any): string {
@@ -885,7 +893,18 @@ class UploadManager {
         // This allows up to MAX_CONCURRENT parallel processQueue calls.
         if (this.activeUploads >= this.MAX_CONCURRENT) return;
 
-        const nextTask = this.tasks.find(
+        let nextTask = this.tasks.find(
+            t => t.status === 'queued' || t.status === 'retrying'
+        );
+        if (!nextTask) return;
+
+        const isReady = await serverReadiness.waitUntilReady({ reason: 'upload_queue' });
+        if (!isReady) {
+            // Keep tasks queued while server wakes; user can retry wake-up without losing queue state.
+            return;
+        }
+
+        nextTask = this.tasks.find(
             t => t.status === 'queued' || t.status === 'retrying'
         );
         if (!nextTask) return;
@@ -903,6 +922,7 @@ class UploadManager {
             });
             syncAfterFileMutation();
             this.pruneTerminalTaskHistory();
+            this.scheduleTaskClearing(nextTask, 8000);
         } catch (e: any) {
             const status = nextTask.status as UploadStatus;
 
@@ -1038,6 +1058,7 @@ class UploadManager {
                 const resumeStatus = await apiClient.get(`/files/upload/status/${uploadId}`, {
                     signal: abort.signal,
                     _maxRetries: 0,
+                    timeout: 60_000,
                 } as any);
                 const resumeData = resumeStatus?.data || {};
                 const remoteStatus = String(resumeData.status || '').toLowerCase();
@@ -1262,7 +1283,7 @@ class UploadManager {
                 try {
                     const res = await apiClient.get(
                         `/files/upload/status/${uploadId}`,
-                        { signal: abort.signal, _maxRetries: 0 } as any
+                        { signal: abort.signal, _maxRetries: 0, timeout: 60_000 } as any
                     );
                     const { status, progress: tgProgress, error: tgError, errorCode } = res.data;
 

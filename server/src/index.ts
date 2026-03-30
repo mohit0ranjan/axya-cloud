@@ -315,9 +315,11 @@ app.get('/health', async (req: Request, res: Response) => {
             : schemaState === 'starting'
                 ? 'starting'
                 : 'degraded';
+        const readyForUploads = schemaReady && (deepCheckRequested ? dbState === 'ok' : true);
 
         return res.status(200).json({
             status,
+            readyForUploads,
             uptime: Math.floor(process.uptime()),
             timestamp: requestTimestamp,
             request_id: requestId || null,
@@ -336,6 +338,7 @@ app.get('/health', async (req: Request, res: Response) => {
         // Fail gracefully for cron callers without heavy dependencies.
         return res.status(200).json({
             status: 'degraded',
+            readyForUploads: false,
             uptime: Math.floor(process.uptime() || 0),
             timestamp: requestTimestamp,
             request_id: requestId || null,

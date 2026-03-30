@@ -1,10 +1,10 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Text, ActivityIndicator, StyleSheet, Animated, Platform } from 'react-native';
+import { View, Text, ActivityIndicator, StyleSheet, Animated, Platform, TouchableOpacity } from 'react-native';
 import { Server } from 'lucide-react-native';
 import { useServerStatus } from '../context/ServerStatusContext';
 
 export default function ServerWakingOverlay() {
-    const { isWaking, statusText } = useServerStatus();
+    const { isWaking, statusText, wakeTimedOut, retryWake } = useServerStatus();
     const translateY = useRef(new Animated.Value(-120)).current;
     const opacity = useRef(new Animated.Value(0)).current;
 
@@ -29,8 +29,13 @@ export default function ServerWakingOverlay() {
                     <Server color="#4B6EF5" size={18} />
                 </View>
                 <View style={styles.content}>
-                    <Text style={styles.title}>{statusText}</Text>
-                    <Text style={styles.subtitle}>Render cold start can take ~30s</Text>
+                    <Text style={styles.title}>Waking server... uploads will start shortly</Text>
+                    <Text style={styles.subtitle}>{statusText || 'Render cold start can take ~30s'}</Text>
+                    {wakeTimedOut ? (
+                        <TouchableOpacity onPress={retryWake} style={styles.retryButton} activeOpacity={0.85}>
+                            <Text style={styles.retryText}>Retry wake-up</Text>
+                        </TouchableOpacity>
+                    ) : null}
                 </View>
                 <ActivityIndicator size="small" color="#4B6EF5" style={styles.loader} />
             </View>
@@ -47,7 +52,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         zIndex: 9999,
         elevation: 10,
-        pointerEvents: 'none',
+        pointerEvents: 'box-none',
     },
     card: {
         backgroundColor: '#FFFFFF',
@@ -91,5 +96,20 @@ const styles = StyleSheet.create({
         color: '#8892A4',
         fontWeight: '600',
         marginTop: 1,
-    }
+    },
+    retryButton: {
+        marginTop: 8,
+        alignSelf: 'flex-start',
+        backgroundColor: '#EEF1FD',
+        borderWidth: 1,
+        borderColor: '#C7D2FE',
+        borderRadius: 12,
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+    },
+    retryText: {
+        fontSize: 11,
+        fontWeight: '800',
+        color: '#3652D9',
+    },
 });

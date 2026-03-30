@@ -3,6 +3,7 @@ import { shouldRetry, sleep } from '../utils/retry';
 import { serverStatusManager } from '../context/ServerStatusContext';
 import { logger } from '../utils/logger';
 import { getSecureValue, SECURE_KEYS } from '../utils/secureStorage';
+import { isHealthRequestPath, serverReadiness, SERVER_WAKE_BANNER_TEXT } from './serverReadiness';
 
 import { API_URL as API_BASE } from '../config/urls';
 
@@ -14,6 +15,7 @@ interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
     _maxRetries?: number;
     _startedAt?: number;
     _allowRetry?: boolean;
+    _skipWakeGate?: boolean;
 }
 
 const serializeAxiosRequest = (request: unknown) => {
@@ -47,7 +49,7 @@ export const serializeAxiosError = (error: AxiosError) => ({
 
 const apiClient = axios.create({
     baseURL: API_BASE,
-    timeout: 15_000, // 15s for standard API
+    timeout: 60_000, // 60s to tolerate cold starts and transient wake latency
 });
 
 export const uploadClient = axios.create({
@@ -82,11 +84,27 @@ const injectTokenAndLog = async (config: CustomAxiosRequestConfig) => {
         timeout: config.timeout,
     });
 
+    const shouldGateRequest =
+        config._skipWakeGate !== true
+        && !serverReadiness.shouldAllowRequest(config.url, config.baseURL);
+
+    if (shouldGateRequest) {
+        const ready = await serverReadiness.waitUntilReady({ reason: 'api_request_gate' });
+        if (!ready) {
+            const wakeError: any = new Error('Server wake-up timed out');
+            wakeError.code = 'SERVER_WAKING_TIMEOUT';
+            wakeError.config = config;
+            throw wakeError;
+        }
+    }
+
     // Show server waking UI if a request takes longer than 2 seconds
-    const timer = setTimeout(() => {
-        serverStatusManager.setWaking(true, 'Starting server, please wait...');
-    }, 2000);
-    requestTimers.set(reqId, timer);
+    if (!isHealthRequestPath(config.url, config.baseURL)) {
+        const timer = setTimeout(() => {
+            serverStatusManager.setWaking(true, SERVER_WAKE_BANNER_TEXT);
+        }, 2000);
+        requestTimers.set(reqId, timer);
+    }
 
     return config;
 };
@@ -96,7 +114,9 @@ const clearWakingTimer = (reqId?: string) => {
         clearTimeout(requestTimers.get(reqId));
         requestTimers.delete(reqId);
     }
-    serverStatusManager.setWaking(false);
+    if (!serverReadiness.isWakeInProgress()) {
+        serverStatusManager.setWaking(false);
+    }
 };
 
 const shouldRetryRequestMethod = (config: CustomAxiosRequestConfig): boolean => {
@@ -124,6 +144,12 @@ apiClient.interceptors.response.use(
     async (error: AxiosError): Promise<any> => {
         const config = error.config as CustomAxiosRequestConfig;
         clearWakingTimer(config?.reqId);
+
+        if ((error as any)?.code === 'SERVER_WAKING_TIMEOUT') {
+            serverStatusManager.setWaking(true, 'Server is still waking. Tap retry to keep uploads queued.', true);
+            return Promise.reject(error);
+        }
+
         logger.error('frontend.api', 'request.error', {
             reqId: config?.reqId,
             method: config?.method,
@@ -164,13 +190,15 @@ apiClient.interceptors.response.use(
             const delay = Math.max(baseDelay + jitterMs, retryAfterMs);
             console.warn(`⏳ [API Retry] ${config.url} failed. Retrying in ${delay / 1000}s...`);
 
-            serverStatusManager.setWaking(true, `Retrying connection... (${config._retryCount}/${config._maxRetries})`);
+            serverStatusManager.setWaking(true, `${SERVER_WAKE_BANNER_TEXT} (retry ${config._retryCount}/${config._maxRetries})`);
             await sleep(delay);
 
             return apiClient(config);
         }
 
-        serverStatusManager.setWaking(false);
+        if (!serverReadiness.isWakeInProgress()) {
+            serverStatusManager.setWaking(false);
+        }
         return Promise.reject(error);
     }
 );

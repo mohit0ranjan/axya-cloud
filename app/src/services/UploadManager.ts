@@ -18,6 +18,7 @@
  */
 
 import { File, Paths } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { Platform, AppState, AppStateStatus } from 'react-native';
@@ -141,24 +142,25 @@ async function readFileChunkAsBase64(
         console.warn('[UploadManager] FileHandle read failed, using fetch fallback:', e);
     }
 
-    // Fetch fallback (content:// URIs, web simulator, edge cases)
-    const response = await fetch(uri, {
-        headers: { Range: `bytes=${offset}-${offset + length - 1}` },
+    // Native fallback specifically for content:// URIs on Android
+    // (File API sometimes throws on virtual/content URIs without caching)
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: 'base64',
+        position: offset,
+        length: length,
     });
-    if (!response.ok && response.status !== 206 && response.status !== 200) {
-        throw new Error(`Failed to read file chunk (HTTP ${response.status})`);
-    }
-    const buffer = await response.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    return uint8ArrayToBase64(bytes);
+    return base64;
 }
 
 // ─── UploadManager ────────────────────────────────────────────────────────────
 
 class UploadManager {
     public tasks: UploadTask[] = [];
-    // Keep mobile concurrency low for free-tier stability.
-    private readonly MAX_CONCURRENT = 3;
+    // Adaptive mobile concurrency to keep UX smooth for large batches.
+    private readonly MIN_CONCURRENT = 3;
+    private readonly MAX_CONCURRENT = 5;
+    private readonly INITIAL_ACTIVE_WINDOW = 20;
+    private readonly INITIAL_VISIBLE_PROGRESS = 7;
     private readonly MAX_RETRIES = 3;
     private readonly STREAM_MODE = 'stream';
     private readonly CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB chunks
@@ -191,6 +193,32 @@ class UploadManager {
     private readonly inFlightTaskIds = new Set<string>();
     private readonly perTaskSpeedState = new Map<string, { lastBytes: number; lastTs: number; emaBps: number }>();
     private taskIdCounter = 0;
+
+    private getAdaptiveConcurrency(): number {
+        const nonTerminalCount = this.tasks.filter((task) => !['completed', 'failed', 'cancelled'].includes(task.status)).length;
+        if (nonTerminalCount >= 120) return this.MAX_CONCURRENT;
+        if (nonTerminalCount >= 40) return 4;
+        return this.MIN_CONCURRENT;
+    }
+
+    private getRunnableWindowTaskIds(): Set<string> {
+        const ordered = [...this.tasks].sort((a, b) => {
+            if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+            return a.id.localeCompare(b.id);
+        });
+
+        const runnable = ordered.filter((task) => !['completed', 'failed', 'cancelled'].includes(task.status));
+        const windowed = runnable.slice(0, this.INITIAL_ACTIVE_WINDOW);
+        return new Set(windowed.map((task) => task.id));
+    }
+
+    private scheduleQueuePump() {
+        const target = this.getAdaptiveConcurrency();
+        const missingSlots = Math.max(0, target - this.inFlightTaskIds.size);
+        for (let i = 0; i < missingSlots; i += 1) {
+            void this.processQueue();
+        }
+    }
 
     private static VALID_TRANSITIONS: Record<UploadStatus, UploadStatus[]> = {
         preparing: ['queued', 'uploading', 'paused', 'cancelled'],
@@ -894,16 +922,15 @@ class UploadManager {
         if (newTasks.length === 0) return;
 
         this.tasks.push(...newTasks);
-        // Seed up to MAX_CONCURRENT parallel processors
-        const slotsAvailable = this.MAX_CONCURRENT - this.inFlightTaskIds.size;
+        // Seed processors up to adaptive target concurrency.
+        const slotsAvailable = this.getAdaptiveConcurrency() - this.inFlightTaskIds.size;
         const immediateCount = Math.min(slotsAvailable, newTasks.length);
         for (let i = 0; i < immediateCount; i++) {
             newTasks[i].status = 'preparing';
+            newTasks[i].progress = Math.max(newTasks[i].progress, this.INITIAL_VISIBLE_PROGRESS);
         }
         this.notifyListeners(true);
-        for (let i = 0; i < immediateCount; i++) {
-            this.processQueue();
-        }
+        this.scheduleQueuePump();
     }
 
     public pause(id: string): boolean {
@@ -928,7 +955,7 @@ class UploadManager {
             task.recovered = false;
             this.resetTaskTelemetry(task.id);
             this.notifyListeners(true);
-            this.processQueue();
+            this.scheduleQueuePump();
             return;
         }
 
@@ -946,7 +973,7 @@ class UploadManager {
             task.recovered = false;
             this.resetTaskTelemetry(task.id);
             this.notifyListeners(true);
-            this.processQueue();
+            this.scheduleQueuePump();
         }
     }
 
@@ -963,7 +990,7 @@ class UploadManager {
         }
 
         this.notifyListeners(true);
-        this.processQueue();
+        this.scheduleQueuePump();
     }
 
     public cancelAll() {
@@ -1045,7 +1072,7 @@ class UploadManager {
                 this.resetTaskTelemetry(t.id);
             });
         this.notifyListeners(true);
-        this.processQueue();
+        this.scheduleQueuePump();
     }
 
     // ── Queue Processor ───────────────────────────────────────────────────────
@@ -1091,11 +1118,24 @@ class UploadManager {
     private async processQueue(): Promise<void> {
         // ✅ No boolean lock — use activeUploads count as the sole concurrency gate.
         // This allows up to MAX_CONCURRENT parallel processQueue calls.
-        if (this.inFlightTaskIds.size >= this.MAX_CONCURRENT) return;
+        const targetConcurrency = this.getAdaptiveConcurrency();
+        if (this.inFlightTaskIds.size >= targetConcurrency) return;
+
+        const runnableWindowIds = this.getRunnableWindowTaskIds();
 
         let nextTask = this.tasks.find(
-            t => (t.status === 'preparing' || t.status === 'queued' || t.status === 'retrying') && !this.inFlightTaskIds.has(t.id)
+            t =>
+                (t.status === 'preparing' || t.status === 'queued' || t.status === 'retrying')
+                && !this.inFlightTaskIds.has(t.id)
+                && runnableWindowIds.has(t.id)
         );
+        if (!nextTask) {
+            // Starvation guard: if current window is blocked by paused/retrying tasks,
+            // keep progress moving by allowing the oldest runnable task outside window.
+            nextTask = this.tasks.find(
+                t => (t.status === 'preparing' || t.status === 'queued' || t.status === 'retrying') && !this.inFlightTaskIds.has(t.id)
+            );
+        }
         if (!nextTask) return;
 
         const isReady = await serverReadiness.waitUntilReady({ reason: 'upload_queue' });
@@ -1104,19 +1144,35 @@ class UploadManager {
             return;
         }
 
+        const refreshedWindowIds = this.getRunnableWindowTaskIds();
         nextTask = this.tasks.find(
-            t => (t.status === 'preparing' || t.status === 'queued' || t.status === 'retrying') && !this.inFlightTaskIds.has(t.id)
+            t =>
+                (t.status === 'preparing' || t.status === 'queued' || t.status === 'retrying')
+                && !this.inFlightTaskIds.has(t.id)
+                && refreshedWindowIds.has(t.id)
         );
+        if (!nextTask) {
+            nextTask = this.tasks.find(
+                t => (t.status === 'preparing' || t.status === 'queued' || t.status === 'retrying') && !this.inFlightTaskIds.has(t.id)
+            );
+        }
         if (!nextTask) return;
 
         this.inFlightTaskIds.add(nextTask.id);
 
         if (nextTask.status === 'queued' || nextTask.status === 'preparing') {
-            this.updateTask(nextTask.id, { status: 'preparing', error: undefined });
+            this.updateTask(nextTask.id, {
+                status: 'preparing',
+                error: undefined,
+                progress: Math.max(clampProgress(nextTask.progress), this.INITIAL_VISIBLE_PROGRESS),
+            });
         }
 
         // Immediately mark as uploading so concurrent processQueue calls skip it
-        this.updateTask(nextTask.id, { status: 'uploading' });
+        this.updateTask(nextTask.id, {
+            status: 'uploading',
+            progress: Math.max(clampProgress(nextTask.progress), this.INITIAL_VISIBLE_PROGRESS),
+        });
 
         try {
             await this.performUpload(nextTask);
@@ -1213,7 +1269,7 @@ class UploadManager {
             // ✅ Don't chain processQueue when retrying
             // — the retry timer will handle it after the backoff delay
             if (nextTask.status !== 'waiting_retry') {
-                this.processQueue();
+                this.scheduleQueuePump();
             }
         }
     }
@@ -1804,11 +1860,11 @@ class UploadManager {
             }
         });
         if (changed) this.notifyListeners(true);
-        this.processQueue();
+        this.scheduleQueuePump();
     }
 
     public ensureProcessing() {
-        this.processQueue();
+        this.scheduleQueuePump();
     }
 }
 

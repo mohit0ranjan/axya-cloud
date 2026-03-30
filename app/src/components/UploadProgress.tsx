@@ -129,7 +129,11 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                 return 'Finalizing in cloud...';
             case 'queued': {
                 const position = Math.max(0, Number(task.queuePositionUser || 0));
-                return position > 0 ? `Queued • position #${position}` : 'Queued • waiting for slot';
+                const globalPosition = Math.max(0, Number(task.queuePositionGlobal || 0));
+                if (position > 0 && globalPosition > 0) return `Queued • #${position} for you • #${globalPosition} global`;
+                if (position > 0) return `Queued • position #${position}`;
+                if (globalPosition > 0) return `Queued • global #${globalPosition}`;
+                return 'Queued • waiting for slot';
             }
             case 'retrying': return `Retrying now • attempt ${retryAttempt} of ${retryMax}`;
             case 'waiting_retry': return `Retry scheduled • attempt ${retryAttempt} of ${retryMax}`;
@@ -170,6 +174,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
 
     // ── Progress % display ──
     const showPercent = isPreparing || isUploading || isProcessing || isRetrying || isPaused || isWaitingRetry;
+    const visibleProgress = (isPreparing || isUploading) ? Math.max(safeProgress, 7) : safeProgress;
     const statusColor = isFailed ? theme.colors.danger
         : isCompleted && !task.duplicate ? theme.colors.success
             : isCompleted && task.duplicate ? theme.colors.primary
@@ -194,23 +199,18 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
             <View style={s.row1}>
                 {isImageFile ? (
                     <View style={s.thumbWrap}>
-                        <Image
-                            source={{ uri: file.uri }}
-                            style={s.thumbImg}
-                            contentFit="cover"
-                            transition={120}
-                        />
+                        <Image source={{ uri: file.uri }} style={s.thumbImg} contentFit="cover" transition={120} />
                     </View>
                 ) : isVideoFile ? (
                     <View style={s.thumbWrap}>
-                        <Film size={16} color={theme.colors.textBody} />
+                        <Film size={15} color={theme.colors.primary} />
                     </View>
                 ) : (
                     <View style={s.iconWrap}>{statusIcon}</View>
                 )}
                 <Text style={s.fileName} numberOfLines={1}>{file.name}</Text>
                 {showPercent && (
-                    <Text style={s.percent}>{safeProgress}%</Text>
+                    <Text style={s.percent}>{visibleProgress}%</Text>
                 )}
             </View>
 

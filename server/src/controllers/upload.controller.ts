@@ -6,22 +6,18 @@ import os from 'os';
 import crypto from 'crypto';
 import pool from '../config/db';
 import { getDynamicClient } from '../services/telegram.service';
-import { CustomFile } from 'telegram/client/uploads';
 import { logger } from '../utils/logger';
 import { sendApiError } from '../utils/apiError';
-import { formatFileRow, extractTelegramNativeMeta } from '../utils/formatters';
+import { formatFileRow } from '../utils/formatters';
 import sharp from 'sharp';
 import { encode } from 'blurhash';
 import { isAllowedUploadMime } from '../utils/uploadMime';
 import Busboy from 'busboy';
 import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
+import { getStorageAdapter, resolveTelegramUploadTransport } from '../services/storage/telegram-storage.adapter';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-
-const randomDelay = (min = 300, max = 800) =>
-    sleep(Math.floor(Math.random() * (max - min + 1)) + min);
 
 const computeFileHashes = async (filePath: string): Promise<{ sha256: string; md5: string }> => {
     return new Promise((resolve, reject) => {
@@ -41,47 +37,6 @@ const computeFileHashes = async (filePath: string): Promise<{ sha256: string; md
         });
         stream.on('error', reject);
     });
-};
-
-// Max retries for Telegram upload, with exponential backoff + FLOOD_WAIT handling
-const uploadToTelegramWithRetry = async (
-    client: any,
-    chatId: string,
-    params: any,
-    maxRetries = 3
-): Promise<any> => {
-    for (let i = 0; i < maxRetries; i++) {
-        try {
-            await randomDelay(); // Anti-429 delay before each attempt
-            return await client.sendFile(chatId, params);
-        } catch (error: any) {
-            const raw = error?.message || '';
-            console.error(`[Telegram] Upload attempt ${i + 1}/${maxRetries} failed:`, raw);
-
-            // Fatal Session / Auth Errors
-            if (/AUTH_KEY|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED|PHONE_MIGRATE/i.test(raw)) {
-                console.error(`[Telegram] Fatal session error during upload. Aborting retries.`, raw);
-                throw new Error('Telegram session expired or revoked. Please log in again.');
-            }
-
-            // Handle FLOOD_WAIT — Telegram explicitly gives wait time
-            if (raw.includes('FLOOD_WAIT') || raw.includes('FLOOD')) {
-                const waitSec = parseInt(raw.match(/\d+/)?.[0] || '15', 10);
-                console.warn(`[Telegram] FLOOD_WAIT: Waiting ${waitSec}s...`);
-                await sleep((waitSec + 3) * 1000); // Extra 3s buffer
-                continue;
-            }
-
-            // Other errors: exponential backoff
-            if (i < maxRetries - 1) {
-                const backoff = Math.min(15_000, Math.pow(2, i + 1) * 1000);
-                console.warn(`[Telegram] Retrying in ${backoff / 1000}s...`);
-                await sleep(backoff);
-            } else {
-                throw error;
-            }
-        }
-    }
 };
 
 const parseEnvIntInRange = (raw: unknown, fallback: number, min: number, max: number): number => {
@@ -122,82 +77,7 @@ const THUMBNAIL_CONCURRENCY = parseEnvIntInRange(process.env.UPLOAD_THUMBNAIL_CO
 const telegramSemaphore = new Semaphore(TELEGRAM_FINALIZER_CONCURRENCY);
 const thumbnailSemaphore = new Semaphore(THUMBNAIL_CONCURRENCY);
 
-const normalizeTelegramChatTarget = (value: unknown): string => {
-    const raw = String(value || '').trim();
-    if (!raw) return 'me';
-
-    if (raw === 'me') return 'me';
-    if (raw.startsWith('@')) return raw.slice(1);
-
-    const linkMatch = raw.match(/^(?:https?:\/\/)?(?:t|telegram)\.me\/(.+)$/i);
-    if (!linkMatch) return raw;
-
-    const pathPart = linkMatch[1].split('?')[0].split('#')[0];
-    const parts = pathPart.split('/').filter(Boolean);
-    if (parts.length === 0) return 'me';
-
-    // t.me/c/<internal_chat_id>/<message_id> -> channel peer id format
-    if (parts[0] === 'c' && parts[1]) {
-        return `-100${parts[1]}`;
-    }
-
-    // t.me/<username>/<message_id> -> use username peer
-    if (parts[0]) {
-        return parts[0].replace(/^@/, '');
-    }
-
-    return raw;
-};
-
-const getUploadSessionCandidates = (ownerSessionString: string, requestedChatId: unknown) => {
-    const requested = normalizeTelegramChatTarget(requestedChatId);
-    const storageChat = String(process.env.TELEGRAM_STORAGE_CHAT_ID || '').trim();
-
-    // Fallbacks if personal session is invalid or they specifically use the bot
-    const sessionCandidates = [
-        String(process.env.TELEGRAM_STORAGE_SESSION || '').trim(),
-        String(process.env.TELEGRAM_SESSION || '').trim(),
-        String(ownerSessionString || '').trim(),
-    ].filter(Boolean);
-
-    const uniqueSessions = Array.from(new Set(sessionCandidates));
-    return uniqueSessions.map((session) => {
-        const isStorageSession =
-            session === String(process.env.TELEGRAM_STORAGE_SESSION || '').trim()
-            || session === String(process.env.TELEGRAM_SESSION || '').trim();
-
-        // Critical FIX: If the user requested "me" but we are falling back to the global storage 
-        // bot session, we MUST rewrite "me" to the bot's explicitly configured storage channel ID.
-        // Otherwise, "me" routes to the bot's personal Saved Messages, breaking ID-mapping for the user.
-        let targetChatId = requested || 'me';
-        if (targetChatId === 'me' && isStorageSession && storageChat) {
-            targetChatId = storageChat;
-        }
-
-        return {
-            session,
-            chatId: targetChatId,
-        };
-    });
-};
-
-const resolveUploadTransport = async (ownerSessionString: string, requestedChatId: unknown) => {
-    const candidates = getUploadSessionCandidates(ownerSessionString, requestedChatId);
-    let lastErr: any = null;
-
-    for (const candidate of candidates) {
-        try {
-            await getDynamicClient(candidate.session);
-            return candidate;
-        } catch (err: any) {
-            lastErr = err;
-        }
-    }
-
-    throw lastErr || new Error('No Telegram session available for upload.');
-};
-
-// formatFileRow and extractTelegramNativeMeta imported from ../utils/formatters
+// formatFileRow imported from ../utils/formatters
 
 const classifyUploadFailure = (err: unknown) => {
     const raw = String((err as any)?.message || '');
@@ -305,8 +185,8 @@ const QUEUE_POLL_MS_MIN = 2500;
 const QUEUE_POLL_MS_MAX = 7000;
 const PROCESSING_POLL_MS_MIN = 2000;
 const PROCESSING_POLL_MS_MAX = 5500;
-const CHUNK_DELAY_MS_MIN = 100;
-const CHUNK_DELAY_MS_MAX = 300;
+const CHUNK_DELAY_MS_MIN = 0;
+const CHUNK_DELAY_MS_MAX = 120;
 const MAX_ACTIVE_SESSION_FETCH = 250;
 const FINALIZER_PROGRESS_UPDATE_THROTTLE_MS = 800;
 const UPLOAD_MAINTENANCE_INTERVAL_MS = Number.parseInt(String(process.env.UPLOAD_MAINTENANCE_INTERVAL_MS || String(15 * 60 * 1000)), 10) || (15 * 60 * 1000);
@@ -860,15 +740,15 @@ const buildBackpressureHints = (status: UploadLifecycleStatus | string, capacity
             : getQueuePollMs(Math.max(0, capacity.activeGlobal - 1), Math.max(0, capacity.queuedGlobal - 1));
 
     if (memoryPressure === 'high') {
-        recommendedChunkDelayMs = Math.max(recommendedChunkDelayMs, 300);
+        recommendedChunkDelayMs = Math.max(recommendedChunkDelayMs, 120);
         recommendedPollMs = Math.max(recommendedPollMs, 6000);
     } else if (memoryPressure === 'medium') {
-        recommendedChunkDelayMs = Math.max(recommendedChunkDelayMs, 220);
+        recommendedChunkDelayMs = Math.max(recommendedChunkDelayMs, 60);
         recommendedPollMs = Math.max(recommendedPollMs, 4200);
     }
 
     if (limits.diskPauseNewUploads) {
-        recommendedChunkDelayMs = Math.max(recommendedChunkDelayMs, 320);
+        recommendedChunkDelayMs = Math.max(recommendedChunkDelayMs, 120);
         recommendedPollMs = Math.max(recommendedPollMs, 7000);
     }
 
@@ -1187,7 +1067,7 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
 
     let uploadTransport: { session: string; chatId: string };
     try {
-        uploadTransport = await resolveUploadTransport(req.user.sessionString, telegram_chat_id);
+        uploadTransport = await resolveTelegramUploadTransport(req.user.sessionString, telegram_chat_id);
     } catch (sessionErr: any) {
         const msg = sessionErr?.message || 'Telegram session invalid';
         const isExpired = msg.includes('expired') || msg.includes('revoked');
@@ -1289,7 +1169,7 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
             || capacity.activeGlobal >= Math.max(1, limits.globalLimit);
         const initialStatus: UploadLifecycleStatus = shouldQueue ? 'queued' : 'uploading';
 
-        const canPreallocateChunkFile = uploadMode === 'chunk' && initialStatus === 'uploading' && !diskCannotFitNow;
+        const canPreallocateChunkFile = false;
         tempFilePath = ensureTempUploadFile(uploadId, fileName, fileSize, canPreallocateChunkFile);
         await pool.query(
             `INSERT INTO upload_sessions (
@@ -1951,8 +1831,8 @@ export const uploadStream = async (req: AuthRequest, res: Response) => {
 
                     await flushPendingProgress();
 
-                    if (bytesWritten !== expectedBytes) {
-                        finish(new Error(`STREAM_SIZE_MISMATCH:${bytesWritten}:${expectedBytes}`));
+                    if (bytesWritten === 0) {
+                        finish(new Error('STREAM_EMPTY_PAYLOAD'));
                         return;
                     }
 
@@ -1981,6 +1861,7 @@ export const uploadStream = async (req: AuthRequest, res: Response) => {
             `UPDATE upload_sessions
              SET uploaded_chunks = '[0]'::jsonb,
                  received_bytes = $2,
+                 total_bytes = $2,
                  status = 'processing',
                  mime_type = $3,
                  telegram_progress_percent = GREATEST(telegram_progress_percent, 0),
@@ -2105,8 +1986,7 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             return;
         }
 
-        const uploadTransport = await resolveUploadTransport(ownerSessionString, session.telegram_chat_id);
-        const client = await getDynamicClient(uploadTransport.session);
+        const storageAdapter = getStorageAdapter();
 
         let lastProgressWriteAt = 0;
         let lastProgressValue = 0;
@@ -2125,21 +2005,16 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             ).catch(() => undefined);
         };
 
-        const customFile = new CustomFile(session.file_name, toInt(session.total_bytes), session.temp_file_path);
-        const uploadedMessage = await uploadToTelegramWithRetry(
-            client,
-            uploadTransport.chatId,
-            {
-                file: customFile,
-                caption: `[Axya] ${session.file_name}`,
-                workers: 4,
-                progressCallback,
-            }
-        );
-
-        if (!uploadedMessage) {
-            throw new Error('Telegram upload returned no message');
-        }
+        const uploadedFile = await storageAdapter.uploadFile({
+            ownerSessionString,
+            requestedChatId: String(session.telegram_chat_id || 'me'),
+            filePath: session.temp_file_path,
+            fileName: session.file_name,
+            fileSize: toInt(session.total_bytes),
+            mimeType: session.mime_type || 'application/octet-stream',
+            caption: `[Axya] ${session.file_name}`,
+            onProgress: progressCallback,
+        });
 
         // Fix #1: Immediately re-check session status after Telegram upload.
         // If the user cancelled during the (potentially slow) Telegram upload,
@@ -2149,20 +2024,21 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
         if (!latestSession || latestSession.status === 'cancelled') {
             // Best-effort: delete the orphaned Telegram message
             try {
-                const tgMsgId = uploadedMessage.id;
-                if (tgMsgId) {
-                    await client.deleteMessages(uploadTransport.chatId, [tgMsgId], { revoke: true });
+                const tgMsgId = toInt(uploadedFile.providerMessageId);
+                if (uploadedFile.provider === 'telegram' && tgMsgId > 0 && uploadedFile.providerContext?.session) {
+                    const cleanupClient = await getDynamicClient(uploadedFile.providerContext.session);
+                    await cleanupClient.deleteMessages(uploadedFile.storageChatId, [tgMsgId], { revoke: true });
                     logger.info('backend.upload', 'orphan_telegram_message_deleted', {
                         uploadId,
                         telegramMessageId: tgMsgId,
-                        chatId: uploadTransport.chatId,
+                        chatId: uploadedFile.storageChatId,
                         reason: 'cancelled_during_telegram_upload',
                     });
                 }
             } catch (deleteErr: any) {
                 logger.warn('backend.upload', 'orphan_telegram_message_delete_failed', {
                     uploadId,
-                    telegramMessageId: uploadedMessage.id,
+                    telegramMessageId: uploadedFile.providerMessageId,
                     message: deleteErr?.message,
                 });
             }
@@ -2171,13 +2047,9 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             return;
         }
 
-        const messageId = uploadedMessage.id;
-        const telegramFileId = uploadedMessage.document
-            ? uploadedMessage.document.id.toString()
-            : uploadedMessage.photo
-                ? uploadedMessage.photo.id.toString()
-                : '';
-        const nativeMeta = extractTelegramNativeMeta(uploadedMessage);
+        const messageId = toInt(uploadedFile.providerMessageId);
+        const telegramFileId = uploadedFile.providerFileId;
+        const nativeMeta = uploadedFile.nativeMeta;
 
         let finalBlurhash: string | null = null;
         let finalThumbBuffer: Buffer | null = null;
@@ -2224,7 +2096,7 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
                 toInt(session.total_bytes),
                 telegramFileId,
                 messageId,
-                uploadTransport.chatId,
+                uploadedFile.storageChatId,
                 session.mime_type || 'application/octet-stream',
                 serverHash,
                 serverMd5,

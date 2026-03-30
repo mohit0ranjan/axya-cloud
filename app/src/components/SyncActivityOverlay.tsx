@@ -4,138 +4,118 @@ import {
     Animated, Dimensions, FlatList, Alert, Platform,
 } from 'react-native';
 import {
-    ChevronUp, ChevronDown, CheckCircle2, AlertTriangle, X,
-    UploadCloud, DownloadCloud, Play, Pause, RefreshCcw, XCircle
+    ChevronUp, ChevronDown, Check, AlertCircle, X,
+    UploadCloud, Play, Pause, RefreshCcw
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUpload } from '../context/UploadContext';
 import { useDownload } from '../context/DownloadContext';
-import { theme as staticTheme } from '../ui/theme';
 import { useTheme } from '../context/ThemeContext';
-import { UploadTask } from '../services/UploadManager';
-import { DownloadTask } from '../services/DownloadManager';
+import * as Progress from 'react-native-progress';
 
 const { height } = Dimensions.get('window');
 
-function formatBytes(bytes: number): string {
-    if (bytes <= 0) return '0 B';
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${sizes[i]}`;
-}
-
-// ── Upload Item Row ───────────────────────────────────────────────────────────
-const UpRow = React.memo(({ task, onCancel, onPause, onResume }: any) => {
+// ── Google Drive Style Compact Row ────────────────────────────────────────────
+const TaskRow = React.memo(({ task, onCancel, onPause, onResume }: any) => {
     const { theme } = useTheme();
-    const isActive = task.status === 'uploading' || task.status === 'queued';
+    const isActive = task.status === 'uploading' || task.status === 'queued' || task.status === 'preparing' || task.status === 'processing' || task.status === 'retrying' || task.status === 'waiting_retry';
     const isPaused = task.status === 'paused';
     const isFailed = task.status === 'failed';
     const isDone = task.status === 'completed';
 
     const color = isDone ? theme.colors.success : isFailed ? theme.colors.danger : theme.colors.primary;
-    const safeProgress = Number.isFinite(task.progress) ? task.progress : 0;
-    const label = isDone ? 'Done' : isFailed ? 'Failed' : isPaused ? 'Paused' : `${safeProgress}%`;
+    // Smooth translation of percent to decimal without jumping "0%" text
+    const safeProgress = Number.isFinite(task.progress) ? Math.max(0, Math.min(task.progress / 100, 1)) : 0;
+    const name = task.file?.name || task.fileName || 'Unknown file';
+
+    // State String Fallbacks
+    let label = 'Pending';
+    if (isDone) label = 'Uploaded';
+    else if (isFailed) label = 'Failed';
+    else if (isPaused) label = 'Paused';
+    else if (task.status === 'queued') label = 'Waiting to upload...';
+    else if (task.status === 'processing') label = 'Finalizing...';
+    else if (task.status === 'preparing') label = 'Starting...';
+    else if (task.status === 'retrying' || task.status === 'waiting_retry') label = 'Network paused...';
+    else if (task.status === 'uploading') {
+        // Fallback: don't flash 0% string explicitly to user, keep it clean
+        if (safeProgress === 0) label = 'Uploading...';
+        else label = `Uploading...`;
+    }
 
     return (
         <View style={s.row}>
-            <View style={[s.rowIcon, { backgroundColor: `${color}18` }]}>
-                <UploadCloud color={color} size={16} />
+            {/* Left standard file/status icon */}
+            <View style={[s.rowIcon, { backgroundColor: isFailed ? `${theme.colors.danger}15` : isDone ? `${theme.colors.success}15` : theme.colors.background }]}>
+                {isFailed ? <AlertCircle color={theme.colors.danger} size={18} /> : 
+                 isDone ? <Check color={theme.colors.success} size={18} /> :
+                 <UploadCloud color={theme.colors.muted} size={18} />}
             </View>
+            
             <View style={s.rowInfo}>
-                <Text style={[s.rowName, { color: theme.colors.textHeading }]} numberOfLines={1}>{task.file?.name}</Text>
-                <View style={s.rowBottom}>
-                    <View style={[s.progressTrack, { backgroundColor: theme.colors.border }]}>
-                        <View style={[
-                            s.progressFill,
-                            { width: `${isDone ? 100 : safeProgress}%`, backgroundColor: color }
-                        ]} />
-                    </View>
-                    <Text style={[s.rowStatus, { color }]}>{label}</Text>
-                </View>
+                <Text style={[s.rowName, { color: theme.colors.textHeading }]} numberOfLines={1}>{name}</Text>
+                <Text style={[s.rowStatus, { color: isFailed || isDone ? color : theme.colors.textBody }]} numberOfLines={1}>{label}</Text>
             </View>
+            
+            {/* Right Drive-style Actions */}
             <View style={s.rowActions}>
                 {isActive && (
-                    <TouchableOpacity style={s.iconBtn} onPress={() => onPause(task.id)}>
-                        <Pause color={theme.colors.muted} size={16} />
+                    <View style={s.ringContainer}>
+                         {/* Circle doubles as a visual and an action button */}
+                        <Progress.Circle
+                            size={28}
+                            progress={task.status === 'queued' || task.status === 'preparing' ? undefined : safeProgress}
+                            indeterminate={task.status === 'queued' || task.status === 'preparing' || task.status === 'processing'}
+                            color={theme.colors.primary}
+                            unfilledColor={theme.colors.border}
+                            borderWidth={0}
+                            thickness={3}
+                            strokeCap="round"
+                        />
+                        <TouchableOpacity style={s.ringCancelBtn} onPress={() => onCancel(task.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                            <X color={theme.colors.muted} size={12} strokeWidth={3} />
+                        </TouchableOpacity>
+                    </View>
+                )}
+                {isPaused && (
+                    <>
+                        <TouchableOpacity style={s.iconBtn} onPress={() => onResume(task.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                            <Play fill={theme.colors.success} color={theme.colors.success} size={18} />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[s.iconBtn, { marginLeft: 12 }]} onPress={() => onCancel(task.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                            <X color={theme.colors.muted} size={20} />
+                        </TouchableOpacity>
+                    </>
+                )}
+                {(isFailed || isDone) && (
+                    <TouchableOpacity style={s.iconBtn} onPress={() => onCancel(task.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                        <X color={theme.colors.muted} size={20} />
                     </TouchableOpacity>
                 )}
-                {(isPaused || isFailed) && (
-                    <TouchableOpacity style={s.iconBtn} onPress={() => onResume(task.id)}>
-                        {isFailed ? <RefreshCcw color={theme.colors.muted} size={16} /> : <Play color={theme.colors.muted} size={16} />}
-                    </TouchableOpacity>
-                )}
-                <TouchableOpacity style={s.iconBtn} onPress={() => onCancel(task.id)}>
-                    <X color={theme.colors.muted} size={16} />
-                </TouchableOpacity>
             </View>
         </View>
     );
 });
 
-// ── Download Item Row ─────────────────────────────────────────────────────────
-const DownRow = React.memo(({ task, onCancel }: any) => {
-    const { theme } = useTheme();
-    const isActive = task.status === 'downloading' || task.status === 'queued';
-    const isFailed = task.status === 'failed';
-    const isDone = task.status === 'completed';
-
-    const color = isDone ? theme.colors.success : isFailed ? theme.colors.danger : theme.colors.primary;
-    const label = isDone ? 'Done' : isFailed ? 'Failed' : `${task.progress}%`;
-
-    return (
-        <View style={s.row}>
-            <View style={[s.rowIcon, { backgroundColor: `${color}18` }]}>
-                <DownloadCloud color={color} size={16} />
-            </View>
-            <View style={s.rowInfo}>
-                <Text style={[s.rowName, { color: theme.colors.textHeading }]} numberOfLines={1}>{task.fileName}</Text>
-                <View style={s.rowBottom}>
-                    <View style={[s.progressTrack, { backgroundColor: theme.colors.border }]}>
-                        <View style={[
-                            s.progressFill,
-                            { width: `${Math.max(task.progress, isDone ? 100 : 0)}%`, backgroundColor: color }
-                        ]} />
-                    </View>
-                    <Text style={[s.rowStatus, { color }]}>{label}</Text>
-                </View>
-            </View>
-            <View style={s.rowActions}>
-                {isActive && (
-                    <TouchableOpacity style={s.iconBtn} onPress={() => onCancel(task.id)}>
-                        <X color={theme.colors.muted} size={16} />
-                    </TouchableOpacity>
-                )}
-            </View>
-        </View>
-    );
-});
-
-// ── Main Unified Component ────────────────────────────────────────────────────
+// ── Main UI Component ────────────────────────────────────────────────────────────
 export default function SyncActivityOverlay() {
     const insets = useSafeAreaInsets();
     const { theme, isDark } = useTheme();
 
-    // Upload Context
     const {
         tasks: upTasks, cancelUpload, pauseUpload, resumeUpload, cancelAll: cancelAllUploads, clearCompleted: clearUpFinished,
-        activeCount: upActive, failedCount: upFailed, uploadedCount: upDone, queuedCount: upQueued,
-        overallProgress: upProgress, retryFailed: retryUpFailed
+        activeCount: upActive, failedCount: upFailed, uploadedCount: upDone, queuedCount: upQueued
     } = useUpload();
 
-    // Download Context
     const {
         tasks: downTasks, cancelDownload, cancelAll: cancelAllDownloads, clearCompleted: clearDownFinished,
-        activeCount: downActive, overallProgress: downProgress
+        activeCount: downActive
     } = useDownload();
 
-    // Local State
     const [isExpanded, setIsExpanded] = useState(false);
     const [isDismissed, setIsDismissed] = useState(false);
-    
-    // Animations
     const animExpand = useRef(new Animated.Value(0)).current;
 
-    // Derived State
     const downFailed = useMemo(() => downTasks.filter(t => t.status === 'failed').length, [downTasks]);
     const downDone = useMemo(() => downTasks.filter(t => t.status === 'completed').length, [downTasks]);
     
@@ -143,16 +123,17 @@ export default function SyncActivityOverlay() {
     const totalFailed = upFailed + downFailed;
     const totalDone = upDone + downDone;
     
-    // Unified task list for expansion
+    // Sort logic places active/uploading -> preparing -> queued -> paused -> failed -> completed
     const allTasks = useMemo(() => {
         const arr: any[] = [];
         upTasks.forEach(t => { if (t.status !== 'cancelled') arr.push({ ...t, _type: 'upload' }) });
         downTasks.forEach(t => { if (t.status !== 'cancelled') arr.push({ ...t, _type: 'download' }) });
-        // Sort active to top, then failed, then completed
         return arr.sort((a, b) => {
             const getScore = (status: string) => {
-                if (status === 'uploading' || status === 'downloading') return 3;
-                if (status === 'queued') return 2;
+                if (status === 'uploading' || status === 'processing' || status === 'downloading') return 5;
+                if (status === 'preparing') return 4;
+                if (status === 'queued') return 3;
+                if (status === 'retrying' || status === 'waiting_retry' || status === 'paused') return 2;
                 if (status === 'failed') return 1;
                 return 0; // completed
             };
@@ -165,42 +146,40 @@ export default function SyncActivityOverlay() {
     const hasFailed = totalFailed > 0;
     const isAllComplete = isIdle && totalDone > 0 && !hasFailed;
 
-    // Reacting to new tasks
     const prevActive = useRef(totalActive);
     useEffect(() => {
         if (totalActive > prevActive.current) {
             setIsDismissed(false);
-            if (isExpanded) toggleExpand(); // auto-collapse on new queue start for compact view
+            if (isExpanded) toggleExpand();
         }
         prevActive.current = totalActive;
     }, [totalActive]);
 
-    // Auto-dismiss success
+    // Google Drive auto-dismiss behavior on success
     useEffect(() => {
         let timer: any;
-        if (isAllComplete && !isExpanded && hasTasks) {
+        if (isAllComplete && hasTasks) {
             timer = setTimeout(() => {
                 setIsDismissed(true);
-            }, 3000);
+            }, 5000);
         }
         return () => clearTimeout(timer);
-    }, [isAllComplete, isExpanded, hasTasks]);
+    }, [isAllComplete, hasTasks]);
 
-    // Toggles
     const toggleExpand = useCallback(() => {
         const next = !isExpanded;
         setIsExpanded(next);
         Animated.spring(animExpand, {
             toValue: next ? 1 : 0,
-            tension: 65,
-            friction: 10,
-            useNativeDriver: false, // We animate height/opacity
+            tension: 50,
+            friction: 8,
+            useNativeDriver: false, // Animating Layout Dimensions
         }).start();
     }, [isExpanded, animExpand]);
 
     const handleDismiss = useCallback(() => {
         if (totalActive > 0) {
-            const msg = 'Cancel all active transfers?';
+            const msg = 'Cancel all incoming and outgoing transfers?';
             if (Platform.OS === 'web') {
                 if (window.confirm(msg)) {
                     cancelAllUploads();
@@ -238,40 +217,27 @@ export default function SyncActivityOverlay() {
 
     if (!hasTasks || isDismissed) return null;
 
-    // Priority Theming
-    const primaryColor = hasFailed ? theme.colors.danger : isAllComplete ? theme.colors.success : theme.colors.primary;
-    
-    // Header Text
     let headerText = '';
-    let HeaderIcon = UploadCloud;
+    const itemsCount = allTasks.length;
     if (hasFailed) {
-        headerText = `${totalFailed} transfer${totalFailed > 1 ? 's' : ''} failed`;
-        HeaderIcon = AlertTriangle;
+        headerText = `${totalFailed} upload${totalFailed > 1 ? 's' : ''} failed`;
     } else if (isAllComplete) {
-        headerText = 'All transfers complete';
-        HeaderIcon = CheckCircle2;
+        headerText = `Uploaded ${totalDone} file${totalDone > 1 ? 's' : ''}`;
     } else {
-        const pieces = [];
-        if (upActive > 0) pieces.push(`Uploading ${upActive}`);
-        if (downActive > 0) pieces.push(`Downloading ${downActive}`);
-        if (upQueued > 0 && pieces.length === 0) pieces.push(`Queued ${upQueued}`);
-        headerText = pieces.join(' • ');
-        HeaderIcon = RefreshCcw;
+        headerText = `Uploading ${itemsCount} file${itemsCount > 1 ? 's' : ''}`;
     }
 
-    // Weighted overall progress
-    const activeUpStats = upActive > 0 ? upProgress : 0;
-    const activeDownStats = downActive > 0 ? downProgress : 0;
-    const activeDivisor = (upActive > 0 ? 1 : 0) + (downActive > 0 ? 1 : 0) || 1;
-    const aggProgress = isAllComplete ? 100 : Math.round((activeUpStats + activeDownStats) / activeDivisor);
+    // Determine circular animation for header progress indicator
+    // Wait for all to finish, or show indeterminate spinner when computing queue
+    const loadingTasks = [upActive, downActive, upQueued].reduce((acc, v) => acc + v, 0);
 
     const expandedHeight = animExpand.interpolate({
         inputRange: [0, 1],
-        outputRange: [0, Math.min(allTasks.length * 62 + 60, height * 0.45)],
+        outputRange: [0, Math.min(allTasks.length * 64 + 40, height * 0.5)],
     });
-    
+
     const expandedOpacity = animExpand.interpolate({
-        inputRange: [0, 0.5, 1],
+        inputRange: [0, 0.7, 1],
         outputRange: [0, 0, 1],
     });
 
@@ -279,71 +245,79 @@ export default function SyncActivityOverlay() {
         <View style={[
             s.container, 
             { backgroundColor: theme.colors.card, bottom: Math.max(insets.bottom, 16) + 80 },
-            isDark && { shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 16 }
+            isDark && { shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 20 }
         ]}>
-            {/* Minimal Header (Always Visible) */}
+            {/* Google Drive Minimized Persistent Header */}
             <TouchableOpacity 
-                activeOpacity={0.8} 
+                activeOpacity={0.9} 
                 onPress={toggleExpand} 
                 style={s.header}
             >
                 <View style={s.headerLeft}>
-                    <HeaderIcon color={primaryColor} size={18} />
+                    {/* Ring indicator immediately shows context */}
+                    {hasFailed ? (
+                        <AlertCircle color={theme.colors.danger} size={22} />
+                    ) : isAllComplete ? (
+                        <View style={[s.iconRound, { backgroundColor: theme.colors.success }]}>
+                            <Check color={'#FFF'} size={14} strokeWidth={3} />
+                        </View>
+                    ) : (
+                        <Progress.CircleSnail
+                            color={theme.colors.primary}
+                            size={22}
+                            spinDuration={1200}
+                            thickness={2}
+                            direction="clockwise"
+                        />
+                    )}
                     <Text style={[s.headerTitle, { color: theme.colors.textHeading }]} numberOfLines={1}>
                         {headerText}
                     </Text>
-                    {(!isAllComplete && !hasFailed) && (
-                        <Text style={[s.headerSubtitle, { color: theme.colors.textBody }]}> • {aggProgress}%</Text>
-                    )}
                 </View>
                 <View style={s.headerRight}>
-                    {(upActive > 0 || upQueued > 0) && (
+                    {isExpanded ? <ChevronDown color={theme.colors.muted} size={22} /> : <ChevronUp color={theme.colors.muted} size={22} />}
+                    {loadingTasks > 0 && !isExpanded && (
                         <TouchableOpacity style={s.dismissBtn} onPress={handlePauseAll} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                            <Pause color={theme.colors.muted} size={18} />
+                            <Pause color={theme.colors.muted} size={20} />
                         </TouchableOpacity>
                     )}
-                    {upTasks.some((t: any) => t.status === 'paused') && (
-                        <TouchableOpacity style={s.dismissBtn} onPress={handleResumeAll} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                            <Play color={theme.colors.muted} size={18} />
-                        </TouchableOpacity>
-                    )}
-                    {isExpanded ? <ChevronDown color={theme.colors.muted} size={20} /> : <ChevronUp color={theme.colors.muted} size={20} />}
                     <TouchableOpacity style={s.dismissBtn} onPress={handleDismiss} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                         <X color={theme.colors.muted} size={20} />
                     </TouchableOpacity>
                 </View>
             </TouchableOpacity>
 
-            {/* Simple Top Progress Bar */}
-            {!isAllComplete && (
-                <View style={[s.mainProgressTrack, { backgroundColor: theme.colors.border }]}>
-                    <View style={[s.mainProgressFill, { width: `${aggProgress}%`, backgroundColor: primaryColor }]} />
-                </View>
-            )}
-
-            {/* Expanded List View */}
-            <Animated.View style={{ height: expandedHeight, opacity: expandedOpacity, overflow: 'hidden' }}>
-                {hasFailed && (
-                    <TouchableOpacity 
-                        style={[s.retryAllBar, { backgroundColor: `${theme.colors.danger}18` }]} 
-                        onPress={() => retryUpFailed()}
-                    >
-                        <RefreshCcw color={theme.colors.danger} size={14} />
-                        <Text style={[s.retryAllText, { color: theme.colors.danger }]}>Retry Failed Uploads</Text>
-                    </TouchableOpacity>
+            {/* List Drawer */}
+            <Animated.View style={[s.listContainer, { height: expandedHeight, opacity: expandedOpacity }]}>
+                {isExpanded && (
+                    <View style={s.listHeaderControls}>
+                        {loadingTasks > 0 && (
+                            <TouchableOpacity style={s.bulkBtn} onPress={handlePauseAll}>
+                                <Pause color={theme.colors.muted} size={14} style={{ marginRight: 6 }}/>
+                                <Text style={[s.bulkText, { color: theme.colors.muted }]}>Pause All</Text>
+                            </TouchableOpacity>
+                        )}
+                        {upTasks.some((t: any) => t.status === 'paused') && (
+                            <TouchableOpacity style={s.bulkBtn} onPress={handleResumeAll}>
+                                <Play color={theme.colors.success} size={14} style={{ marginRight: 6 }}/>
+                                <Text style={[s.bulkText, { color: theme.colors.success }]}>Resume All</Text>
+                            </TouchableOpacity>
+                        )}
+                    </View>
                 )}
                 <FlatList
                     data={allTasks}
-                    keyExtractor={item => `${item._type}_${item.id}`}
+                    keyExtractor={t => t.id}
+                    contentContainerStyle={{ paddingBottom: 16 }}
+                    showsVerticalScrollIndicator={true}
                     renderItem={({ item }) => {
-                        if (item._type === 'upload') {
-                            return <UpRow task={item} onCancel={cancelUpload} onPause={pauseUpload} onResume={resumeUpload} />;
-                        } else {
-                            return <DownRow task={item} onCancel={cancelDownload} />;
-                        }
+                        return <TaskRow 
+                                  task={item} 
+                                  onCancel={item._type === 'upload' ? cancelUpload : cancelDownload}
+                                  onPause={pauseUpload} 
+                                  onResume={resumeUpload} 
+                               />;
                     }}
-                    showsVerticalScrollIndicator={false}
-                    contentContainerStyle={s.listContent}
                 />
             </Animated.View>
         </View>
@@ -353,95 +327,123 @@ export default function SyncActivityOverlay() {
 const s = StyleSheet.create({
     container: {
         position: 'absolute',
-        left: staticTheme.spacing.lg,
-        right: staticTheme.spacing.lg,
-        borderRadius: staticTheme.radius.modal,
+        left: 16,
+        right: 16,
+        borderRadius: 12,
         overflow: 'hidden',
-        zIndex: 1000,
-        ...staticTheme.shadows.elevation2,
+        elevation: 8,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.15,
+        shadowRadius: 12,
+        zIndex: 999,
+        borderWidth: 1,
+        borderColor: 'rgba(150,150,150,0.1)',
     },
     header: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        paddingHorizontal: staticTheme.spacing.lg,
+        paddingHorizontal: 16,
         paddingVertical: 14,
-        minHeight: 52,
     },
     headerLeft: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 10,
         flex: 1,
     },
-    headerTitle: {
-        fontSize: 14,
-        fontWeight: '600',
+    iconRound: {
+        width: 22,
+        height: 22,
+        borderRadius: 11,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
-    headerSubtitle: {
-        fontSize: 13,
-        fontWeight: '500',
+    headerTitle: {
+        fontSize: 16,
+        fontWeight: '600',
+        marginLeft: 12,
+        flexShrink: 1,
     },
     headerRight: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
     },
     dismissBtn: {
+        marginLeft: 12,
         padding: 4,
     },
-    mainProgressTrack: {
-        height: 2,
+    listContainer: {
+        width: '100%',
+        backgroundColor: 'rgba(0,0,0,0.02)',
+        borderTopWidth: 1,
+        borderTopColor: 'rgba(150,150,150,0.08)',
     },
-    mainProgressFill: {
-        height: 2,
+    listHeaderControls: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        paddingHorizontal: 16,
+        paddingVertical: 8,
     },
-    listContent: {
-        paddingHorizontal: staticTheme.spacing.md,
-        paddingBottom: 16,
+    bulkBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: 6,
+        backgroundColor: 'rgba(150,150,150,0.1)',
+        marginLeft: 8,
     },
-    
-    // Rows
+    bulkText: {
+        fontSize: 12,
+        fontWeight: '500',
+    },
     row: {
         flexDirection: 'row',
         alignItems: 'center',
-        paddingVertical: 8,
-        paddingHorizontal: 8,
-        gap: 12,
+        paddingHorizontal: 16,
+        paddingVertical: 10,
     },
     rowIcon: {
         width: 32,
         height: 32,
         borderRadius: 8,
-        justifyContent: 'center',
         alignItems: 'center',
+        justifyContent: 'center',
+        marginRight: 12,
     },
-    rowInfo: { flex: 1, gap: 4 },
-    rowName: { fontSize: 13, fontWeight: '600' },
-    rowBottom: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    progressTrack: { flex: 1, height: 4, borderRadius: 2, overflow: 'hidden' },
-    progressFill: { height: 4, borderRadius: 2 },
-    rowStatus: { fontSize: 11, fontWeight: '600', minWidth: 40, textAlign: 'right' },
+    rowInfo: {
+        flex: 1,
+        justifyContent: 'center',
+    },
+    rowName: {
+        fontSize: 14,
+        fontWeight: '500',
+        marginBottom: 2,
+    },
+    rowStatus: {
+        fontSize: 12,
+    },
     rowActions: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 6,
+        marginLeft: 12,
     },
     iconBtn: {
         padding: 6,
     },
-    retryAllBar: {
-        flexDirection: 'row',
+    ringContainer: {
+        position: 'relative',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 8,
-        paddingVertical: 10,
-        marginHorizontal: 16,
-        borderBottomWidth: 1,
-        borderBottomColor: 'rgba(0,0,0,0.05)',
+        width: 28,
+        height: 28,
     },
-    retryAllText: {
-        fontSize: 13,
-        fontWeight: '600',
-    }
+    ringCancelBtn: {
+        position: 'absolute',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 28,
+        height: 28,
+    },
 });

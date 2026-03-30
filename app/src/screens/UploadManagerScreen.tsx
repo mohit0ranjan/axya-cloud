@@ -191,6 +191,13 @@ export default function UploadManagerScreen({ navigation }: any) {
         return Math.max(0, Math.min(Math.round(value), 100));
     }, [overallProgress]);
 
+    const uploadOrdinalText = useMemo(() => {
+        if (totalFiles <= 0) return 'No active batch';
+        if (uploadingCount <= 0) return `Uploaded ${uploadedCount} of ${totalFiles} files`;
+        const current = Math.max(1, Math.min(totalFiles, uploadedCount + 1));
+        return `Uploading ${current} of ${totalFiles} files`;
+    }, [totalFiles, uploadingCount, uploadedCount]);
+
     const renderTask = (item: any) => (
         <UploadProgress
             key={item.id}
@@ -220,7 +227,7 @@ export default function UploadManagerScreen({ navigation }: any) {
                 </TouchableOpacity>
                 <View style={s.headerCenter}>
                     <Text style={s.headerTitle}>Upload Manager</Text>
-                    <Text style={s.headerSub}>{totalFiles} files • {uploadingCount} uploading • {queuedCount} queued</Text>
+                    <Text style={s.headerSub}>{uploadOrdinalText} • {uploadingCount} active • {queuedCount} queued</Text>
                 </View>
             </View>
 

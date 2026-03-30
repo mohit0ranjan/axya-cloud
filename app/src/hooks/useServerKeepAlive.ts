@@ -22,7 +22,8 @@ export function useServerKeepAlive() {
 
     const ping = async () => {
         const stats = uploadManager.getStats();
-        if (stats.activeCount > 0 || serverReadiness.isWakeInProgress()) {
+        const activeUploads = Math.max(0, Number(stats.activeCount || 0));
+        if (activeUploads !== 0 || serverReadiness.isWakeInProgress()) {
             return;
         }
 

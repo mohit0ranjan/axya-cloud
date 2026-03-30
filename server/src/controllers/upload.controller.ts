@@ -12,6 +12,10 @@ import { sendApiError } from '../utils/apiError';
 import { formatFileRow, extractTelegramNativeMeta } from '../utils/formatters';
 import sharp from 'sharp';
 import { encode } from 'blurhash';
+import { isAllowedUploadMime } from '../utils/uploadMime';
+import Busboy from 'busboy';
+import { Transform } from 'stream';
+import { pipeline } from 'stream/promises';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -44,7 +48,7 @@ const uploadToTelegramWithRetry = async (
     client: any,
     chatId: string,
     params: any,
-    maxRetries = 4
+    maxRetries = 3
 ): Promise<any> => {
     for (let i = 0; i < maxRetries; i++) {
         try {
@@ -68,9 +72,9 @@ const uploadToTelegramWithRetry = async (
                 continue;
             }
 
-            // Other errors: backoff
+            // Other errors: exponential backoff
             if (i < maxRetries - 1) {
-                const backoff = [2000, 5000, 10000, 20000][i] || 20000;
+                const backoff = Math.min(15_000, Math.pow(2, i + 1) * 1000);
                 console.warn(`[Telegram] Retrying in ${backoff / 1000}s...`);
                 await sleep(backoff);
             } else {
@@ -81,8 +85,8 @@ const uploadToTelegramWithRetry = async (
 };
 
 // ─── Upload Semaphore: limit concurrent Telegram uploads ────────────────────
-// Prevents server OOM crash when 100 photos complete simultaneously.
-// Only 3 files upload to Telegram at any one time; the rest queue.
+// Prevents server OOM crash under free-tier memory constraints.
+// Telegram finalization runs one-at-a-time for maximum stability.
 class Semaphore {
     private running = 0;
     private queue: Array<() => void> = [];
@@ -107,7 +111,7 @@ class Semaphore {
         }
     }
 }
-const telegramSemaphore = new Semaphore(3); // max 3 concurrent Telegram operations
+const telegramSemaphore = new Semaphore(1); // max 1 concurrent Telegram operation
 const thumbnailSemaphore = new Semaphore(2); // max 2 concurrent thumbnail generations
 
 const normalizeTelegramChatTarget = (value: unknown): string => {
@@ -210,7 +214,8 @@ const classifyUploadFailure = (err: unknown) => {
     };
 };
 
-type UploadLifecycleStatus = 'pending' | 'uploading' | 'completed' | 'cancelled' | 'failed';
+type UploadLifecycleStatus = 'queued' | 'uploading' | 'processing' | 'completed' | 'cancelled' | 'failed';
+type UploadProtocol = 'chunk' | 'stream';
 
 type UploadSessionRow = {
     upload_id: string;
@@ -220,6 +225,7 @@ type UploadSessionRow = {
     folder_id: string | null;
     telegram_chat_id: string;
     source_tag: string | null;
+    upload_protocol: UploadProtocol | string | null;
     total_bytes: string | number;
     chunk_size_bytes: number;
     total_chunks: number;
@@ -245,14 +251,48 @@ type UploadChunkStats = {
     uploadedChunks: number[];
 };
 
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
 const UPLOAD_TMP_ROOT = path.join(os.tmpdir(), 'axya_uploads');
-const DEFAULT_CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
-const MIN_CHUNK_SIZE_BYTES = 512 * 1024;
-const MAX_CHUNK_SIZE_BYTES = 8 * 1024 * 1024;
+const FIXED_CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
+const STREAM_FILE_UPLOAD_FIELD = 'file';
+const STREAM_HIGH_WATER_MARK_BYTES = 1 * 1024 * 1024;
+const STREAM_IDLE_TIMEOUT_MS = Number.parseInt(String(process.env.UPLOAD_STREAM_IDLE_TIMEOUT_MS || '60000'), 10) || 60_000;
+const DISK_PAUSE_THRESHOLD_PERCENT = clamp(Number.parseFloat(String(process.env.UPLOAD_DISK_PAUSE_PERCENT || '80')), 50, 99);
+const DISK_CRITICAL_THRESHOLD_PERCENT = clamp(Number.parseFloat(String(process.env.UPLOAD_DISK_CRITICAL_PERCENT || '92')), 60, 99.9);
+const RESERVED_DISK_BYTES = Number.parseInt(String(process.env.UPLOAD_DISK_RESERVED_BYTES || String(150 * 1024 * 1024)), 10) || (150 * 1024 * 1024);
+const SAFE_ACTIVE_UPLOADS_PER_USER = 1;
+const BURST_ACTIVE_UPLOADS_PER_USER = 2;
+const SAFE_ACTIVE_UPLOADS_GLOBAL = 1;
+const BURST_ACTIVE_UPLOADS_GLOBAL = 2;
+const MAX_ACTIVE_UPLOADS_PER_USER = BURST_ACTIVE_UPLOADS_PER_USER;
+const MAX_GLOBAL_ACTIVE_UPLOADS = BURST_ACTIVE_UPLOADS_GLOBAL;
+const MIN_SUPPORTED_UPLOAD_SIZE_BYTES = 400 * 1024 * 1024;
+const ENV_MAX_FILE_SIZE_BYTES = Number.parseInt(String(process.env.UPLOAD_MAX_FILE_SIZE_BYTES || ''), 10);
+const MAX_FILE_SIZE_BYTES = Number.isFinite(ENV_MAX_FILE_SIZE_BYTES) && ENV_MAX_FILE_SIZE_BYTES > 0
+    ? Math.max(ENV_MAX_FILE_SIZE_BYTES, MIN_SUPPORTED_UPLOAD_SIZE_BYTES)
+    : 1024 * 1024 * 1024;
+const ENV_TMP_USAGE_SOFT_LIMIT_BYTES = Number.parseInt(String(process.env.UPLOAD_TMP_USAGE_SOFT_LIMIT_BYTES || ''), 10);
+const TMP_USAGE_SOFT_LIMIT_BYTES = Number.isFinite(ENV_TMP_USAGE_SOFT_LIMIT_BYTES) && ENV_TMP_USAGE_SOFT_LIMIT_BYTES > 0
+    ? ENV_TMP_USAGE_SOFT_LIMIT_BYTES
+    : 900 * 1024 * 1024;
+const QUEUE_PROMOTION_LOCK_KEY = 910205;
+const QUEUE_POLL_MS_MIN = 2500;
+const QUEUE_POLL_MS_MAX = 7000;
+const PROCESSING_POLL_MS_MIN = 2000;
+const PROCESSING_POLL_MS_MAX = 5500;
+const CHUNK_DELAY_MS_MIN = 100;
+const CHUNK_DELAY_MS_MAX = 300;
 const MAX_ACTIVE_SESSION_FETCH = 250;
 const FINALIZER_PROGRESS_UPDATE_THROTTLE_MS = 800;
+const UPLOAD_MAINTENANCE_INTERVAL_MS = Number.parseInt(String(process.env.UPLOAD_MAINTENANCE_INTERVAL_MS || String(15 * 60 * 1000)), 10) || (15 * 60 * 1000);
+const TERMINAL_TEMP_RETENTION_MS = Number.parseInt(String(process.env.UPLOAD_TERMINAL_TEMP_RETENTION_MS || String(6 * 60 * 60 * 1000)), 10) || (6 * 60 * 60 * 1000);
+const ORPHAN_TEMP_RETENTION_MS = Number.parseInt(String(process.env.UPLOAD_ORPHAN_TEMP_RETENTION_MS || String(6 * 60 * 60 * 1000)), 10) || (6 * 60 * 60 * 1000);
 
 const activeFinalizers = new Map<string, Promise<void>>();
+let uploadMaintenanceTimer: ReturnType<typeof setInterval> | null = null;
+let tmpUsageCacheBytes = 0;
+let tmpUsageCacheAt = 0;
 
 const sanitizeUploadFileName = (value: string) =>
     String(value || '')
@@ -260,10 +300,94 @@ const sanitizeUploadFileName = (value: string) =>
         .replace(/\s+/g, ' ')
         .trim() || 'upload.bin';
 
-const normalizeChunkSize = (value: unknown): number => {
-    const parsed = Number.parseInt(String(value ?? ''), 10);
-    if (!Number.isFinite(parsed)) return DEFAULT_CHUNK_SIZE_BYTES;
-    return Math.min(Math.max(parsed, MIN_CHUNK_SIZE_BYTES), MAX_CHUNK_SIZE_BYTES);
+
+const toUploadProtocol = (value: unknown): UploadProtocol => {
+    const mode = String(value || '').trim().toLowerCase();
+    return mode === 'stream' ? 'stream' : 'chunk';
+};
+
+const sumDirBytes = (targetPath: string): number => {
+    let total = 0;
+    try {
+        const entries = fs.readdirSync(targetPath, { withFileTypes: true });
+        for (const entry of entries) {
+            const entryPath = path.join(targetPath, entry.name);
+            if (entry.isDirectory()) {
+                total += sumDirBytes(entryPath);
+            } else if (entry.isFile()) {
+                total += fs.statSync(entryPath).size;
+            }
+        }
+    } catch {
+        return total;
+    }
+    return total;
+};
+
+const getUploadTmpUsageBytes = () => {
+    const now = Date.now();
+    if (now - tmpUsageCacheAt < 10_000) return tmpUsageCacheBytes;
+    tmpUsageCacheAt = now;
+    tmpUsageCacheBytes = sumDirBytes(UPLOAD_TMP_ROOT);
+    return tmpUsageCacheBytes;
+};
+
+type DiskUsageSnapshot = {
+    totalBytes: number;
+    availableBytes: number;
+    usedPercent: number;
+    source: 'statfs' | 'estimate';
+};
+
+const getDiskUsageSnapshot = (): DiskUsageSnapshot => {
+    try {
+        fs.mkdirSync(UPLOAD_TMP_ROOT, { recursive: true });
+        const statfsSync = (fs as any).statfsSync as undefined | ((target: string) => any);
+        if (typeof statfsSync === 'function') {
+            const stat = statfsSync(UPLOAD_TMP_ROOT);
+            const blockSize = Math.max(1, Number(stat?.bsize || 0));
+            const totalBlocks = Math.max(0, Number(stat?.blocks || 0));
+            const availableBlocks = Math.max(0, Number(stat?.bavail || 0));
+            const totalBytes = totalBlocks * blockSize;
+            const availableBytes = Math.min(totalBytes, availableBlocks * blockSize);
+            const usedPercent = totalBytes > 0
+                ? Math.max(0, Math.min(100, ((totalBytes - availableBytes) / totalBytes) * 100))
+                : 0;
+            return {
+                totalBytes,
+                availableBytes,
+                usedPercent,
+                source: 'statfs',
+            };
+        }
+    } catch {
+        // fall through to estimate mode
+    }
+
+    const usedBytes = getUploadTmpUsageBytes();
+    const syntheticTotalBytes = Math.max(TMP_USAGE_SOFT_LIMIT_BYTES, usedBytes + 1);
+    const availableBytes = Math.max(0, syntheticTotalBytes - usedBytes);
+    return {
+        totalBytes: syntheticTotalBytes,
+        availableBytes,
+        usedPercent: (usedBytes / syntheticTotalBytes) * 100,
+        source: 'estimate',
+    };
+};
+
+const getQueuePollMs = (activeGlobal: number, queueDepth: number) => {
+    const pressure = clamp((activeGlobal / MAX_GLOBAL_ACTIVE_UPLOADS) + (queueDepth / 30), 0, 1);
+    return Math.round(QUEUE_POLL_MS_MIN + ((QUEUE_POLL_MS_MAX - QUEUE_POLL_MS_MIN) * pressure));
+};
+
+const getProcessingPollMs = (activeGlobal: number, queueDepth: number) => {
+    const pressure = clamp((activeGlobal / MAX_GLOBAL_ACTIVE_UPLOADS) + (queueDepth / 40), 0, 1);
+    return Math.round(PROCESSING_POLL_MS_MIN + ((PROCESSING_POLL_MS_MAX - PROCESSING_POLL_MS_MIN) * pressure));
+};
+
+const getRecommendedChunkDelayMs = (activeGlobal: number, queueDepth: number) => {
+    const pressure = clamp((activeGlobal / MAX_GLOBAL_ACTIVE_UPLOADS) + (queueDepth / 25), 0, 1);
+    return Math.round(CHUNK_DELAY_MS_MIN + ((CHUNK_DELAY_MS_MAX - CHUNK_DELAY_MS_MIN) * pressure));
 };
 
 const toInt = (value: unknown): number => {
@@ -300,14 +424,16 @@ const computeNextExpectedChunk = (totalChunks: number, uploadedChunks: number[])
     return totalChunks;
 };
 
-const ensureTempUploadFile = (uploadId: string, fileName: string, totalBytes: number): string => {
+const ensureTempUploadFile = (uploadId: string, fileName: string, totalBytes: number, preallocate = true): string => {
     const safeName = sanitizeUploadFileName(fileName);
     const uploadDir = path.join(UPLOAD_TMP_ROOT, uploadId);
     const filePath = path.join(uploadDir, safeName);
     fs.mkdirSync(uploadDir, { recursive: true });
     const fd = fs.openSync(filePath, 'w');
     try {
-        fs.ftruncateSync(fd, totalBytes);
+        if (preallocate) {
+            fs.ftruncateSync(fd, totalBytes);
+        }
     } finally {
         fs.closeSync(fd);
     }
@@ -325,6 +451,93 @@ const cleanupSessionTempFile = (tempFilePath: string) => {
     } catch {
         // best effort cleanup
     }
+};
+
+const cleanupTerminalTempFiles = async () => {
+    const staleRows = await pool.query(
+        `SELECT upload_id, temp_file_path
+         FROM upload_sessions
+         WHERE status IN ('completed', 'failed', 'cancelled')
+           AND updated_at < NOW() - ($1::bigint * INTERVAL '1 millisecond')
+         ORDER BY updated_at ASC
+         LIMIT 500`,
+        [TERMINAL_TEMP_RETENTION_MS]
+    );
+
+    let cleaned = 0;
+    for (const row of staleRows.rows) {
+        const uploadId = String(row.upload_id || '').trim();
+        if (!uploadId || activeFinalizers.has(uploadId)) continue;
+        cleanupSessionTempFile(String(row.temp_file_path || ''));
+        cleaned += 1;
+    }
+    return cleaned;
+};
+
+const cleanupOrphanTempDirectories = async () => {
+    fs.mkdirSync(UPLOAD_TMP_ROOT, { recursive: true });
+
+    const activeRes = await pool.query(
+        `SELECT upload_id
+         FROM upload_sessions
+         WHERE status IN ('queued', 'uploading', 'processing')`
+    );
+    const protectedIds = new Set(activeRes.rows.map((r) => String(r.upload_id || '').trim()).filter(Boolean));
+
+    const now = Date.now();
+    const entries = fs.readdirSync(UPLOAD_TMP_ROOT, { withFileTypes: true });
+    let cleaned = 0;
+    for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const uploadId = String(entry.name || '').trim();
+        if (!uploadId) continue;
+        if (protectedIds.has(uploadId) || activeFinalizers.has(uploadId)) continue;
+
+        const fullPath = path.join(UPLOAD_TMP_ROOT, uploadId);
+        let ageMs = Number.POSITIVE_INFINITY;
+        try {
+            const stat = fs.statSync(fullPath);
+            ageMs = now - stat.mtimeMs;
+        } catch {
+            ageMs = Number.POSITIVE_INFINITY;
+        }
+
+        if (ageMs < ORPHAN_TEMP_RETENTION_MS) continue;
+        try {
+            fs.rmSync(fullPath, { recursive: true, force: true });
+            cleaned += 1;
+        } catch {
+            // best effort
+        }
+    }
+    return cleaned;
+};
+
+const runUploadMaintenance = async () => {
+    const terminalCleaned = await cleanupTerminalTempFiles();
+    const orphanDirsCleaned = await cleanupOrphanTempDirectories();
+    if (terminalCleaned > 0 || orphanDirsCleaned > 0) {
+        logger.info('backend.upload', 'maintenance_cleanup', {
+            terminalFilesCleaned: terminalCleaned,
+            orphanDirsCleaned,
+        });
+    }
+};
+
+export const startUploadMaintenanceLoop = () => {
+    if (uploadMaintenanceTimer) return;
+
+    const trigger = () => {
+        void runUploadMaintenance().catch((err: any) => {
+            logger.warn('backend.upload', 'maintenance_cleanup_failed', {
+                message: String(err?.message || err || 'unknown'),
+            });
+        });
+    };
+
+    trigger();
+    uploadMaintenanceTimer = setInterval(trigger, UPLOAD_MAINTENANCE_INTERVAL_MS);
+    uploadMaintenanceTimer.unref?.();
 };
 
 const sha256Hex = (buffer: Buffer): string => crypto.createHash('sha256').update(buffer).digest('hex');
@@ -370,6 +583,243 @@ const getChunkStats = async (uploadId: string): Promise<UploadChunkStats> => {
     };
 };
 
+type CapacitySnapshot = {
+    activeGlobal: number;
+    activeForUser: number;
+    queuedGlobal: number;
+    queuedForUser: number;
+};
+
+type AdaptiveLimits = {
+    perUserLimit: number;
+    globalLimit: number;
+    lowLoad: boolean;
+    diskPressure: 'normal' | 'high';
+    diskUsageMb: number;
+    diskUsagePercent: number;
+    diskPauseNewUploads: boolean;
+    diskCritical: boolean;
+    availableDiskMb: number;
+    rssMb: number;
+};
+
+const getCapacitySnapshot = async (userId: string): Promise<CapacitySnapshot> => {
+    const result = await pool.query(
+        `SELECT
+            COUNT(*) FILTER (WHERE status IN ('uploading', 'processing'))::int AS active_global,
+            COUNT(*) FILTER (WHERE status = 'queued')::int AS queued_global,
+            COUNT(*) FILTER (WHERE user_id = $1 AND status IN ('uploading', 'processing'))::int AS active_user,
+            COUNT(*) FILTER (WHERE user_id = $1 AND status = 'queued')::int AS queued_user
+         FROM upload_sessions`,
+        [userId]
+    );
+
+    const row = result.rows[0] || {};
+    return {
+        activeGlobal: toInt(row.active_global),
+        activeForUser: toInt(row.active_user),
+        queuedGlobal: toInt(row.queued_global),
+        queuedForUser: toInt(row.queued_user),
+    };
+};
+
+const getQueuePosition = async (uploadId: string, userId: string) => {
+    const result = await pool.query(
+        `SELECT
+            (SELECT COUNT(*)::int
+             FROM upload_sessions q
+             WHERE q.status = 'queued'
+               AND (q.created_at < s.created_at OR (q.created_at = s.created_at AND q.upload_id <= s.upload_id))) AS queue_position_global,
+            (SELECT COUNT(*)::int
+             FROM upload_sessions q
+             WHERE q.user_id = $2
+               AND q.status = 'queued'
+               AND (q.created_at < s.created_at OR (q.created_at = s.created_at AND q.upload_id <= s.upload_id))) AS queue_position_user
+         FROM upload_sessions s
+         WHERE s.upload_id = $1
+         LIMIT 1`,
+        [uploadId, userId]
+    );
+    const row = result.rows[0] || {};
+    return {
+        queuePositionGlobal: Math.max(0, toInt(row.queue_position_global)),
+        queuePositionUser: Math.max(0, toInt(row.queue_position_user)),
+    };
+};
+
+const getAdaptiveConcurrencyLimits = (capacity: CapacitySnapshot): AdaptiveLimits => {
+    const memory = process.memoryUsage();
+    const heapRatio = memory.heapTotal > 0 ? (memory.heapUsed / memory.heapTotal) : 0;
+    const rssMb = Math.round(memory.rss / (1024 * 1024));
+    const disk = getDiskUsageSnapshot();
+    const diskUsageMb = Math.round((disk.totalBytes - disk.availableBytes) / (1024 * 1024));
+    const diskUsagePercent = Number(disk.usedPercent.toFixed(2));
+    const availableDiskMb = Math.round(disk.availableBytes / (1024 * 1024));
+    const diskPauseNewUploads = diskUsagePercent >= DISK_PAUSE_THRESHOLD_PERCENT || disk.availableBytes < RESERVED_DISK_BYTES;
+    const diskCritical = diskUsagePercent >= DISK_CRITICAL_THRESHOLD_PERCENT || disk.availableBytes < Math.round(RESERVED_DISK_BYTES * 0.5);
+    const diskPressure: 'normal' | 'high' = diskPauseNewUploads ? 'high' : 'normal';
+
+    const lowLoad = heapRatio < 0.68
+        && rssMb < 360
+        && diskPressure === 'normal'
+        && capacity.queuedGlobal === 0
+        && capacity.activeGlobal <= SAFE_ACTIVE_UPLOADS_GLOBAL;
+
+    const perUserLimit = diskPauseNewUploads
+        ? 0
+        : (lowLoad ? BURST_ACTIVE_UPLOADS_PER_USER : SAFE_ACTIVE_UPLOADS_PER_USER);
+    const globalLimit = diskPauseNewUploads
+        ? 0
+        : (lowLoad ? BURST_ACTIVE_UPLOADS_GLOBAL : SAFE_ACTIVE_UPLOADS_GLOBAL);
+
+    return {
+        perUserLimit,
+        globalLimit,
+        lowLoad,
+        diskPressure,
+        diskUsageMb,
+        diskUsagePercent,
+        diskPauseNewUploads,
+        diskCritical,
+        availableDiskMb,
+        rssMb,
+    };
+};
+
+const buildBackpressureHints = (status: UploadLifecycleStatus | string, capacity: CapacitySnapshot) => {
+    const memory = process.memoryUsage();
+    const heapRatio = memory.heapTotal > 0 ? (memory.heapUsed / memory.heapTotal) : 0;
+    const limits = getAdaptiveConcurrencyLimits(capacity);
+    const rssMb = limits.rssMb;
+    const memoryPressure = heapRatio >= 0.86 || rssMb >= 430 ? 'high'
+        : heapRatio >= 0.72 || rssMb >= 340 ? 'medium'
+            : 'low';
+
+    let recommendedChunkDelayMs = getRecommendedChunkDelayMs(capacity.activeGlobal, capacity.queuedGlobal);
+    let recommendedPollMs = status === 'queued'
+        ? getQueuePollMs(capacity.activeGlobal, capacity.queuedGlobal)
+        : status === 'processing'
+            ? getProcessingPollMs(capacity.activeGlobal, capacity.queuedGlobal)
+            : getQueuePollMs(Math.max(0, capacity.activeGlobal - 1), Math.max(0, capacity.queuedGlobal - 1));
+
+    if (memoryPressure === 'high') {
+        recommendedChunkDelayMs = Math.max(recommendedChunkDelayMs, 300);
+        recommendedPollMs = Math.max(recommendedPollMs, 6000);
+    } else if (memoryPressure === 'medium') {
+        recommendedChunkDelayMs = Math.max(recommendedChunkDelayMs, 220);
+        recommendedPollMs = Math.max(recommendedPollMs, 4200);
+    }
+
+    if (limits.diskPauseNewUploads) {
+        recommendedChunkDelayMs = Math.max(recommendedChunkDelayMs, 320);
+        recommendedPollMs = Math.max(recommendedPollMs, 7000);
+    }
+
+    const capacityLevel = capacity.activeGlobal >= limits.globalLimit
+        ? 'high'
+        : capacity.activeGlobal >= Math.max(1, limits.globalLimit - 1)
+            ? 'medium'
+            : 'low';
+    const level = memoryPressure === 'high' || capacityLevel === 'high' || limits.diskPressure === 'high'
+        ? 'high'
+        : memoryPressure === 'medium' || capacityLevel === 'medium'
+            ? 'medium'
+            : 'low';
+
+    return {
+        backpressure: {
+            level,
+            activeGlobal: capacity.activeGlobal,
+            queuedGlobal: capacity.queuedGlobal,
+            memoryPressure,
+            rssMb,
+            diskPressure: limits.diskPressure,
+            diskUsageMb: limits.diskUsageMb,
+            diskUsagePercent: limits.diskUsagePercent,
+            availableDiskMb: limits.availableDiskMb,
+            diskPauseNewUploads: limits.diskPauseNewUploads,
+            activeGlobalLimit: limits.globalLimit,
+            activePerUserLimit: limits.perUserLimit,
+        },
+        recommendedChunkDelayMs,
+        recommendedPollMs,
+    };
+};
+
+const promoteQueuedSessionsIfCapacity = async () => {
+    const lockRes = await pool.query('SELECT pg_try_advisory_lock($1) AS locked', [QUEUE_PROMOTION_LOCK_KEY]);
+    const locked = Boolean(lockRes.rows?.[0]?.locked);
+    if (!locked) return;
+
+    try {
+    const grouped = await pool.query(
+        `SELECT user_id, COUNT(*)::int AS active_count
+         FROM upload_sessions
+         WHERE status IN ('uploading', 'processing')
+         GROUP BY user_id`
+    );
+
+    const userActive = new Map<string, number>();
+    for (const row of grouped.rows) {
+        userActive.set(String(row.user_id), toInt(row.active_count));
+    }
+
+    const globalActive = grouped.rows.reduce((acc, row) => acc + toInt(row.active_count), 0);
+
+    const queuedCountRes = await pool.query(
+        `SELECT COUNT(*)::int AS queued_global
+         FROM upload_sessions
+         WHERE status = 'queued'`
+    );
+    const queuedGlobal = toInt(queuedCountRes.rows?.[0]?.queued_global);
+    const limits = getAdaptiveConcurrencyLimits({
+        activeGlobal: globalActive,
+        activeForUser: 0,
+        queuedGlobal,
+        queuedForUser: 0,
+    });
+
+    if (globalActive >= limits.globalLimit) return;
+
+    const queuedRes = await pool.query(
+        `SELECT upload_id, user_id
+         FROM upload_sessions
+         WHERE status = 'queued'
+         ORDER BY created_at ASC, upload_id ASC
+         LIMIT 200`
+    );
+
+    let availableGlobal = limits.globalLimit - globalActive;
+    for (const row of queuedRes.rows) {
+        if (availableGlobal <= 0) break;
+        const uploadId = String(row.upload_id || '').trim();
+        const userId = String(row.user_id || '').trim();
+        if (!uploadId || !userId) continue;
+
+        const activeForUser = userActive.get(userId) || 0;
+        if (activeForUser >= limits.perUserLimit) continue;
+
+        const promoted = await pool.query(
+            `UPDATE upload_sessions
+             SET status = 'uploading',
+                 updated_at = NOW(),
+                 error_code = NULL,
+                 error_message = NULL,
+                 retryable = false
+             WHERE upload_id = $1 AND status = 'queued'`,
+            [uploadId]
+        );
+
+        if ((promoted.rowCount || 0) > 0) {
+            userActive.set(userId, activeForUser + 1);
+            availableGlobal -= 1;
+        }
+    }
+    } finally {
+        await pool.query('SELECT pg_advisory_unlock($1)', [QUEUE_PROMOTION_LOCK_KEY]);
+    }
+};
+
 const calculateSessionProgress = (session: UploadSessionRow): number => {
     const totalBytes = Math.max(0, toInt(session.total_bytes));
     const receivedBytes = Math.max(0, toInt(session.received_bytes));
@@ -393,13 +843,16 @@ const calculateSessionProgress = (session: UploadSessionRow): number => {
 
 const toClientUploadStatus = (session: UploadSessionRow): string => {
     if (session.status === 'failed') return 'error';
+    if (session.status === 'processing') {
+        return 'processing';
+    }
     if (session.status === 'uploading' && toInt(session.received_bytes) >= toInt(session.total_bytes)) {
-        return 'uploading_to_telegram';
+        return 'processing';
     }
     return session.status;
 };
 
-const toUploadStatusPayload = async (session: UploadSessionRow) => {
+const toUploadStatusPayload = async (session: UploadSessionRow, capacityOverride?: CapacitySnapshot) => {
     const uploadedChunks = parseUploadedChunks(session.uploaded_chunks);
     const totalChunks = toInt(session.total_chunks);
     const nextExpectedChunk = computeNextExpectedChunk(totalChunks, uploadedChunks);
@@ -411,6 +864,12 @@ const toUploadStatusPayload = async (session: UploadSessionRow) => {
             filePayload = formatFileRow(fileRes.rows[0]);
         }
     }
+
+    const capacity = capacityOverride || await getCapacitySnapshot(session.user_id);
+    const hints = buildBackpressureHints(session.status, capacity);
+    const queuePosition = session.status === 'queued'
+        ? await getQueuePosition(session.upload_id, session.user_id)
+        : { queuePositionGlobal: 0, queuePositionUser: 0 };
 
     return {
         success: true,
@@ -428,7 +887,11 @@ const toUploadStatusPayload = async (session: UploadSessionRow) => {
         totalChunks,
         nextExpectedChunk,
         uploadId: session.upload_id,
+        uploadMode: toUploadProtocol(session.upload_protocol),
         updatedAt: session.updated_at,
+        queuePositionGlobal: queuePosition.queuePositionGlobal,
+        queuePositionUser: queuePosition.queuePositionUser,
+        ...hints,
     };
 };
 
@@ -468,13 +931,14 @@ export const listUploadSessions = async (req: AuthRequest, res: Response) => {
         : `SELECT *
            FROM upload_sessions
            WHERE user_id = $1
-             AND (status IN ('pending', 'uploading', 'failed', 'cancelled') OR updated_at > NOW() - INTERVAL '24 hours')
+                         AND (status IN ('queued', 'uploading', 'processing', 'failed', 'cancelled') OR updated_at > NOW() - INTERVAL '24 hours')
            ORDER BY updated_at DESC
            LIMIT $2`;
 
     const sessionsRes = await pool.query(query, [req.user.id, MAX_ACTIVE_SESSION_FETCH]);
+    const capacity = await getCapacitySnapshot(req.user.id);
     const payload = await Promise.all(
-        sessionsRes.rows.map((row) => toUploadStatusPayload(row as UploadSessionRow))
+        sessionsRes.rows.map((row) => toUploadStatusPayload(row as UploadSessionRow, capacity))
     );
 
     return res.json({ success: true, sessions: payload.map((item) => item) });
@@ -485,7 +949,7 @@ export const listUploadSessions = async (req: AuthRequest, res: Response) => {
 export const initUpload = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
-    const { originalname, size, mimetype, folder_id, telegram_chat_id, hash, source_tag, chunk_size_bytes } = req.body;
+    const { originalname, size, mimetype, folder_id, telegram_chat_id, hash, source_tag, chunk_size_bytes, upload_mode } = req.body;
 
     if (!originalname || size === undefined || size === null) {
         return res.status(400).json({ success: false, error: 'Missing file info (originalname, size required)' });
@@ -497,8 +961,71 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
         return res.status(400).json({ success: false, error: 'File size must be greater than 0 bytes' });
     }
 
-    const chunkSize = normalizeChunkSize(chunk_size_bytes);
-    const totalChunks = Math.max(1, Math.ceil(fileSize / chunkSize));
+    if (fileSize > MAX_FILE_SIZE_BYTES) {
+        return sendApiError(
+            res,
+            413,
+            'file_too_large',
+            `File size exceeds supported upload limit.`,
+            { retryable: false, details: { maxBytes: MAX_FILE_SIZE_BYTES } }
+        );
+    }
+
+    const uploadMode = toUploadProtocol(upload_mode);
+
+    const normalizedMime = String(mimetype || '').trim().toLowerCase();
+    if (!isAllowedUploadMime(normalizedMime)) {
+        return sendApiError(
+            res,
+            400,
+            'unsupported_mime_type',
+            `File type '${normalizedMime || 'unknown'}' is not permitted.`,
+            { retryable: false }
+        );
+    }
+
+    if (uploadMode === 'chunk' && chunk_size_bytes !== undefined && chunk_size_bytes !== null) {
+        const requestedChunkSize = toInt(chunk_size_bytes);
+        if (requestedChunkSize > 0 && requestedChunkSize !== FIXED_CHUNK_SIZE_BYTES) {
+            return sendApiError(
+                res,
+                400,
+                'chunk_size_fixed',
+                `Chunk size must be exactly ${FIXED_CHUNK_SIZE_BYTES} bytes.`,
+                { retryable: false }
+            );
+        }
+    }
+
+    const chunkSize = uploadMode === 'stream' ? fileSize : FIXED_CHUNK_SIZE_BYTES;
+    const totalChunks = uploadMode === 'stream' ? 1 : Math.max(1, Math.ceil(fileSize / chunkSize));
+
+    // Fix #8: Check storage quota BEFORE connecting to Telegram.
+    // If the user is over quota, we avoid wasting time establishing a Telegram session.
+    const quotaCheckEnabled = process.env.STORAGE_QUOTA_ENABLED === 'true';
+    if (quotaCheckEnabled) {
+        try {
+            const quotaCheck = await pool.query(
+                'SELECT storage_used_bytes, storage_quota_bytes FROM users WHERE id = $1',
+                [req.user.id]
+            );
+            if (quotaCheck.rows.length > 0) {
+                const { storage_used_bytes, storage_quota_bytes } = quotaCheck.rows[0];
+                if (toInt(storage_used_bytes) + fileSize > toInt(storage_quota_bytes)) {
+                    return res.status(413).json({
+                        success: false,
+                        error: 'Storage quota exceeded.',
+                        code: 'QUOTA_EXCEEDED',
+                    });
+                }
+            }
+        } catch (quotaErr: any) {
+            logger.warn('backend.upload', 'quota_check_failed', {
+                userId: req.user.id,
+                message: quotaErr?.message,
+            });
+        }
+    }
 
     let uploadTransport: { session: string; chatId: string };
     try {
@@ -588,60 +1115,57 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
         }
     }
 
-    const quotaCheckEnabled = process.env.STORAGE_QUOTA_ENABLED === 'true';
-    if (quotaCheckEnabled) {
-        try {
-            const quotaCheck = await pool.query(
-                'SELECT storage_used_bytes, storage_quota_bytes FROM users WHERE id = $1',
-                [req.user.id]
-            );
-            if (quotaCheck.rows.length > 0) {
-                const { storage_used_bytes, storage_quota_bytes } = quotaCheck.rows[0];
-                if (toInt(storage_used_bytes) + fileSize > toInt(storage_quota_bytes)) {
-                    return res.status(413).json({
-                        success: false,
-                        error: 'Storage quota exceeded.',
-                        code: 'QUOTA_EXCEEDED',
-                    });
-                }
-            }
-        } catch (quotaErr: any) {
-            logger.warn('backend.upload', 'quota_check_failed', {
-                userId: req.user.id,
-                message: quotaErr?.message,
-            });
-        }
-    }
+    // (Quota check moved earlier — before resolveUploadTransport — see Fix #8 above)
 
     const uploadId = crypto.randomUUID();
     let tempFilePath = '';
     try {
-        tempFilePath = ensureTempUploadFile(uploadId, fileName, fileSize);
+        await promoteQueuedSessionsIfCapacity();
+        const capacity = await getCapacitySnapshot(req.user.id);
+        const limits = getAdaptiveConcurrencyLimits(capacity);
+        const disk = getDiskUsageSnapshot();
+        const diskCannotFitNow = disk.availableBytes > 0 && (disk.availableBytes - RESERVED_DISK_BYTES) < fileSize;
+        const shouldQueue = diskCannotFitNow
+            || limits.diskPauseNewUploads
+            || capacity.activeForUser >= Math.max(1, limits.perUserLimit)
+            || capacity.activeGlobal >= Math.max(1, limits.globalLimit);
+        const initialStatus: UploadLifecycleStatus = shouldQueue ? 'queued' : 'uploading';
+
+        const canPreallocateChunkFile = uploadMode === 'chunk' && initialStatus === 'uploading' && !diskCannotFitNow;
+        tempFilePath = ensureTempUploadFile(uploadId, fileName, fileSize, canPreallocateChunkFile);
         await pool.query(
             `INSERT INTO upload_sessions (
-                upload_id, user_id, file_name, mime_type, folder_id, telegram_chat_id, source_tag,
+                upload_id, user_id, file_name, mime_type, folder_id, telegram_chat_id, source_tag, upload_protocol,
                 total_bytes, chunk_size_bytes, total_chunks, uploaded_chunks, received_bytes,
                 status, telegram_progress_percent, temp_file_path
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7,
-                $8, $9, $10, $11::jsonb, 0,
-                'pending', 0, $12
+                $1, $2, $3, $4, $5, $6, $7, $8,
+                $9, $10, $11, $12::jsonb, 0,
+                $13, 0, $14
             )`,
             [
                 uploadId,
                 req.user.id,
                 fileName,
-                mimetype || 'application/octet-stream',
+                normalizedMime,
                 folder_id || null,
                 uploadTransport.chatId,
                 String(source_tag || '').trim().toLowerCase() || null,
+                uploadMode,
                 fileSize,
                 chunkSize,
                 totalChunks,
                 JSON.stringify([]),
+                initialStatus,
                 tempFilePath,
             ]
         );
+
+        const latestCapacity = await getCapacitySnapshot(req.user.id);
+        const hints = buildBackpressureHints(initialStatus, latestCapacity);
+        const queuePosition = initialStatus === 'queued'
+            ? await getQueuePosition(uploadId, req.user.id)
+            : { queuePositionGlobal: 0, queuePositionUser: 0 };
 
         logger.info('backend.upload', 'upload_started', {
             uploadId,
@@ -650,14 +1174,22 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
             totalBytes: fileSize,
             chunkSize,
             totalChunks,
+            uploadMode,
+            queued: initialStatus === 'queued',
         });
 
         return res.json({
             success: true,
             uploadId,
             duplicate: false,
+            status: initialStatus,
+            uploadMode,
+            queued: initialStatus === 'queued',
             chunkSizeBytes: chunkSize,
             totalChunks,
+            queuePositionGlobal: queuePosition.queuePositionGlobal,
+            queuePositionUser: queuePosition.queuePositionUser,
+            ...hints,
         });
     } catch (err: any) {
         if (tempFilePath) cleanupSessionTempFile(tempFilePath);
@@ -685,20 +1217,95 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
         return res.status(400).json({ success: false, error: 'No chunk data provided' });
     }
 
-    const session = await getOwnedUploadSession(uploadId, req.user.id);
+    await promoteQueuedSessionsIfCapacity();
+
+    let session = await getOwnedUploadSession(uploadId, req.user.id);
     if (!session) {
         return res.status(404).json({ success: false, error: 'Upload session not found' });
+    }
+
+    if (session.status === 'queued') {
+        await promoteQueuedSessionsIfCapacity();
+        session = await getOwnedUploadSession(uploadId, req.user.id);
+        if (!session) {
+            return res.status(404).json({ success: false, error: 'Upload session not found' });
+        }
     }
 
     if (session.status === 'completed') {
         const payload = await toUploadStatusPayload(session);
         return res.json(payload);
     }
+    if (session.status === 'queued') {
+        const capacity = await getCapacitySnapshot(req.user.id);
+        const hints = buildBackpressureHints('queued', capacity);
+        const queuePosition = await getQueuePosition(uploadId, req.user.id);
+        return res.status(409).json({
+            success: false,
+            status: 'queued',
+            code: 'UPLOAD_QUEUED',
+            error: 'Upload is queued. Please retry after the recommended delay.',
+            retryable: true,
+            queuePositionGlobal: queuePosition.queuePositionGlobal,
+            queuePositionUser: queuePosition.queuePositionUser,
+            ...hints,
+        });
+    }
     if (session.status === 'cancelled') {
         return res.status(409).json({ success: false, error: 'Upload has been cancelled', code: 'UPLOAD_CANCELLED' });
     }
+    if (session.status === 'processing') {
+        const capacity = await getCapacitySnapshot(req.user.id);
+        return res.status(409).json({
+            success: false,
+            error: 'Upload is already processing.',
+            code: 'UPLOAD_PROCESSING',
+            retryable: true,
+            ...buildBackpressureHints('processing', capacity),
+        });
+    }
     if (session.status === 'failed') {
         return res.status(409).json({ success: false, error: 'Upload is in failed state. Restart required.', code: 'UPLOAD_FAILED' });
+    }
+
+    if (toUploadProtocol(session.upload_protocol) === 'stream') {
+        return res.status(409).json({
+            success: false,
+            error: 'This upload session expects stream mode.',
+            code: 'UPLOAD_STREAM_ONLY',
+            retryable: false,
+        });
+    }
+
+    const capacityBeforeChunk = await getCapacitySnapshot(req.user.id);
+    const hintsBeforeChunk = buildBackpressureHints(session.status, capacityBeforeChunk);
+    const adaptiveLimits = getAdaptiveConcurrencyLimits(capacityBeforeChunk);
+    const shouldPauseForBackpressure = session.status === 'uploading'
+        && (
+            adaptiveLimits.diskCritical
+            || (
+                hintsBeforeChunk.backpressure.level === 'high'
+                && (capacityBeforeChunk.activeGlobal >= Math.max(1, adaptiveLimits.globalLimit) || capacityBeforeChunk.queuedGlobal > 0)
+            )
+        );
+    if (shouldPauseForBackpressure) {
+        await pool.query(
+            `UPDATE upload_sessions
+             SET status = 'queued', updated_at = NOW()
+             WHERE upload_id = $1 AND status = 'uploading'`,
+            [uploadId]
+        );
+        const queuePosition = await getQueuePosition(uploadId, req.user.id);
+        return res.status(409).json({
+            success: false,
+            status: 'queued',
+            code: 'UPLOAD_QUEUED',
+            error: 'Upload is temporarily queued while server load is high.',
+            retryable: true,
+            queuePositionGlobal: queuePosition.queuePositionGlobal,
+            queuePositionUser: queuePosition.queuePositionUser,
+            ...hintsBeforeChunk,
+        });
     }
 
     const totalChunks = toInt(session.total_chunks);
@@ -723,7 +1330,7 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
     }
 
     const totalBytes = toInt(session.total_bytes);
-    const chunkSize = toInt(session.chunk_size_bytes);
+    const chunkSize = toInt(session.chunk_size_bytes) || FIXED_CHUNK_SIZE_BYTES;
     const expectedChunkLength = chunkIndex === totalChunks - 1
         ? Math.max(totalBytes - (chunkIndex * chunkSize), 0)
         : chunkSize;
@@ -767,6 +1374,7 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
 
         const stats = await getChunkStats(uploadId);
         const nextExpectedChunk = computeNextExpectedChunk(totalChunks, stats.uploadedChunks);
+        const capacity = await getCapacitySnapshot(req.user.id);
         return res.json({
             success: true,
             duplicate: true,
@@ -775,6 +1383,7 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
             uploadedChunksCount: stats.uploadedCount,
             totalChunks,
             nextExpectedChunk,
+            ...buildBackpressureHints(session.status, capacity),
         });
     }
 
@@ -827,6 +1436,7 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
 
     const stats = await saveChunkMetricsToSession(uploadId, 'uploading');
     const nextExpectedChunk = computeNextExpectedChunk(totalChunks, stats.uploadedChunks);
+    const capacity = await getCapacitySnapshot(req.user.id);
 
     logger.info('backend.upload', 'chunk_uploaded', {
         uploadId,
@@ -847,7 +1457,317 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
         totalChunks,
         uploadedChunks: stats.uploadedChunks,
         nextExpectedChunk,
+        ...buildBackpressureHints('uploading', capacity),
     });
+};
+
+export const uploadStream = async (req: AuthRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+    const uploadId = String(req.params.uploadId || '').trim();
+    if (!uploadId) return res.status(400).json({ success: false, error: 'Missing uploadId' });
+
+    const contentType = String(req.headers['content-type'] || '').toLowerCase();
+    if (!contentType.includes('multipart/form-data')) {
+        return res.status(415).json({ success: false, error: 'Expected multipart/form-data payload' });
+    }
+
+    await promoteQueuedSessionsIfCapacity();
+
+    let session = await getOwnedUploadSession(uploadId, req.user.id);
+    if (!session) {
+        return res.status(404).json({ success: false, error: 'Upload session not found' });
+    }
+
+    if (toUploadProtocol(session.upload_protocol) !== 'stream') {
+        return res.status(409).json({
+            success: false,
+            code: 'UPLOAD_CHUNK_ONLY',
+            error: 'This upload session expects chunk mode.',
+            retryable: false,
+        });
+    }
+
+    if (session.status === 'queued') {
+        await promoteQueuedSessionsIfCapacity();
+        session = await getOwnedUploadSession(uploadId, req.user.id);
+        if (!session) {
+            return res.status(404).json({ success: false, error: 'Upload session not found' });
+        }
+    }
+
+    if (session.status === 'completed') {
+        const payload = await toUploadStatusPayload(session);
+        return res.json(payload);
+    }
+
+    if (session.status === 'queued') {
+        const capacity = await getCapacitySnapshot(req.user.id);
+        const queuePosition = await getQueuePosition(uploadId, req.user.id);
+        return res.status(409).json({
+            success: false,
+            status: 'queued',
+            code: 'UPLOAD_QUEUED',
+            error: 'Upload is queued. Please retry after the recommended delay.',
+            retryable: true,
+            queuePositionGlobal: queuePosition.queuePositionGlobal,
+            queuePositionUser: queuePosition.queuePositionUser,
+            ...buildBackpressureHints('queued', capacity),
+        });
+    }
+
+    if (session.status === 'processing') {
+        const capacity = await getCapacitySnapshot(req.user.id);
+        return res.status(409).json({
+            success: false,
+            error: 'Upload is already processing.',
+            code: 'UPLOAD_PROCESSING',
+            retryable: true,
+            ...buildBackpressureHints('processing', capacity),
+        });
+    }
+
+    if (session.status === 'cancelled') {
+        return res.status(409).json({ success: false, error: 'Upload has been cancelled', code: 'UPLOAD_CANCELLED' });
+    }
+
+    if (session.status === 'failed') {
+        return res.status(409).json({ success: false, error: 'Upload is in failed state. Restart required.', code: 'UPLOAD_FAILED' });
+    }
+
+    const expectedBytes = Math.max(0, toInt(session.total_bytes));
+    if (expectedBytes <= 0) {
+        return sendApiError(res, 409, 'invalid_stream_session', 'Upload session is missing expected byte size.', { retryable: false });
+    }
+
+    const expectedMime = String(session.mime_type || '').trim().toLowerCase();
+    if (!isAllowedUploadMime(expectedMime)) {
+        return sendApiError(res, 400, 'unsupported_mime_type', `File type '${expectedMime || 'unknown'}' is not permitted.`, { retryable: false });
+    }
+
+    const capacityBeforeStream = await getCapacitySnapshot(req.user.id);
+    const limitsBeforeStream = getAdaptiveConcurrencyLimits(capacityBeforeStream);
+    const diskBeforeStream = getDiskUsageSnapshot();
+    const streamWouldOverflowDisk = diskBeforeStream.availableBytes > 0
+        && (diskBeforeStream.availableBytes - RESERVED_DISK_BYTES) < expectedBytes;
+    if (limitsBeforeStream.diskPauseNewUploads || streamWouldOverflowDisk) {
+        await pool.query(
+            `UPDATE upload_sessions
+             SET status = 'queued', updated_at = NOW()
+             WHERE upload_id = $1 AND status = 'uploading'`,
+            [uploadId]
+        );
+        const queuePosition = await getQueuePosition(uploadId, req.user.id);
+        return res.status(409).json({
+            success: false,
+            status: 'queued',
+            code: 'UPLOAD_QUEUED',
+            error: 'Upload is queued while storage capacity is constrained.',
+            retryable: true,
+            queuePositionGlobal: queuePosition.queuePositionGlobal,
+            queuePositionUser: queuePosition.queuePositionUser,
+            ...buildBackpressureHints('queued', capacityBeforeStream),
+        });
+    }
+
+    fs.mkdirSync(path.dirname(session.temp_file_path), { recursive: true });
+
+    try {
+        const streamResult = await new Promise<{ bytesWritten: number; sha256: string; fileMime: string }>((resolve, reject) => {
+            const busboy = Busboy({
+                headers: req.headers,
+                highWaterMark: STREAM_HIGH_WATER_MARK_BYTES,
+                fileHwm: STREAM_HIGH_WATER_MARK_BYTES,
+                limits: {
+                    files: 1,
+                    fields: 20,
+                    fileSize: expectedBytes,
+                },
+            });
+
+            let settled = false;
+            let fileSeen = false;
+            let bytesWritten = 0;
+            let seenMime = expectedMime;
+            const hash = crypto.createHash('sha256');
+            let pipePromise: Promise<void> | null = null;
+            let idleTimer: ReturnType<typeof setTimeout> | null = null;
+            let activeFileStream: any = null;
+            let activeOutStream: fs.WriteStream | null = null;
+
+            const clearIdleTimer = () => {
+                if (idleTimer) {
+                    clearTimeout(idleTimer);
+                    idleTimer = null;
+                }
+            };
+
+            const resetIdleTimer = () => {
+                clearIdleTimer();
+                idleTimer = setTimeout(() => {
+                    const timeoutErr = new Error('STREAM_IDLE_TIMEOUT');
+                    try { activeFileStream?.destroy(timeoutErr as any); } catch { }
+                    try { activeOutStream?.destroy(timeoutErr); } catch { }
+                    finish(timeoutErr);
+                }, STREAM_IDLE_TIMEOUT_MS);
+            };
+
+            const finish = (err?: Error, value?: { bytesWritten: number; sha256: string; fileMime: string }) => {
+                if (settled) return;
+                settled = true;
+                clearIdleTimer();
+                if (err) {
+                    reject(err);
+                } else if (value) {
+                    resolve(value);
+                } else {
+                    reject(new Error('Stream upload failed'));
+                }
+            };
+
+            req.on('aborted', () => finish(new Error('UPLOAD_ABORTED')));
+            req.on('error', (err: any) => finish(new Error(String(err?.message || 'request_error'))));
+            busboy.on('error', (err: any) => finish(new Error(String(err?.message || 'stream_parse_failed'))));
+
+            busboy.on('file', (fieldName, file, info) => {
+                if (fileSeen) {
+                    file.resume();
+                    finish(new Error('Multiple files are not supported'));
+                    return;
+                }
+
+                if (fieldName !== STREAM_FILE_UPLOAD_FIELD) {
+                    file.resume();
+                    finish(new Error(`Expected multipart field '${STREAM_FILE_UPLOAD_FIELD}'`));
+                    return;
+                }
+
+                const incomingMime = String(info?.mimeType || '').trim().toLowerCase();
+                if (incomingMime && incomingMime !== expectedMime) {
+                    file.resume();
+                    finish(new Error('MIME_TYPE_MISMATCH'));
+                    return;
+                }
+
+                fileSeen = true;
+                seenMime = incomingMime || expectedMime;
+                file.on('limit', () => finish(new Error('STREAM_FILE_TOO_LARGE')));
+                file.on('data', () => resetIdleTimer());
+                activeFileStream = file as any;
+
+                const meter = new Transform({
+                    transform(chunk, _enc, callback) {
+                        bytesWritten += chunk.length;
+                        hash.update(chunk);
+                        callback(null, chunk);
+                    },
+                });
+
+                const out = fs.createWriteStream(session.temp_file_path, {
+                    flags: 'w',
+                    highWaterMark: STREAM_HIGH_WATER_MARK_BYTES,
+                });
+                activeOutStream = out;
+
+                pipePromise = pipeline(file, meter, out);
+                pipePromise.catch((err: any) => {
+                    finish(new Error(String(err?.message || 'stream_pipeline_failed')));
+                });
+            });
+
+            busboy.on('finish', async () => {
+                if (!fileSeen) {
+                    finish(new Error('No file stream found in upload payload'));
+                    return;
+                }
+
+                try {
+                    if (pipePromise) {
+                        await pipePromise;
+                    }
+
+                    if (bytesWritten !== expectedBytes) {
+                        finish(new Error(`STREAM_SIZE_MISMATCH:${bytesWritten}:${expectedBytes}`));
+                        return;
+                    }
+
+                    finish(undefined, {
+                        bytesWritten,
+                        sha256: hash.digest('hex'),
+                        fileMime: seenMime,
+                    });
+                } catch (err: any) {
+                    finish(new Error(String(err?.message || 'stream_finish_failed')));
+                }
+            });
+
+            resetIdleTimer();
+            req.pipe(busboy);
+        });
+
+        await pool.query('DELETE FROM upload_session_chunks WHERE upload_id = $1', [uploadId]);
+        await pool.query(
+            `INSERT INTO upload_session_chunks (upload_id, chunk_index, chunk_size_bytes, chunk_hash_sha256)
+             VALUES ($1, 0, $2, $3)`,
+            [uploadId, streamResult.bytesWritten, streamResult.sha256]
+        );
+
+        await pool.query(
+            `UPDATE upload_sessions
+             SET uploaded_chunks = '[0]'::jsonb,
+                 received_bytes = $2,
+                 status = 'processing',
+                 mime_type = $3,
+                 telegram_progress_percent = GREATEST(telegram_progress_percent, 0),
+                 error_code = NULL,
+                 error_message = NULL,
+                 retryable = false,
+                 updated_at = NOW()
+             WHERE upload_id = $1`,
+            [uploadId, streamResult.bytesWritten, streamResult.fileMime || expectedMime]
+        );
+
+        startUploadFinalizer(uploadId, req.user.sessionString);
+
+        const capacity = await getCapacitySnapshot(req.user.id);
+        return res.json({
+            success: true,
+            uploadId,
+            status: 'processing',
+            receivedBytes: streamResult.bytesWritten,
+            totalBytes: expectedBytes,
+            ...buildBackpressureHints('processing', capacity),
+        });
+    } catch (err: any) {
+        const message = String(err?.message || 'stream_upload_failed');
+        const retryable = !message.includes('MIME_TYPE_MISMATCH')
+            && !message.includes('STREAM_SIZE_MISMATCH')
+            && !message.includes('STREAM_FILE_TOO_LARGE');
+
+        const errorCode = message.includes('MIME_TYPE_MISMATCH')
+            ? 'mime_type_mismatch'
+            : message.includes('STREAM_SIZE_MISMATCH')
+                ? 'stream_size_mismatch'
+                : message.includes('STREAM_FILE_TOO_LARGE')
+                    ? 'stream_file_too_large'
+                    : message.includes('STREAM_IDLE_TIMEOUT')
+                        ? 'stream_idle_timeout'
+                    : message.includes('UPLOAD_ABORTED')
+                        ? 'stream_aborted'
+                        : 'stream_upload_failed';
+
+        await updateSessionFailure(uploadId, errorCode, 'Stream upload failed. Please retry.', retryable);
+
+        const httpStatus = errorCode === 'stream_file_too_large'
+            ? 413
+            : errorCode === 'stream_idle_timeout'
+                ? 408
+            : errorCode === 'stream_size_mismatch' || errorCode === 'mime_type_mismatch'
+                ? 422
+                : 500;
+
+        return sendApiError(res, httpStatus, errorCode, 'Unable to receive upload stream.', { retryable });
+    }
 };
 
 const finalizeUploadSession = async (uploadId: string, ownerSessionString: string) => {
@@ -856,6 +1776,7 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
         const session = await getUploadSessionById(uploadId);
         if (!session) return;
         if (session.status === 'completed' || session.status === 'cancelled') return;
+        if (session.status !== 'processing' && session.status !== 'uploading') return;
 
         const chunkStats = await getChunkStats(uploadId);
         const totalChunks = toInt(session.total_chunks);
@@ -919,7 +1840,7 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             void pool.query(
                 `UPDATE upload_sessions
                  SET telegram_progress_percent = $2, updated_at = NOW()
-                 WHERE upload_id = $1 AND status = 'uploading'`,
+                 WHERE upload_id = $1 AND status = 'processing'`,
                 [uploadId, next]
             ).catch(() => undefined);
         };
@@ -940,9 +1861,33 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             throw new Error('Telegram upload returned no message');
         }
 
+        // Fix #1: Immediately re-check session status after Telegram upload.
+        // If the user cancelled during the (potentially slow) Telegram upload,
+        // the message is now orphaned. We must delete it from Telegram to prevent
+        // an unreferenced message that's never cleaned up.
         const latestSession = await getUploadSessionById(uploadId);
         if (!latestSession || latestSession.status === 'cancelled') {
+            // Best-effort: delete the orphaned Telegram message
+            try {
+                const tgMsgId = uploadedMessage.id;
+                if (tgMsgId) {
+                    await client.deleteMessages(uploadTransport.chatId, [tgMsgId], { revoke: true });
+                    logger.info('backend.upload', 'orphan_telegram_message_deleted', {
+                        uploadId,
+                        telegramMessageId: tgMsgId,
+                        chatId: uploadTransport.chatId,
+                        reason: 'cancelled_during_telegram_upload',
+                    });
+                }
+            } catch (deleteErr: any) {
+                logger.warn('backend.upload', 'orphan_telegram_message_delete_failed', {
+                    uploadId,
+                    telegramMessageId: uploadedMessage.id,
+                    message: deleteErr?.message,
+                });
+            }
             cleanupSessionTempFile(session.temp_file_path);
+            await promoteQueuedSessionsIfCapacity();
             return;
         }
 
@@ -970,8 +1915,8 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
                             .toBuffer({ resolveWithObject: true });
                         finalBlurhash = encode(new Uint8ClampedArray(data), info.width, info.height, 4, 3);
                         finalThumbBuffer = await sharp(session.temp_file_path, { failOnError: false })
-                            .resize(1080, 1080, { fit: 'inside', withoutEnlargement: true })
-                            .toFormat('webp', { quality: 85, effort: 3 })
+                            .resize(300, 300, { fit: 'inside', withoutEnlargement: true })
+                            .toFormat('webp', { quality: 70, effort: 3 })
                             .toBuffer();
                     }
                 } finally {
@@ -1028,8 +1973,9 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
                 const thumbDir = path.join(os.tmpdir(), 'axya_thumbs');
                 fs.mkdirSync(thumbDir, { recursive: true });
                 // Save with both generic and width-specific naming for cache compatibility
+                // Fix #2: Use _300.webp to match the actual 300px resize, not 1080px
                 fs.writeFileSync(path.join(thumbDir, `${fileRow.id}.webp`), finalThumbBuffer);
-                fs.writeFileSync(path.join(thumbDir, `${fileRow.id}_1080.webp`), finalThumbBuffer);
+                fs.writeFileSync(path.join(thumbDir, `${fileRow.id}_300.webp`), finalThumbBuffer);
                 // Generate a 240px micro-thumbnail for instant file list loading
                 try {
                     const microThumb = await sharp(finalThumbBuffer, { failOnError: false })
@@ -1067,6 +2013,7 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             userId: session.user_id,
             fileId: fileRow?.id || null,
         });
+        await promoteQueuedSessionsIfCapacity();
     } catch (err: any) {
         const mapped = classifyUploadFailure(err);
         await updateSessionFailure(uploadId, mapped.code, mapped.message, mapped.retryable);
@@ -1077,6 +2024,7 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             code: mapped.code,
             retryable: mapped.retryable,
         });
+        await promoteQueuedSessionsIfCapacity();
     } finally {
         release();
     }
@@ -1113,8 +2061,45 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
     if (session.status === 'completed') {
         return res.json({ success: true, message: 'Already completed', correlation_id: correlationId, idempotency_key: idempotencyKey });
     }
+    if (session.status === 'queued') {
+        const capacity = await getCapacitySnapshot(req.user.id);
+        const queuePosition = await getQueuePosition(uploadId, req.user.id);
+        return res.status(409).json({
+            success: false,
+            status: 'queued',
+            code: 'UPLOAD_QUEUED',
+            error: 'Upload is still queued and cannot be completed yet.',
+            retryable: true,
+            queuePositionGlobal: queuePosition.queuePositionGlobal,
+            queuePositionUser: queuePosition.queuePositionUser,
+            ...buildBackpressureHints('queued', capacity),
+        });
+    }
+    if (session.status === 'processing') {
+        const capacity = await getCapacitySnapshot(req.user.id);
+        return res.json({
+            success: true,
+            status: 'processing',
+            message: 'Upload is already processing on Telegram',
+            correlation_id: correlationId,
+            idempotency_key: idempotencyKey,
+            ...buildBackpressureHints('processing', capacity),
+        });
+    }
     if (session.status === 'cancelled') {
         return res.status(409).json({ success: false, error: 'Upload is cancelled', code: 'UPLOAD_CANCELLED' });
+    }
+    // Fix #4: Explicitly handle 'failed' status instead of letting it fall through
+    // to chunk validation, which would return a confusing UPLOAD_INCOMPLETE error.
+    if (session.status === 'failed') {
+        return res.status(409).json({
+            success: false,
+            error: 'Upload previously failed. Please restart the upload.',
+            code: 'UPLOAD_FAILED',
+            retryable: false,
+            errorCode: session.error_code,
+            errorMessage: session.error_message,
+        });
     }
 
     const chunkStats = await getChunkStats(uploadId);
@@ -1133,7 +2118,7 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
 
     await pool.query(
         `UPDATE upload_sessions
-         SET status = 'uploading',
+         SET status = 'processing',
              telegram_progress_percent = GREATEST(telegram_progress_percent, 0),
              error_code = NULL,
              error_message = NULL,
@@ -1147,11 +2132,15 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
 
     startUploadFinalizer(uploadId, req.user.sessionString);
 
+    const capacity = await getCapacitySnapshot(req.user.id);
+
     return res.json({
         success: true,
+        status: 'processing',
         message: 'Upload finalizing to Telegram in background',
         correlation_id: correlationId,
         idempotency_key: idempotencyKey,
+        ...buildBackpressureHints('processing', capacity),
     });
 };
 
@@ -1177,6 +2166,8 @@ export const cancelUpload = async (req: AuthRequest, res: Response) => {
         [uploadId]
     );
 
+    await promoteQueuedSessionsIfCapacity();
+
     if (!activeFinalizers.has(uploadId)) {
         cleanupSessionTempFile(session.temp_file_path);
     }
@@ -1196,6 +2187,8 @@ export const checkUploadStatus = async (req: AuthRequest, res: Response) => {
 
     const uploadId = String(req.params.uploadId || '').trim();
     if (!uploadId) return res.status(400).json({ success: false, error: 'Missing uploadId' });
+
+    await promoteQueuedSessionsIfCapacity();
 
     const session = await getOwnedUploadSession(uploadId, req.user.id);
     if (!session) {

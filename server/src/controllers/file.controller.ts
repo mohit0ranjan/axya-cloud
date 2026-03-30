@@ -14,16 +14,8 @@ import { mapTelegramError } from '../utils/telegramErrors';
 import { formatFileRow, extractTelegramNativeMeta } from '../utils/formatters';
 import { getMessageCacheState } from '../services/share-v2/telegram-read-cache.service';
 import { cacheDelByPrefix, cacheGet, cacheSet } from '../services/cache.service';
+import { isAllowedUploadMime } from '../utils/uploadMime';
 
-// ── Allowed MIME types ─────────────────────────────────────────────────────
-const ALLOWED_TYPES = [
-    'image/', 'video/', 'audio/', 'application/pdf',
-    'text/', 'application/zip', 'application/x-zip',
-    'application/msword', 'application/vnd.openxmlformats',
-    'application/vnd.ms-', 'application/json', 'application/xml',
-];
-
-const isAllowedMime = (mime: string) => ALLOWED_TYPES.some(t => mime.startsWith(t));
 const clampInt = (value: unknown, fallback: number, min: number, max: number) => {
     const parsed = Number.parseInt(String(value ?? ''), 10);
     if (!Number.isFinite(parsed)) return fallback;
@@ -330,7 +322,7 @@ export const uploadFile = async (req: AuthRequest, res: Response) => {
     folder_id = folder_id || null;
     telegram_chat_id = telegram_chat_id || 'me';
 
-    if (!isAllowedMime(mimetype)) {
+    if (!isAllowedUploadMime(mimetype)) {
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
         return res.status(400).json({ success: false, error: `File type '${mimetype}' is not permitted.` });
     }

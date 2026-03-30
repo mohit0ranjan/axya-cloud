@@ -19,6 +19,7 @@ import { logger } from './utils/logger';
 import { getDynamicClient } from './services/telegram.service';
 import { sendApiError } from './utils/apiError';
 import { FRONTEND_BASE_URL, SERVER_BASE_URL } from './config/urls';
+import { startUploadMaintenanceLoop } from './controllers/upload.controller';
 
 dotenv.config();
 
@@ -490,6 +491,7 @@ const initializeCoreServices = async () => {
         schemaReady = true;
         schemaState = 'ready';
         schemaLastError = '';
+        startUploadMaintenanceLoop();
         logger.info('backend.startup', 'schema_ready', { attempts: schemaInitAttempts });
     } catch (error: any) {
         schemaReady = false;

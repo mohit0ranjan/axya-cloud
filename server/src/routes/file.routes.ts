@@ -1,7 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import {
-    uploadFile, fetchFiles, searchFiles, updateFile,
+    fetchFiles, searchFiles, updateFile,
     trashFile, restoreFile, deleteFile, fetchTrash, emptyTrash,
     toggleStar, fetchStarred,
 
@@ -15,11 +15,6 @@ import {
 import { requireAuth } from '../middlewares/auth.middleware';
 
 const router = express.Router();
-
-const upload = multer({
-    dest: 'uploads/',
-    limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2GB limit
-});
 
 // All file routes require auth
 router.use(requireAuth);
@@ -54,7 +49,7 @@ router.delete('/folder/:id', trashFolder);
 
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import {
-    initUpload, uploadChunk, completeUpload, checkUploadStatus, cancelUpload, listUploadSessions
+    initUpload, uploadChunk, uploadStream, completeUpload, checkUploadStatus, cancelUpload, listUploadSessions
 } from '../controllers/upload.controller';
 
 const uploadLimiter = rateLimit({
@@ -80,28 +75,40 @@ const chunkLimiter = rateLimit({
     message: { success: false, error: 'Chunk upload rate limit reached.' },
 });
 
+// Fix #3: Use the same UPLOAD_TMP_ROOT as the maintenance cleanup loop
+// instead of a standalone 'uploads/' dir that's never cleaned by maintenance.
+import os from 'os';
+import pathModule from 'path';
+const MULTER_CHUNK_DIR = pathModule.join(os.tmpdir(), 'axya_uploads', 'multer_chunks');
+try { require('fs').mkdirSync(MULTER_CHUNK_DIR, { recursive: true }); } catch { /* best effort */ }
+
 const chunkUpload = multer({
-    dest: 'uploads/',
+    dest: MULTER_CHUNK_DIR,
     limits: {
-        // Keep chunk payload bounded to avoid memory pressure from oversized chunk retries.
-        fileSize: 12 * 1024 * 1024,
+        // Fixed 5MB chunk protocol (+ multipart overhead buffer).
+        fileSize: 6 * 1024 * 1024,
     },
 });
 
 // ── File Upload & List ───────────────────────────────────────────────────────
 router.post('/upload/init', uploadLimiter, initUpload);
+router.post('/upload/stream/:uploadId', uploadLimiter, uploadStream);
 router.post('/upload/chunk', chunkLimiter, chunkUpload.single('chunk'), uploadChunk);
 router.post('/upload/complete', uploadLimiter, completeUpload);
 router.post('/upload/cancel', uploadLimiter, cancelUpload);
 router.get('/upload/status/:uploadId', checkUploadStatus);
 router.get('/upload/sessions', listUploadSessions);
 
-router.post('/upload', upload.single('file'), (req, res, next) => {
+router.post('/upload', (_req, res) => {
     res.set('Deprecation', 'true');
     res.set('Sunset', '2026-06-01');
-    res.set('X-Deprecated-Message', 'Use /upload/init + /upload/chunk + /upload/complete instead');
-    next();
-}, uploadFile); // Legacy fallback — deprecated
+    return res.status(410).json({
+        success: false,
+        code: 'legacy_upload_removed',
+        error: 'Legacy full upload endpoint is removed. Use chunk upload flow: /upload/init -> /upload/chunk -> /upload/complete.',
+        retryable: false,
+    });
+});
 router.get('/', fetchFiles);
 
 // ── Bulk Actions ─────────────────────────────────────────────────────────────

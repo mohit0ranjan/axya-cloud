@@ -13,9 +13,10 @@ import React, { useEffect, useRef, useMemo } from 'react';
 import {
     View, Text, StyleSheet, TouchableOpacity, Animated,
 } from 'react-native';
+import { Image } from 'expo-image';
 import {
     X, CloudUpload, CheckCircle, AlertCircle,
-    Pause, Play, RotateCcw, Clock, Loader, Copy,
+    Pause, Play, RotateCcw, Clock, Loader, Copy, Film,
 } from 'lucide-react-native';
 
 import { UploadTask } from '../services/UploadManager';
@@ -28,6 +29,24 @@ function formatFileSize(bytes: number): string {
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
     return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${sizes[i]}`;
+}
+
+function formatSpeed(bytesPerSec?: number): string {
+    const value = Number(bytesPerSec || 0);
+    if (!Number.isFinite(value) || value <= 0) return '0 B/s';
+    return `${formatFileSize(value)}/s`;
+}
+
+function formatEta(seconds?: number): string {
+    const value = Math.max(0, Math.round(Number(seconds || 0)));
+    if (!Number.isFinite(value) || value <= 0) return 'Calculating ETA';
+    if (value < 60) return `${value}s left`;
+    const mins = Math.floor(value / 60);
+    const secs = value % 60;
+    if (mins < 60) return `${mins}m ${secs}s left`;
+    const hours = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return `${hours}h ${remMins}m left`;
 }
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -49,6 +68,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
     const { theme, isDark } = useTheme();
 
     const animProgress = useRef(new Animated.Value(0)).current;
+    const statusAnim = useRef(new Animated.Value(1)).current;
 
     useEffect(() => {
         Animated.timing(animProgress, {
@@ -58,7 +78,18 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
         }).start();
     }, [progress]);
 
+    useEffect(() => {
+        statusAnim.setValue(0.9);
+        Animated.timing(statusAnim, {
+            toValue: 1,
+            duration: 220,
+            useNativeDriver: true,
+        }).start();
+    }, [status]);
+
     const isUploading = status === 'uploading';
+    const isPreparing = status === 'preparing';
+    const isProcessing = status === 'processing';
     const isQueued = status === 'queued';
     const isRetrying = status === 'retrying';
     const isPaused = status === 'paused';
@@ -68,28 +99,37 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
     const isWaitingRetry = status === 'waiting_retry';
     const isTerminal = isCompleted || isCancelled;
 
-    const canPause = (isUploading || isQueued || isRetrying || isWaitingRetry) && !!onPause;
+    const canPause = (isPreparing || isUploading || isProcessing || isQueued || isRetrying || isWaitingRetry) && !!onPause;
     const canResume = isPaused && !!onResume;
     const canRetry = isFailed && !!onRetry;
     const canCancel = !isTerminal;
+    const retryAttempt = Math.max(1, Number(task.retryCount || 1));
+    const retryMax = 3;
 
     // ── Status label (no duplicate %) ──
     const statusLabel = useMemo((): string => {
         switch (status) {
             case 'uploading':
                 return `${formatFileSize(bytesUploaded ?? 0)} / ${formatFileSize(file.size)}`;
-            case 'queued': return 'Waiting in queue';
-            case 'retrying': return `Retrying (attempt ${task.retryCount})`;
-            case 'waiting_retry': return `Waiting to retry…`;
+            case 'preparing':
+                return 'Preparing secure upload...';
+            case 'processing':
+                return 'Finalizing in cloud...';
+            case 'queued': {
+                const position = Math.max(0, Number(task.queuePositionUser || 0));
+                return position > 0 ? `Queued • position #${position}` : 'Queued • waiting for slot';
+            }
+            case 'retrying': return `Retrying now • attempt ${retryAttempt} of ${retryMax}`;
+            case 'waiting_retry': return `Retry scheduled • attempt ${retryAttempt} of ${retryMax}`;
             case 'paused':
                 return `Paused · ${formatFileSize(bytesUploaded ?? 0)} / ${formatFileSize(file.size)}`;
             case 'completed':
                 return task.duplicate ? 'Duplicate — already exists' : 'Uploaded successfully';
-            case 'failed': return task.error || 'Upload failed';
+            case 'failed': return task.error || 'Upload failed. Tap retry.';
             case 'cancelled': return 'Cancelled';
             default: return 'Pending';
         }
-    }, [status, bytesUploaded, file.size, task.retryCount, task.error, task.duplicate]);
+    }, [status, bytesUploaded, file.size, retryAttempt, task.queuePositionUser, task.error, task.duplicate]);
 
     // ── Status icon ──
     const statusIcon = useMemo(() => {
@@ -99,10 +139,12 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
         if (isFailed) return <AlertCircle size={size} color={theme.colors.danger} />;
         if (isPaused) return <Pause size={size} color={theme.colors.accent} />;
         if (isCancelled) return <X size={size} color={theme.colors.muted} />;
+        if (isPreparing) return <Loader size={size} color={theme.colors.primary} />;
+        if (isProcessing) return <Loader size={size} color={theme.colors.accent} />;
         if (isRetrying || isWaitingRetry) return <Loader size={size} color={theme.colors.accent} />;
         if (isQueued) return <Clock size={size} color={theme.colors.muted} />;
         return <CloudUpload size={size} color={theme.colors.primary} />;
-    }, [status, task.duplicate, theme, isDark]);
+    }, [status, task.duplicate, theme, isDark, isPreparing, isProcessing]);
 
     // ── Progress bar color ──
     const progressColor = isCompleted
@@ -112,7 +154,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                 : theme.colors.primary;
 
     // ── Progress % display ──
-    const showPercent = isUploading || isRetrying || isPaused || isWaitingRetry;
+    const showPercent = isPreparing || isUploading || isProcessing || isRetrying || isPaused || isWaitingRetry;
     const statusColor = isFailed ? theme.colors.danger
         : isCompleted && !task.duplicate ? theme.colors.success
             : isCompleted && task.duplicate ? theme.colors.primary
@@ -120,12 +162,37 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                     : theme.colors.textBody;
 
     const s = useMemo(() => createStyles(theme, isDark), [theme, isDark]);
+    const mimeType = String(file?.mimeType || '').toLowerCase();
+    const isImageFile = mimeType.startsWith('image/');
+    const isVideoFile = mimeType.startsWith('video/');
+
+    const transferMeta = useMemo(() => {
+        if (!(isUploading || isProcessing || isRetrying || isWaitingRetry)) return '';
+        const speedText = formatSpeed(task.currentSpeedBps);
+        const etaText = formatEta(task.etaSeconds);
+        return `${speedText} • ${etaText}`;
+    }, [isProcessing, isRetrying, isUploading, isWaitingRetry, task.currentSpeedBps, task.etaSeconds]);
 
     return (
         <View style={s.card}>
             {/* Row 1: Icon + Name + % */}
             <View style={s.row1}>
-                <View style={s.iconWrap}>{statusIcon}</View>
+                {isImageFile ? (
+                    <View style={s.thumbWrap}>
+                        <Image
+                            source={{ uri: file.uri }}
+                            style={s.thumbImg}
+                            contentFit="cover"
+                            transition={120}
+                        />
+                    </View>
+                ) : isVideoFile ? (
+                    <View style={s.thumbWrap}>
+                        <Film size={16} color={theme.colors.textBody} />
+                    </View>
+                ) : (
+                    <View style={s.iconWrap}>{statusIcon}</View>
+                )}
                 <Text style={s.fileName} numberOfLines={1}>{file.name}</Text>
                 {showPercent && (
                     <Text style={s.percent}>{progress}%</Text>
@@ -151,10 +218,15 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
             )}
 
             {/* Row 3: Status + Actions */}
-            <View style={s.row3}>
-                <Text style={[s.statusText, { color: statusColor }]} numberOfLines={1}>
-                    {statusLabel}
-                </Text>
+            <Animated.View style={[s.row3, { opacity: statusAnim, transform: [{ scale: statusAnim }] }]}>
+                <View style={s.statusBlock}>
+                    <Text style={[s.statusText, { color: statusColor }]} numberOfLines={1}>
+                        {statusLabel}
+                    </Text>
+                    {transferMeta ? (
+                        <Text style={s.metaText} numberOfLines={1}>{transferMeta}</Text>
+                    ) : null}
+                </View>
                 <View style={s.actions}>
                     {canResume && (
                         <TouchableOpacity
@@ -197,7 +269,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                         </TouchableOpacity>
                     )}
                 </View>
-            </View>
+            </Animated.View>
         </View>
     );
 };
@@ -226,6 +298,19 @@ const createStyles = (theme: any, isDark: boolean) => StyleSheet.create({
         backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
         alignItems: 'center',
         justifyContent: 'center',
+    },
+    thumbWrap: {
+        width: 28,
+        height: 28,
+        borderRadius: 8,
+        overflow: 'hidden',
+        backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    thumbImg: {
+        width: '100%',
+        height: '100%',
     },
     fileName: {
         flex: 1,
@@ -260,8 +345,15 @@ const createStyles = (theme: any, isDark: boolean) => StyleSheet.create({
     statusText: {
         fontSize: 12,
         fontWeight: '500',
+    },
+    statusBlock: {
         flex: 1,
         minWidth: 0,
+    },
+    metaText: {
+        fontSize: 11,
+        marginTop: 2,
+        color: theme.colors.textBody,
     },
     actions: {
         flexDirection: 'row',

@@ -821,6 +821,9 @@ export const openPublicShareV2 = async (req: Request, res: Response) => {
         }
 
         if (share.password_hash) {
+            if (!password) {
+                return sendApiError(res, 401, 'password_required', 'Password required.', { retryable: false });
+            }
             const ok = await bcrypt.compare(password, share.password_hash).catch(() => false);
             if (!ok) {
                 await logShareV2Event({
@@ -1247,7 +1250,7 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
         res.setHeader('Content-Type', mimeType);
         res.setHeader('Content-Disposition', buildContentDisposition(payload.disposition, resolvedFileName));
 
-        if (payload.disposition === 'thumbnail') {
+        if (payload.disposition === 'thumbnail' || payload.disposition === 'inline') {
             res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400, immutable');
         }
 
@@ -1279,8 +1282,11 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
             try { fs.mkdirSync(SHARE_THUMB_CACHE_DIR, { recursive: true }); } catch { /* best effort */ }
 
             // Check primary ID or fallback generic variant
+            // Fix #2: Added _300.webp (new correct filename after resize fix).
+            // Kept _1080.webp for backward compat with any pre-existing cached thumbnails.
             const thumbCandidates = [
                 path.join(SHARE_THUMB_CACHE_DIR, `${item.file_id || item.id}_480.webp`),
+                path.join(SHARE_THUMB_CACHE_DIR, `${item.file_id || item.id}_300.webp`),
                 path.join(SHARE_THUMB_CACHE_DIR, `${item.file_id || item.id}_1080.webp`),
                 path.join(SHARE_THUMB_CACHE_DIR, `${item.file_id || item.id}.webp`),
             ];
@@ -1416,7 +1422,7 @@ const runAsyncZipJob = async (jobId: string, share: ShareLinkV2Row, items: Share
     try {
         await new Promise<void>(async (resolve, reject) => {
             const output = fs.createWriteStream(tmpPath, { flags: 'w' });
-            const archive = archiver('zip', { zlib: { level: 9 }, highWaterMark: 16384 }); // 16KB backpressure limit
+            const archive = archiver('zip', { zlib: { level: 2 }, highWaterMark: 16384 }); // 16KB backpressure limit
             let ended = false;
 
             const fail = (err: unknown) => {
@@ -1532,7 +1538,7 @@ export const downloadAllShareZipV2 = async (req: Request, res: Response) => {
         req.socket.setTimeout(10 * 60 * 1000);
         req.socket.on('timeout', () => req.destroy(new Error('zip_stream_timeout')));
 
-        const archive = archiver('zip', { zlib: { level: 9 }, highWaterMark: 16384 });
+        const archive = archiver('zip', { zlib: { level: 2 }, highWaterMark: 16384 });
         archive.on('warning', (w) => logger.warn('share-zip-warning', w?.message));
         archive.on('error', () => {
             if (!res.headersSent) {

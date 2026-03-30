@@ -194,7 +194,10 @@ export default function ShareV2Client({ slug }: { slug: string }) {
   const searchParams = useSearchParams();
   const secret = String(searchParams.get('k') || '').trim();
 
-  const [sessionToken, setSessionToken] = useState(() => readStoredSessionToken(slug));
+  const [sessionToken, setSessionToken] = useState('');
+  useEffect(() => {
+    setSessionToken(readStoredSessionToken(slug));
+  }, [slug]);
   const [share, setShare] = useState<ShareMeta | null>(null);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -204,7 +207,6 @@ export default function ShareV2Client({ slug }: { slug: string }) {
   const [infoMessage, setInfoMessage] = useState('');
   const [requiresPassword, setRequiresPassword] = useState(false);
   const [searchInput, setSearchInput] = useState('');
-  const deferredSearchInput = useDeferredValue(searchInput);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('name_asc');
   const [networkNotice, setNetworkNotice] = useState('');
@@ -249,10 +251,10 @@ export default function ShareV2Client({ slug }: { slug: string }) {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setSearch(deferredSearchInput.trim());
+      setSearch(searchInput.trim());
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [deferredSearchInput]);
+  }, [searchInput]);
 
   const fetchWithTimeout = useCallback(async (
     url: string,
@@ -349,6 +351,11 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       writeStoredSessionToken(slug, '');
     };
 
+    if (code === 'password_required') {
+      setRequiresPassword(true);
+      setError('');
+      return;
+    }
     if (code === 'invalid_password') {
       setRequiresPassword(true);
       setError('Incorrect password. Please try again.');
@@ -534,12 +541,16 @@ export default function ShareV2Client({ slug }: { slug: string }) {
         const prev = curr[path];
 
         const prevFiles = prev?.files || [];
-        const newFiles = files.filter((f: any) => !prevFiles.some((pf: any) => pf.id === f.id));
-        const mergedFiles = reset ? files : [...prevFiles, ...newFiles];
+        const mergedFiles = reset ? files : [
+          ...prevFiles.map((pf: any) => files.find((f: any) => f.id === pf.id) || pf),
+          ...files.filter((f: any) => !prevFiles.some((pf: any) => pf.id === f.id))
+        ];
 
         const prevFolders = prev?.folders || [];
-        const newFolders = folders.filter((f: any) => !prevFolders.some((pf: any) => pf.path === f.path));
-        const mergedFolders = reset ? folders : [...prevFolders, ...newFolders];
+        const mergedFolders = reset ? folders : [
+          ...prevFolders.map((pf: any) => folders.find((f: any) => f.path === pf.path) || pf),
+          ...folders.filter((f: any) => !prevFolders.some((pf: any) => pf.path === f.path))
+        ];
 
         return {
           ...curr,
@@ -700,17 +711,12 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       if (!job) throw new Error('Invalid ZIP job response.');
       if (job.status === 'failed') throw new Error(job.error_message || 'ZIP generation failed.');
       if (job.status === 'completed' && job.download_url) {
-        const dlRes = await request(`${API_BASE}${job.download_url}`, { signal });
-        if (!dlRes.ok) throw new Error('ZIP download failed.');
-        const blob = await dlRes.blob();
-        const obj = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = obj;
+        a.href = `${API_BASE}${job.download_url}`;
         a.download = `${slug}.zip`;
         document.body.appendChild(a);
         a.click();
-        a.remove();
-        URL.revokeObjectURL(obj);
+        window.setTimeout(() => a.remove(), 1000);
         return;
       }
       await sleepWithAbort(2000, signal);
@@ -725,35 +731,20 @@ export default function ShareV2Client({ slug }: { slug: string }) {
 
     setZipState({ loading: true, message: 'Preparing ZIP...' });
     try {
-      const res = await request(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/download-all`, {
+      const res = await request(`${API_BASE}/api/v2/public/shares/${encodeURIComponent(slug)}/download-all?async=1`, {
         signal: abortController.signal,
       }, {
         retries: 2,
         timeoutMs: 25_000,
       });
-      const contentType = String(res.headers.get('content-type') || '');
 
-      if (res.status === 202 || contentType.includes('application/json')) {
-        const payload = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(payload?.message || payload?.error || 'Failed to start ZIP generation.');
-        const pollingUrl = String(payload?.polling_url || '');
-        if (!pollingUrl) throw new Error('Missing ZIP polling URL.');
-        setZipState({ loading: true, message: 'Generating ZIP...' });
-        await pollZipJob(pollingUrl, abortController.signal);
-        setZipState({ loading: false, message: '' });
-        return;
-      }
-
-      if (!res.ok) throw new Error('Failed to download ZIP.');
-      const blob = await res.blob();
-      const obj = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = obj;
-      a.download = `${slug}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(obj);
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload?.message || payload?.error || 'Failed to start ZIP generation.');
+      const pollingUrl = String(payload?.polling_url || '');
+      if (!pollingUrl) throw new Error('Missing ZIP polling URL.');
+      
+      setZipState({ loading: true, message: 'Generating ZIP...' });
+      await pollZipJob(pollingUrl, abortController.signal);
       setZipState({ loading: false, message: '' });
     } catch (err: any) {
       if (err?.name === 'AbortError') {

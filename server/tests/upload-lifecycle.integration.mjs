@@ -9,9 +9,9 @@ const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.UPLOAD_TEST_REQUEST_TIMEO
 const POLL_INTERVAL_MS = Number.parseInt(process.env.UPLOAD_TEST_POLL_INTERVAL_MS || '1500', 10);
 const COMPLETE_TIMEOUT_MS = Number.parseInt(process.env.UPLOAD_TEST_COMPLETE_TIMEOUT_MS || '300000', 10);
 const SKIP_COMPLETE = process.env.UPLOAD_TEST_SKIP_COMPLETE === '1';
-const TEST_CHUNK_SIZE = Number.parseInt(process.env.UPLOAD_TEST_CHUNK_SIZE_BYTES || String(256 * 1024), 10);
+const TEST_CHUNK_SIZE = Number.parseInt(process.env.UPLOAD_TEST_CHUNK_SIZE_BYTES || String(5 * 1024 * 1024), 10);
 
-const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'error']);
+const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'failed', 'error']);
 
 function assert(condition, message) {
   if (!condition) {
@@ -90,25 +90,49 @@ async function initUpload(fileName, fileSize, chunkSizeBytes = TEST_CHUNK_SIZE) 
     body: {
       originalname: fileName,
       size: fileSize,
-      mimetype: 'application/octet-stream',
+      mimetype: 'application/pdf',
       chunk_size_bytes: chunkSizeBytes,
     },
   });
 
   assert(response.data.success === true, 'Upload init did not report success=true');
   assert(typeof response.data.uploadId === 'string' && response.data.uploadId.length > 0, 'Upload init did not return uploadId');
+  assert(Number(response.data.chunkSizeBytes) === TEST_CHUNK_SIZE, `Expected chunkSizeBytes=${TEST_CHUNK_SIZE}`);
   return response.data.uploadId;
 }
 
-async function uploadChunk(uploadId, chunkIndex, chunkBuffer, expectedStatuses = [200]) {
-  return requestJson('POST', '/files/upload/chunk', {
+async function initUploadRaw(payload, expectedStatuses = [200]) {
+  return requestJson('POST', '/files/upload/init', {
     expectedStatuses,
-    body: {
-      uploadId,
-      chunkIndex,
-      chunkBase64: chunkBuffer.toString('base64'),
-    },
+    body: payload,
   });
+}
+
+async function uploadChunk(uploadId, chunkIndex, chunkBuffer) {
+  let attempts = 0;
+  while (attempts < 30) {
+    attempts += 1;
+    const response = await requestJson('POST', '/files/upload/chunk', {
+      expectedStatuses: [200, 409],
+      body: {
+        uploadId,
+        chunkIndex,
+        chunkBase64: chunkBuffer.toString('base64'),
+      },
+    });
+
+    if (response.status === 200) return response;
+
+    const code = String(response.data?.code || '').toUpperCase();
+    if (code !== 'UPLOAD_QUEUED') {
+      throw new Error(`Chunk upload failed with 409 code=${code || 'unknown'}`);
+    }
+
+    const waitMs = Math.max(1000, Number(response.data?.recommendedPollMs || POLL_INTERVAL_MS));
+    await delay(waitMs);
+  }
+
+  throw new Error('Chunk upload remained queued beyond retry budget');
 }
 
 async function completeUpload(uploadId) {
@@ -149,16 +173,29 @@ async function pollForTerminalStatus(uploadId, timeoutMs) {
   throw new Error(`Upload ${uploadId} did not reach terminal state within ${timeoutMs}ms`);
 }
 
+async function waitForQueueRelease(uploadId, timeoutMs = 120000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const status = await readUploadStatus(uploadId);
+    if (status.status !== 'queued') return status;
+    const waitMs = Math.max(1000, Number(status.recommendedPollMs || POLL_INTERVAL_MS));
+    await delay(waitMs);
+  }
+  throw new Error(`Upload ${uploadId} stayed queued beyond ${timeoutMs}ms`);
+}
+
 async function runReliabilityResumeScenario() {
   console.log('\n[Scenario 1] persistence + out-of-order + duplicate + retry + resume + complete');
 
-  const payload = buildDeterministicBuffer(900 * 1024 + 73);
+  const payload = buildDeterministicBuffer(11 * 1024 * 1024 + 73);
   const chunks = splitIntoChunks(payload, TEST_CHUNK_SIZE);
   assert(chunks.length >= 3, 'Expected at least 3 chunks for reliability scenario');
   const fileName = `upload-lifecycle-${Date.now()}-${randomUUID().slice(0, 8)}.bin`;
 
   const uploadId = await initUpload(fileName, payload.length, TEST_CHUNK_SIZE);
   console.log(`[Step] initialized uploadId=${uploadId}`);
+
+  await waitForQueueRelease(uploadId);
 
   const sessionsAfterInit = await requestJson('GET', '/files/upload/sessions');
   const hasUploadInSessions = Array.isArray(sessionsAfterInit.data.sessions)
@@ -243,12 +280,14 @@ async function runReliabilityResumeScenario() {
 async function runCancelScenario() {
   console.log('\n[Scenario 2] init -> chunk -> cancel -> status');
 
-  const payload = buildDeterministicBuffer(256 * 1024 + 11);
+  const payload = buildDeterministicBuffer(5 * 1024 * 1024 + 11);
   const [chunk0] = splitIntoChunks(payload, TEST_CHUNK_SIZE);
   const fileName = `upload-cancel-${Date.now()}-${randomUUID().slice(0, 8)}.bin`;
 
   const uploadId = await initUpload(fileName, payload.length, TEST_CHUNK_SIZE);
   console.log(`[Step] initialized uploadId=${uploadId}`);
+
+  await waitForQueueRelease(uploadId);
 
   const chunkResponse = await uploadChunk(uploadId, 0, chunk0);
   assert(chunkResponse.data.success === true, 'Cancel scenario first chunk did not report success=true');
@@ -263,6 +302,62 @@ async function runCancelScenario() {
 
   assert(cancelStatus.status === 'cancelled', `Expected cancelled status, got ${cancelStatus.status}`);
   console.log(`[Pass] cancelled uploadId=${uploadId}`);
+}
+
+async function runConstraintScenario() {
+  console.log('\n[Scenario 3] constraints + queue semantics');
+
+  const largeStreamInit = await initUploadRaw({
+    originalname: `large-stream-${Date.now()}.mp4`,
+    size: (420 * 1024 * 1024),
+    upload_mode: 'stream',
+    chunk_size_bytes: TEST_CHUNK_SIZE,
+    mimetype: 'video/mp4',
+  }, [200]);
+  assert(largeStreamInit.data.success === true, 'Expected large stream init to be accepted');
+  assert(String(largeStreamInit.data.uploadMode || '').toLowerCase() === 'stream', 'Expected uploadMode=stream for large stream init');
+
+  const mimeRejected = await initUploadRaw({
+    originalname: `mime-reject-${Date.now()}.bin`,
+    size: 1024,
+    mimetype: 'application/x-msdownload',
+    chunk_size_bytes: TEST_CHUNK_SIZE,
+  }, [400]);
+  assert(String(mimeRejected.data.code || '').toLowerCase() === 'unsupported_mime_type', 'Expected unsupported_mime_type code');
+
+  const chunkSizeRejected = await initUploadRaw({
+    originalname: `chunk-reject-${Date.now()}.pdf`,
+    size: TEST_CHUNK_SIZE,
+    mimetype: 'application/pdf',
+    chunk_size_bytes: 1024 * 1024,
+  }, [400]);
+  assert(String(chunkSizeRejected.data.code || '').toLowerCase() === 'chunk_size_fixed', 'Expected chunk_size_fixed code');
+
+  const legacyRemoved = await requestJson('POST', '/files/upload', {
+    expectedStatuses: [410],
+    body: {},
+  });
+  assert(String(legacyRemoved.data.code || '').toLowerCase() === 'legacy_upload_removed', 'Expected legacy_upload_removed on /files/upload');
+
+  const userQueueIds = [];
+  for (let i = 0; i < 3; i += 1) {
+    const response = await initUploadRaw({
+      originalname: `queue-user-${Date.now()}-${i}.pdf`,
+      size: TEST_CHUNK_SIZE + 1,
+      mimetype: 'application/pdf',
+      chunk_size_bytes: TEST_CHUNK_SIZE,
+    }, [200]);
+    assert(response.data.success === true, 'Expected queued-cap init success');
+    userQueueIds.push(String(response.data.uploadId || ''));
+  }
+
+  const statuses = await Promise.all(userQueueIds.map((id) => readUploadStatus(id)));
+  const queuedCount = statuses.filter((s) => String(s.status || '') === 'queued').length;
+  assert(queuedCount >= 1, 'Expected at least one queued upload when per-user active cap is exceeded');
+
+  await cancelUpload(String(largeStreamInit.data.uploadId || '')).catch(() => undefined);
+  await Promise.all(userQueueIds.map((id) => cancelUpload(id).catch(() => undefined)));
+  console.log('[Pass] constraints and queue semantics validated');
 }
 
 async function main() {
@@ -280,6 +375,7 @@ async function main() {
 
   await runReliabilityResumeScenario();
   await runCancelScenario();
+  await runConstraintScenario();
 
   console.log('\nAll upload lifecycle integration scenarios passed.');
 }

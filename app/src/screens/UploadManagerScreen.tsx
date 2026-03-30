@@ -177,7 +177,7 @@ export default function UploadManagerScreen({ navigation }: any) {
     } = useUpload();
 
     const activeTasks = useMemo(
-        () => tasks.filter((t) => ['queued', 'uploading', 'retrying', 'waiting_retry', 'paused'].includes(t.status)),
+        () => tasks.filter((t) => ['preparing', 'queued', 'uploading', 'processing', 'retrying', 'waiting_retry', 'paused'].includes(t.status)),
         [tasks]
     );
     const failedTasks = useMemo(() => tasks.filter((t) => t.status === 'failed'), [tasks]);

@@ -28,8 +28,7 @@ import UploadManagerScreen from './src/screens/UploadManagerScreen';
 import MainTabs from './src/navigation/MainTabs';
 import AnimatedSplashScreen from './src/screens/AnimatedSplashScreen';
 
-import UploadProgressOverlay from './src/components/UploadProgressOverlay';
-import DownloadProgressOverlay from './src/components/DownloadProgressOverlay';
+import SyncActivityOverlay from './src/components/SyncActivityOverlay';
 import ServerWakingOverlay from './src/components/ServerWakingOverlay';
 import AppErrorBoundary from './src/components/AppErrorBoundary';
 import { logger } from './src/utils/logger';
@@ -132,8 +131,7 @@ function RootNavigator() {
                         </>
                     )}
                 </Stack.Navigator>
-                <UploadProgressOverlay />
-                <DownloadProgressOverlay />
+                <SyncActivityOverlay />
                 <ServerWakingOverlay />
 
                 {(!isSplashAnimationDone || !!isLoading) && (

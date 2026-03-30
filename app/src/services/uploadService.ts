@@ -13,6 +13,8 @@ import { Buffer } from 'buffer';
 import apiClient, { uploadClient } from './apiClient';
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
+const DEFAULT_POLL_MS = 2000;
+const DEFAULT_CHUNK_DELAY_MS = 0;
 
 export interface FileAsset {
     uri: string;
@@ -127,7 +129,10 @@ export const uploadFile = async (
             formData.append('chunkIndex', String(chunkIndex));
             formData.append('chunk', new globalThis.File([chunk], name, { type: mimetype }));
 
-            await uploadClient.post('/files/upload/chunk', formData, { signal: abortSignal });
+            const chunkRes = await uploadClient.post('/files/upload/chunk', formData, { signal: abortSignal });
+            // Fix #5: Respect server backpressure hints between chunks
+            const chunkDelay = chunkRes.data?.recommendedChunkDelayMs ?? DEFAULT_CHUNK_DELAY_MS;
+            if (chunkDelay > 0) await new Promise(r => setTimeout(r, chunkDelay));
             offset = Math.min(offset + CHUNK_SIZE, size);
             chunkIndex++;
             onProgress(Math.round(Math.min((offset / size) * 45, 45)), offset);
@@ -139,11 +144,14 @@ export const uploadFile = async (
             const chunkBase64 = await readFileChunkAsBase64(uri, offset, length);
             throwIfCancelled();
 
-            await uploadClient.post(
+            const chunkRes = await uploadClient.post(
                 '/files/upload/chunk',
                 { uploadId, chunkIndex, chunkBase64 },
                 { signal: abortSignal }
             );
+            // Fix #5: Respect server backpressure hints between chunks
+            const chunkDelay = chunkRes.data?.recommendedChunkDelayMs ?? DEFAULT_CHUNK_DELAY_MS;
+            if (chunkDelay > 0) await new Promise(r => setTimeout(r, chunkDelay));
 
             offset += length;
             chunkIndex++;
@@ -176,9 +184,15 @@ export const uploadFile = async (
                 return;
             }
 
+            // Fix #7: Use adaptive poll interval from server response
+            let nextPollMs = DEFAULT_POLL_MS;
             try {
                 const res = await apiClient.get(`/files/upload/status/${uploadId}`, { signal: abortSignal });
-                const { status, progress: tgProgress, error: tgError } = res.data;
+                const { status, progress: tgProgress, error: tgError, recommendedPollMs } = res.data;
+                // Fix #7: Respect server's recommended poll interval
+                if (typeof recommendedPollMs === 'number' && recommendedPollMs > 0) {
+                    nextPollMs = recommendedPollMs;
+                }
 
                 if (status === 'completed') {
                     onProgress(100, size);
@@ -202,7 +216,7 @@ export const uploadFile = async (
                 }
             }
 
-            if (!settled) setTimeout(poll, 2000);
+            if (!settled) setTimeout(poll, nextPollMs);
         };
 
         abortSignal?.addEventListener('abort', () => {

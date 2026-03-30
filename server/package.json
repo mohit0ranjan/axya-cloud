@@ -20,9 +20,11 @@
   "dependencies": {
     "@types/archiver": "^7.0.0",
     "@types/bcryptjs": "^2.4.6",
+    "@types/busboy": "^1.5.4",
     "archiver": "^7.0.1",
     "bcryptjs": "^3.0.3",
     "blurhash": "^2.0.5",
+    "busboy": "^1.6.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",

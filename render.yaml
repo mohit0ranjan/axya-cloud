@@ -33,6 +33,20 @@ services:
         value: https://axya-web.onrender.com
       - key: SERVER_BASE_URL
         value: https://axya-server.onrender.com
+      - key: UPLOAD_DISK_PAUSE_PERCENT
+        value: 80
+      - key: UPLOAD_DISK_CRITICAL_PERCENT
+        value: 92
+      - key: UPLOAD_DISK_RESERVED_BYTES
+        value: 157286400
+      - key: UPLOAD_STREAM_IDLE_TIMEOUT_MS
+        value: 60000
+      - key: UPLOAD_MAINTENANCE_INTERVAL_MS
+        value: 900000
+      - key: UPLOAD_TERMINAL_TEMP_RETENTION_MS
+        value: 21600000
+      - key: UPLOAD_ORPHAN_TEMP_RETENTION_MS
+        value: 21600000
       - key: SHARE_V2_SESSION_SECRET
         sync: false
       - key: SHARE_V2_TICKET_SECRET

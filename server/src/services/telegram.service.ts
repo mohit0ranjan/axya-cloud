@@ -33,6 +33,7 @@ const getApiConfig = () => {
 // Expired clients are disconnected gracefully
 
 const CLIENT_TTL_SECONDS = 3600;
+const TELEGRAM_CONNECT_TIMEOUT_MS = Number.parseInt(String(process.env.TELEGRAM_CONNECT_TIMEOUT_MS || '20000'), 10) || 20_000;
 const clientPool = new NodeCache({
     stdTTL: CLIENT_TTL_SECONDS,
     checkperiod: 120,
@@ -96,8 +97,15 @@ export const getDynamicClient = async (sessionString: string): Promise<TelegramC
         });
 
         try {
-            await client.connect();
+            await Promise.race([
+                client.connect(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('TELEGRAM_CONNECT_TIMEOUT')), TELEGRAM_CONNECT_TIMEOUT_MS)),
+            ]);
         } catch (e: any) {
+            try {
+                await client.disconnect();
+                await client.destroy();
+            } catch { }
             logger.error('backend.telegram', 'connect_failed', { key, message: e.message });
             throw new Error('Failed to connect to Telegram. Session may be expired.');
         }

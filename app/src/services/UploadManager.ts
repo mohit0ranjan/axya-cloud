@@ -20,7 +20,7 @@
 import { File, Paths } from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
-import { Platform } from 'react-native';
+import { Platform, AppState, AppStateStatus } from 'react-native';
 import { getNotificationsEnabled } from '../utils/preferences';
 import { Buffer } from 'buffer';
 import apiClient, { uploadClient } from './apiClient';
@@ -76,6 +76,8 @@ export interface UploadTask {
     fingerprint: string;
     /** True if server detected this file already exists (hash match) */
     duplicate?: boolean;
+    /** Restored after app restart/interruption and waiting for explicit user resume */
+    recovered?: boolean;
     createdAt: number;
     updatedAt: number;
     completedAt?: number;
@@ -97,6 +99,15 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
 function makeFingerprint(file: FileAsset): string {
     const safeName = sanitizeFileName(file.name, 'file');
     return `${file.uri}|${safeName}|${file.size}`;
+}
+
+function toFiniteNumber(value: unknown, fallback = 0): number {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clampProgress(value: unknown): number {
+    return Math.max(0, Math.min(Math.round(toFiniteNumber(value, 0)), 100));
 }
 
 /**
@@ -147,7 +158,7 @@ async function readFileChunkAsBase64(
 class UploadManager {
     public tasks: UploadTask[] = [];
     // Keep mobile concurrency low for free-tier stability.
-    private readonly MAX_CONCURRENT = 2;
+    private readonly MAX_CONCURRENT = 3;
     private readonly MAX_RETRIES = 3;
     private readonly STREAM_MODE = 'stream';
     private readonly CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB chunks
@@ -179,6 +190,7 @@ class UploadManager {
 
     private readonly inFlightTaskIds = new Set<string>();
     private readonly perTaskSpeedState = new Map<string, { lastBytes: number; lastTs: number; emaBps: number }>();
+    private taskIdCounter = 0;
 
     private static VALID_TRANSITIONS: Record<UploadStatus, UploadStatus[]> = {
         preparing: ['queued', 'uploading', 'paused', 'cancelled'],
@@ -204,6 +216,19 @@ class UploadManager {
         return true;
     }
 
+    private makeTaskId(): string {
+        this.taskIdCounter = (this.taskIdCounter + 1) % 1_000_000;
+        return `${Date.now()}_${this.taskIdCounter}_${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    private resolveProgressFraction(progressEvent: any, fallbackTotal: number): number {
+        const fallback = Math.max(1, toFiniteNumber(fallbackTotal, 1));
+        const loaded = Math.max(0, toFiniteNumber(progressEvent?.loaded ?? progressEvent?.bytes, 0));
+        let totalCandidate = toFiniteNumber(progressEvent?.total, fallback);
+        const total = (Number.isFinite(totalCandidate) && totalCandidate > 0) ? totalCandidate : Math.max(loaded, fallback, 1);
+        return Math.max(0, Math.min(loaded / total, 1));
+    }
+
     private updateTask(id: string, updates: Partial<UploadTask>) {
         const index = this.tasks.findIndex(t => t.id === id);
         if (index === -1) return;
@@ -221,8 +246,9 @@ class UploadManager {
     }
 
     private updateTaskProgressWithTelemetry(task: UploadTask, bytesUploaded: number, progress: number) {
-        const safeBytes = Math.max(0, Math.min(Math.round(bytesUploaded), task.file.size));
-        const safeProgress = Math.max(0, Math.min(Math.round(progress), 100));
+        const fileSize = Math.max(0, toFiniteNumber(task.file.size, 0));
+        const safeBytes = Math.max(0, Math.min(Math.round(toFiniteNumber(bytesUploaded, 0)), fileSize));
+        const safeProgress = clampProgress(progress);
         const now = Date.now();
         const previous = this.perTaskSpeedState.get(task.id);
 
@@ -243,7 +269,7 @@ class UploadManager {
             emaBps,
         });
 
-        const remainingBytes = Math.max(0, task.file.size - safeBytes);
+        const remainingBytes = Math.max(0, fileSize - safeBytes);
         const etaSeconds = emaBps > 1 ? Math.ceil(remainingBytes / emaBps) : undefined;
 
         this.updateTask(task.id, {
@@ -290,12 +316,27 @@ class UploadManager {
     private lastNotifyTime = 0;
     private pendingNotifyTimer: ReturnType<typeof setTimeout> | null = null;
 
+    private appStateSubscription: any = null;
+
     constructor() {
         serverReadiness.subscribe((state) => {
             if (state.phase !== 'ready') return;
             if (!this.tasks.some((task) => task.status === 'preparing' || task.status === 'queued' || task.status === 'retrying')) return;
             void this.processQueue();
         });
+        
+        // Background AppState handling
+        if (Platform.OS !== 'web') {
+            this.appStateSubscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+                const isBackground = nextAppState === 'background' || nextAppState === 'inactive';
+                if (isBackground) {
+                    this.pauseAllBackground();
+                } else if (nextAppState === 'active') {
+                    this.resumeAllBackground();
+                }
+            });
+        }
+        
         this.loadQueue();
     }
 
@@ -306,22 +347,49 @@ class UploadManager {
             const stored = await AsyncStorage.getItem('@upload_queue_v2');
             if (stored) {
                 const parsed: UploadTask[] = JSON.parse(stored);
-                this.tasks = parsed.map(t =>
-                    (
-                        t.status === 'uploading'
-                        || t.status === 'processing'
-                        || t.status === 'retrying'
-                        || t.status === 'waiting_retry'
-                        || t.status === 'preparing'
-                        || t.status === 'pending'
-                    )
-                        ? { ...t, status: 'queued' as UploadStatus, progress: 0, bytesUploaded: 0 }
-                        : {
-                            ...t,
-                            createdAt: Number(t.createdAt || Date.now()),
-                            updatedAt: Number(t.updatedAt || Date.now()),
-                        }
-                );
+                this.tasks = parsed.map((task) => {
+                    const now = Date.now();
+                    const safeName = sanitizeFileName(String(task?.file?.name || 'file'), 'file');
+                    const fileSize = Math.max(0, toFiniteNumber(task?.file?.size, 0));
+                    const baseTask: UploadTask = {
+                        ...task,
+                        file: {
+                            uri: String(task?.file?.uri || ''),
+                            name: safeName,
+                            size: fileSize,
+                            mimeType: task?.file?.mimeType,
+                        },
+                        progress: clampProgress(task?.progress),
+                        bytesUploaded: Math.max(0, Math.min(Math.round(toFiniteNumber(task?.bytesUploaded, 0)), fileSize)),
+                        retryCount: Math.max(0, Math.round(toFiniteNumber(task?.retryCount, 0))),
+                        createdAt: Number(task?.createdAt || now),
+                        updatedAt: Number(task?.updatedAt || now),
+                        fingerprint: String(task?.fingerprint || makeFingerprint({
+                            uri: String(task?.file?.uri || ''),
+                            name: safeName,
+                            size: fileSize,
+                            mimeType: task?.file?.mimeType,
+                        })),
+                    };
+
+                    if (
+                        baseTask.status === 'uploading'
+                        || baseTask.status === 'processing'
+                        || baseTask.status === 'retrying'
+                        || baseTask.status === 'waiting_retry'
+                        || baseTask.status === 'preparing'
+                        || baseTask.status === 'pending'
+                    ) {
+                        return {
+                            ...baseTask,
+                            status: 'paused' as UploadStatus,
+                            recovered: true,
+                            error: 'Recovered upload session. Tap resume to continue safely.',
+                        };
+                    }
+
+                    return baseTask;
+                });
             }
             // Load historical stats
             const statsStored = await AsyncStorage.getItem('@upload_stats_v2');
@@ -589,6 +657,7 @@ class UploadManager {
 
         for (const t of this.tasks) {
             const size = Math.max(t.file.size || 1, 1);
+            const uploaded = Math.max(0, Math.min(toFiniteNumber(t.bytesUploaded, 0), size));
             activeTotalBytes += size;
 
             switch (t.status) {
@@ -607,37 +676,37 @@ class UploadManager {
                 case 'uploading':
                     uploadingCount++;
                     activeCount++;
-                    activeUploadedBytes += (t.bytesUploaded || 0);
+                    activeUploadedBytes += uploaded;
                     break;
                 case 'processing':
                     uploadingCount++;
                     activeCount++;
-                    activeUploadedBytes += (t.bytesUploaded || 0);
+                    activeUploadedBytes += uploaded;
                     break;
                 case 'retrying':
                     activeCount++;
                     uploadingCount++;
-                    activeUploadedBytes += (t.bytesUploaded || 0);
+                    activeUploadedBytes += uploaded;
                     break;
                 case 'waiting_retry':
                     activeCount++;
                     queuedCount++;
-                    activeUploadedBytes += (t.bytesUploaded || 0);
+                    activeUploadedBytes += uploaded;
                     break;
                 case 'failed':
                     activeFailedCount++;
-                    activeUploadedBytes += (t.bytesUploaded || 0);
+                    activeUploadedBytes += uploaded;
                     break;
                 case 'paused':
                     pausedCount++;
                     activeCount++;
-                    activeUploadedBytes += (t.bytesUploaded || 0);
+                    activeUploadedBytes += uploaded;
                     break;
                 case 'cancelled':
                     cancelledCount++;
                     break;
                 default:
-                    activeUploadedBytes += (t.bytesUploaded || 0);
+                    activeUploadedBytes += uploaded;
                     break;
             }
         }
@@ -807,7 +876,7 @@ class UploadManager {
             existingFingerprints.add(fp);
             const now = Date.now();
             newTasks.push({
-                id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+                id: this.makeTaskId(),
                 file: { ...file, name: safeName },
                 folderId,
                 chatTarget,
@@ -816,6 +885,7 @@ class UploadManager {
                 status: 'queued',
                 retryCount: 0,
                 fingerprint: fp,
+                recovered: false,
                 createdAt: now,
                 updatedAt: now,
             });
@@ -855,6 +925,7 @@ class UploadManager {
         if (task.status === 'paused') {
             this.transition(task, 'queued');
             task.error = undefined;
+            task.recovered = false;
             this.resetTaskTelemetry(task.id);
             this.notifyListeners(true);
             this.processQueue();
@@ -872,6 +943,7 @@ class UploadManager {
             task.progress = 0;
             task.bytesUploaded = 0;
             task.uploadId = undefined;
+            task.recovered = false;
             this.resetTaskTelemetry(task.id);
             this.notifyListeners(true);
             this.processQueue();
@@ -969,6 +1041,7 @@ class UploadManager {
                 t.progress = 0;
                 t.bytesUploaded = 0;
                 t.uploadId = undefined;
+                t.recovered = false;
                 this.resetTaskTelemetry(t.id);
             });
         this.notifyListeners(true);
@@ -1399,13 +1472,12 @@ class UploadManager {
                     const chunkRes = await uploadClient.post('/files/upload/chunk', formData, {
                         signal: abort.signal,
                         onUploadProgress: (progressEvent: any) => {
-                            // ✅ Fix 3: Use known chunk size as fallback when total is unavailable
-                            const chunkTotal = progressEvent.total || chunk.size || this.CHUNK_SIZE;
-                            const fraction = chunkTotal > 0 ? progressEvent.loaded / chunkTotal : 0;
+                            const fraction = this.resolveProgressFraction(progressEvent, chunk.size || this.CHUNK_SIZE);
+                            const uploadedBytes = offset + Math.round(chunk.size * fraction);
                             this.updateTaskProgressWithTelemetry(
                                 task,
-                                offset + Math.round(chunk.size * fraction),
-                                Math.round(Math.min(((offset + Math.round(chunk.size * fraction)) / file.size) * 50, 50))
+                                uploadedBytes,
+                                Math.round(Math.min((uploadedBytes / file.size) * 50, 50))
                             );
                         },
                     });
@@ -1465,13 +1537,12 @@ class UploadManager {
                         {
                             signal: abort.signal,
                             onUploadProgress: (progressEvent: any) => {
-                                // ✅ Fix 3: Use known chunk length as fallback when total is unavailable
-                                const chunkTotal = progressEvent.total || progressEvent.bytes || length;
-                                const fraction = chunkTotal > 0 ? progressEvent.loaded / chunkTotal : 0;
+                                const fraction = this.resolveProgressFraction(progressEvent, length);
+                                const uploadedBytes = offset + Math.round(length * fraction);
                                 this.updateTaskProgressWithTelemetry(
                                     task,
-                                    offset + Math.round(length * fraction),
-                                    Math.round(Math.min(((offset + Math.round(length * fraction)) / file.size) * 50, 50))
+                                    uploadedBytes,
+                                    Math.round(Math.min((uploadedBytes / file.size) * 50, 50))
                                 );
                             },
                         }
@@ -1665,9 +1736,7 @@ class UploadManager {
                         signal,
                         timeout: this.STREAM_TIMEOUT_MS,
                         onUploadProgress: (progressEvent: any) => {
-                            const total = Math.max(1, Number(progressEvent?.total || task.file.size || 1));
-                            const loaded = Math.max(0, Number(progressEvent?.loaded || 0));
-                            const fraction = Math.max(0, Math.min(loaded / total, 1));
+                            const fraction = this.resolveProgressFraction(progressEvent, task.file.size || 1);
                             this.updateTask(task.id, { status: 'uploading', queuePositionGlobal: 0, queuePositionUser: 0 });
                             this.updateTaskProgressWithTelemetry(
                                 task,

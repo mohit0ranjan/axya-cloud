@@ -49,7 +49,7 @@ router.delete('/folder/:id', trashFolder);
 
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import {
-    initUpload, uploadChunk, uploadStream, completeUpload, checkUploadStatus, cancelUpload, listUploadSessions
+    initUpload, uploadChunk, uploadStream, completeUpload, checkUploadStatus, cancelUpload, listUploadSessions, resumeUploadSession
 } from '../controllers/upload.controller';
 
 const uploadLimiter = rateLimit({
@@ -94,6 +94,7 @@ const chunkUpload = multer({
 router.post('/upload/init', uploadLimiter, initUpload);
 router.post('/upload/stream/:uploadId', uploadLimiter, uploadStream);
 router.post('/upload/chunk', chunkLimiter, chunkUpload.single('chunk'), uploadChunk);
+router.post('/upload/resume', uploadLimiter, resumeUploadSession);
 router.post('/upload/complete', uploadLimiter, completeUpload);
 router.post('/upload/cancel', uploadLimiter, cancelUpload);
 router.get('/upload/status/:uploadId', checkUploadStatus);

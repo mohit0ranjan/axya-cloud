@@ -67,16 +67,28 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
     const { file, status, progress, bytesUploaded } = task;
     const { theme, isDark } = useTheme();
 
+    const safeProgress = useMemo(() => {
+        const value = Number(progress);
+        if (!Number.isFinite(value)) return 0;
+        return Math.max(0, Math.min(Math.round(value), 100));
+    }, [progress]);
+
+    const safeUploadedBytes = useMemo(() => {
+        const value = Number(bytesUploaded);
+        if (!Number.isFinite(value)) return 0;
+        return Math.max(0, Math.min(Math.round(value), Number(file.size || 0)));
+    }, [bytesUploaded, file.size]);
+
     const animProgress = useRef(new Animated.Value(0)).current;
     const statusAnim = useRef(new Animated.Value(1)).current;
 
     useEffect(() => {
         Animated.timing(animProgress, {
-            toValue: progress / 100,
+            toValue: safeProgress / 100,
             duration: 300,
             useNativeDriver: false,
         }).start();
-    }, [progress]);
+    }, [safeProgress]);
 
     useEffect(() => {
         statusAnim.setValue(0.9);
@@ -110,7 +122,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
     const statusLabel = useMemo((): string => {
         switch (status) {
             case 'uploading':
-                return `${formatFileSize(bytesUploaded ?? 0)} / ${formatFileSize(file.size)}`;
+                return `${formatFileSize(safeUploadedBytes)} / ${formatFileSize(file.size)}`;
             case 'preparing':
                 return 'Preparing secure upload...';
             case 'processing':
@@ -122,14 +134,17 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
             case 'retrying': return `Retrying now • attempt ${retryAttempt} of ${retryMax}`;
             case 'waiting_retry': return `Retry scheduled • attempt ${retryAttempt} of ${retryMax}`;
             case 'paused':
-                return `Paused · ${formatFileSize(bytesUploaded ?? 0)} / ${formatFileSize(file.size)}`;
+                if (task.recovered) {
+                    return `Recovered upload · ${formatFileSize(safeUploadedBytes)} / ${formatFileSize(file.size)} · tap resume`;
+                }
+                return `Paused · ${formatFileSize(safeUploadedBytes)} / ${formatFileSize(file.size)}`;
             case 'completed':
                 return task.duplicate ? 'Duplicate — already exists' : 'Uploaded successfully';
             case 'failed': return task.error || 'Upload failed. Tap retry.';
             case 'cancelled': return 'Cancelled';
             default: return 'Pending';
         }
-    }, [status, bytesUploaded, file.size, retryAttempt, task.queuePositionUser, task.error, task.duplicate]);
+    }, [status, safeUploadedBytes, file.size, retryAttempt, task.queuePositionUser, task.error, task.duplicate, task.recovered]);
 
     // ── Status icon ──
     const statusIcon = useMemo(() => {
@@ -195,7 +210,7 @@ const UploadProgress: React.FC<UploadProgressProps> = ({
                 )}
                 <Text style={s.fileName} numberOfLines={1}>{file.name}</Text>
                 {showPercent && (
-                    <Text style={s.percent}>{progress}%</Text>
+                    <Text style={s.percent}>{safeProgress}%</Text>
                 )}
             </View>
 

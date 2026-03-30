@@ -1320,21 +1320,25 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
 
                 const cacheFileToWrite = thumbCandidates[0]; // Save to the expected schema
 
-                // Collect the transformed output to save to cache, then write to response
-                const chunks: Buffer[] = [];
-                const nodeStream = require('stream').Readable.from(stream);
+                // Stream transformed bytes to both response and disk cache (no full buffering in RAM).
+                const cacheTempFile = `${cacheFileToWrite}.tmp`;
+                const nodeStream = Readable.from(stream);
                 const transformed = nodeStream.pipe(transformer);
-                transformed.on('data', (chunk: Buffer) => { chunks.push(chunk); });
-                transformed.on('end', () => {
-                    // Best-effort cache write
-                    try {
-                        const fullBuffer = Buffer.concat(chunks);
-                        if (fullBuffer.length > 0) {
-                            fs.writeFileSync(cacheFileToWrite, fullBuffer);
-                        }
-                    } catch { /* best effort */ }
+                const cacheWriteStream = fs.createWriteStream(cacheTempFile, { flags: 'w' });
+
+                cacheWriteStream.on('finish', () => {
+                    fs.rename(cacheTempFile, cacheFileToWrite, () => undefined);
                 });
+                cacheWriteStream.on('error', () => {
+                    try { fs.rmSync(cacheTempFile, { force: true }); } catch { }
+                });
+                transformed.on('error', () => {
+                    try { cacheWriteStream.destroy(); } catch { }
+                    try { fs.rmSync(cacheTempFile, { force: true }); } catch { }
+                });
+
                 transformed.pipe(res);
+                transformed.pipe(cacheWriteStream);
                 return;
             } catch (sharpErr: any) {
                 logger.warn(

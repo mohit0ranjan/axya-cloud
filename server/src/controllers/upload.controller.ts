@@ -84,6 +84,12 @@ const uploadToTelegramWithRetry = async (
     }
 };
 
+const parseEnvIntInRange = (raw: unknown, fallback: number, min: number, max: number): number => {
+    const parsed = Number.parseInt(String(raw ?? ''), 10);
+    const value = Number.isFinite(parsed) ? parsed : fallback;
+    return Math.max(min, Math.min(max, value));
+};
+
 // ─── Upload Semaphore: limit concurrent Telegram uploads ────────────────────
 // Prevents server OOM crash under free-tier memory constraints.
 // Telegram finalization runs one-at-a-time for maximum stability.
@@ -111,8 +117,10 @@ class Semaphore {
         }
     }
 }
-const telegramSemaphore = new Semaphore(1); // max 1 concurrent Telegram operation
-const thumbnailSemaphore = new Semaphore(2); // max 2 concurrent thumbnail generations
+const TELEGRAM_FINALIZER_CONCURRENCY = parseEnvIntInRange(process.env.UPLOAD_TELEGRAM_FINALIZER_CONCURRENCY, 2, 1, 3);
+const THUMBNAIL_CONCURRENCY = parseEnvIntInRange(process.env.UPLOAD_THUMBNAIL_CONCURRENCY, 2, 1, 4);
+const telegramSemaphore = new Semaphore(TELEGRAM_FINALIZER_CONCURRENCY);
+const thumbnailSemaphore = new Semaphore(THUMBNAIL_CONCURRENCY);
 
 const normalizeTelegramChatTarget = (value: unknown): string => {
     const raw = String(value || '').trim();
@@ -251,6 +259,16 @@ type UploadChunkStats = {
     uploadedChunks: number[];
 };
 
+type UploadManifestIntegrity = {
+    valid: boolean;
+    missingChunks: number[];
+    invalidChunkSizes: Array<{ chunkIndex: number; expected: number; actual: number }>;
+    uploadedCount: number;
+    expectedCount: number;
+    uploadedBytes: number;
+    expectedBytes: number;
+};
+
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
 const UPLOAD_TMP_ROOT = path.join(os.tmpdir(), 'axya_uploads');
@@ -261,10 +279,16 @@ const STREAM_IDLE_TIMEOUT_MS = Number.parseInt(String(process.env.UPLOAD_STREAM_
 const DISK_PAUSE_THRESHOLD_PERCENT = clamp(Number.parseFloat(String(process.env.UPLOAD_DISK_PAUSE_PERCENT || '80')), 50, 99);
 const DISK_CRITICAL_THRESHOLD_PERCENT = clamp(Number.parseFloat(String(process.env.UPLOAD_DISK_CRITICAL_PERCENT || '92')), 60, 99.9);
 const RESERVED_DISK_BYTES = Number.parseInt(String(process.env.UPLOAD_DISK_RESERVED_BYTES || String(150 * 1024 * 1024)), 10) || (150 * 1024 * 1024);
-const SAFE_ACTIVE_UPLOADS_PER_USER = 1;
-const BURST_ACTIVE_UPLOADS_PER_USER = 2;
-const SAFE_ACTIVE_UPLOADS_GLOBAL = 1;
-const BURST_ACTIVE_UPLOADS_GLOBAL = 2;
+const SAFE_ACTIVE_UPLOADS_PER_USER = parseEnvIntInRange(process.env.UPLOAD_SAFE_ACTIVE_PER_USER, 2, 1, 5);
+const BURST_ACTIVE_UPLOADS_PER_USER = Math.max(
+    SAFE_ACTIVE_UPLOADS_PER_USER,
+    parseEnvIntInRange(process.env.UPLOAD_BURST_ACTIVE_PER_USER, 3, 1, 5)
+);
+const SAFE_ACTIVE_UPLOADS_GLOBAL = parseEnvIntInRange(process.env.UPLOAD_SAFE_ACTIVE_GLOBAL, 3, 1, 5);
+const BURST_ACTIVE_UPLOADS_GLOBAL = Math.max(
+    SAFE_ACTIVE_UPLOADS_GLOBAL,
+    parseEnvIntInRange(process.env.UPLOAD_BURST_ACTIVE_GLOBAL, 5, 1, 6)
+);
 const MAX_ACTIVE_UPLOADS_PER_USER = BURST_ACTIVE_UPLOADS_PER_USER;
 const MAX_GLOBAL_ACTIVE_UPLOADS = BURST_ACTIVE_UPLOADS_GLOBAL;
 const MIN_SUPPORTED_UPLOAD_SIZE_BYTES = 400 * 1024 * 1024;
@@ -288,6 +312,15 @@ const FINALIZER_PROGRESS_UPDATE_THROTTLE_MS = 800;
 const UPLOAD_MAINTENANCE_INTERVAL_MS = Number.parseInt(String(process.env.UPLOAD_MAINTENANCE_INTERVAL_MS || String(15 * 60 * 1000)), 10) || (15 * 60 * 1000);
 const TERMINAL_TEMP_RETENTION_MS = Number.parseInt(String(process.env.UPLOAD_TERMINAL_TEMP_RETENTION_MS || String(6 * 60 * 60 * 1000)), 10) || (6 * 60 * 60 * 1000);
 const ORPHAN_TEMP_RETENTION_MS = Number.parseInt(String(process.env.UPLOAD_ORPHAN_TEMP_RETENTION_MS || String(6 * 60 * 60 * 1000)), 10) || (6 * 60 * 60 * 1000);
+const UPLOAD_RESUME_TOKEN_TTL_MS = Number.parseInt(
+    String(process.env.UPLOAD_RESUME_TOKEN_TTL_MS || String(7 * 24 * 60 * 60 * 1000)),
+    10
+) || (7 * 24 * 60 * 60 * 1000);
+const UPLOAD_RESUME_TOKEN_SECRET = String(
+    process.env.UPLOAD_RESUME_TOKEN_SECRET
+    || process.env.JWT_SECRET
+    || 'axya-upload-resume-dev-secret'
+);
 
 const activeFinalizers = new Map<string, Promise<void>>();
 let uploadMaintenanceTimer: ReturnType<typeof setInterval> | null = null;
@@ -394,6 +427,66 @@ const toInt = (value: unknown): number => {
     if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
     const parsed = Number.parseInt(String(value ?? ''), 10);
     return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const parseContentLengthHeader = (value: unknown): number | null => {
+    const parsed = Number.parseInt(String(value ?? '').trim(), 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return parsed;
+};
+
+const createResumeTokenSignature = (encodedPayload: string): string => {
+    return crypto
+        .createHmac('sha256', UPLOAD_RESUME_TOKEN_SECRET)
+        .update(encodedPayload)
+        .digest('base64url');
+};
+
+const signUploadResumeToken = (userId: string, uploadId: string): string => {
+    const payload = {
+        u: String(userId || '').trim(),
+        i: String(uploadId || '').trim(),
+        exp: Date.now() + UPLOAD_RESUME_TOKEN_TTL_MS,
+    };
+    const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+    const signature = createResumeTokenSignature(encodedPayload);
+    return `${encodedPayload}.${signature}`;
+};
+
+const verifyUploadResumeToken = (token: string): { userId: string; uploadId: string; exp: number } | null => {
+    const raw = String(token || '').trim();
+    if (!raw.includes('.')) return null;
+    const parts = raw.split('.');
+    if (parts.length !== 2) return null;
+
+    const [encodedPayload, signature] = parts;
+    if (!encodedPayload || !signature) return null;
+
+    const expectedSignature = createResumeTokenSignature(encodedPayload);
+    const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
+    const signatureBuffer = Buffer.from(signature, 'utf8');
+    if (expectedBuffer.length !== signatureBuffer.length) return null;
+    if (!crypto.timingSafeEqual(expectedBuffer, signatureBuffer)) return null;
+
+    try {
+        const parsed = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8'));
+        const userId = String(parsed?.u || '').trim();
+        const uploadId = String(parsed?.i || '').trim();
+        const exp = Number(parsed?.exp || 0);
+        if (!userId || !uploadId || !Number.isFinite(exp) || exp <= Date.now()) return null;
+        return { userId, uploadId, exp };
+    } catch {
+        return null;
+    }
+};
+
+const getResumeTokenFromRequest = (req: AuthRequest): string => {
+    const fromBody = String(req.body?.resumeToken || '').trim();
+    if (fromBody) return fromBody;
+    const fromHeader = req.headers['x-upload-resume-token'];
+    if (typeof fromHeader === 'string') return String(fromHeader).trim();
+    if (Array.isArray(fromHeader) && fromHeader.length > 0) return String(fromHeader[0] || '').trim();
+    return '';
 };
 
 const parseUploadedChunks = (value: unknown): number[] => {
@@ -580,6 +673,70 @@ const getChunkStats = async (uploadId: string): Promise<UploadChunkStats> => {
         uploadedCount: toInt(row.uploaded_count),
         uploadedBytes: toInt(row.uploaded_bytes),
         uploadedChunks: parseUploadedChunks(row.uploaded_chunks),
+    };
+};
+
+const validateChunkManifestIntegrity = async (
+    uploadId: string,
+    totalChunks: number,
+    chunkSize: number,
+    totalBytes: number
+): Promise<UploadManifestIntegrity> => {
+    const safeTotalChunks = Math.max(0, totalChunks);
+    const safeChunkSize = Math.max(1, chunkSize);
+    const safeTotalBytes = Math.max(0, totalBytes);
+
+    const rowsRes = await pool.query(
+        `SELECT chunk_index, chunk_size_bytes
+         FROM upload_session_chunks
+         WHERE upload_id = $1
+         ORDER BY chunk_index ASC`,
+        [uploadId]
+    );
+
+    const seen = new Set<number>();
+    const invalidChunkSizes: Array<{ chunkIndex: number; expected: number; actual: number }> = [];
+    let uploadedBytes = 0;
+
+    for (const row of rowsRes.rows) {
+        const chunkIndex = toInt(row.chunk_index);
+        const actual = Math.max(0, toInt(row.chunk_size_bytes));
+
+        if (chunkIndex < 0 || chunkIndex >= safeTotalChunks || seen.has(chunkIndex)) {
+            invalidChunkSizes.push({ chunkIndex, expected: -1, actual });
+            continue;
+        }
+
+        const expected = chunkIndex === safeTotalChunks - 1
+            ? Math.max(safeTotalBytes - (chunkIndex * safeChunkSize), 0)
+            : safeChunkSize;
+
+        if (actual !== expected) {
+            invalidChunkSizes.push({ chunkIndex, expected, actual });
+        }
+
+        uploadedBytes += actual;
+        seen.add(chunkIndex);
+    }
+
+    const missingChunks: number[] = [];
+    for (let idx = 0; idx < safeTotalChunks; idx += 1) {
+        if (!seen.has(idx)) missingChunks.push(idx);
+    }
+
+    const valid = missingChunks.length === 0
+        && invalidChunkSizes.length === 0
+        && seen.size === safeTotalChunks
+        && uploadedBytes === safeTotalBytes;
+
+    return {
+        valid,
+        missingChunks: missingChunks.slice(0, 16),
+        invalidChunkSizes: invalidChunkSizes.slice(0, 16),
+        uploadedCount: seen.size,
+        expectedCount: safeTotalChunks,
+        uploadedBytes,
+        expectedBytes: safeTotalBytes,
     };
 };
 
@@ -875,6 +1032,7 @@ const toUploadStatusPayload = async (session: UploadSessionRow, capacityOverride
         success: true,
         progress: calculateSessionProgress(session),
         status: toClientUploadStatus(session),
+        resumeToken: signUploadResumeToken(session.user_id, session.upload_id),
         file: filePayload,
         error: session.error_message,
         errorCode: session.error_code,
@@ -1181,6 +1339,7 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
         return res.json({
             success: true,
             uploadId,
+            resumeToken: signUploadResumeToken(req.user.id, uploadId),
             duplicate: false,
             status: initialStatus,
             uploadMode,
@@ -1211,10 +1370,21 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
     const chunkIndex = toInt(req.body.chunkIndex);
     const chunkBase64 = req.body.chunkBase64;
     const clientChunkHash = String(req.body.chunkHash || '').trim().toLowerCase();
+    const contentLength = parseContentLengthHeader(req.headers['content-length']);
+    const contentType = String(req.headers['content-type'] || '').toLowerCase();
 
     if (!uploadId) return res.status(400).json({ success: false, error: 'Missing uploadId' });
     if (!req.file && !chunkBase64) {
         return res.status(400).json({ success: false, error: 'No chunk data provided' });
+    }
+
+    if (!req.file && contentLength && contentLength > (FIXED_CHUNK_SIZE_BYTES * 2.5)) {
+        return res.status(413).json({
+            success: false,
+            error: 'Chunk payload is too large for fixed-size protocol',
+            code: 'CHUNK_PAYLOAD_TOO_LARGE',
+            retryable: false,
+        });
     }
 
     await promoteQueuedSessionsIfCapacity();
@@ -1313,6 +1483,15 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
         return res.status(400).json({ success: false, error: `chunkIndex out of range (0..${Math.max(totalChunks - 1, 0)})` });
     }
 
+    logger.info('backend.upload', 'chunk_received', {
+        uploadId,
+        userId: req.user.id,
+        chunkIndex,
+        hasMultipartFile: Boolean(req.file),
+        contentType,
+        contentLength,
+    });
+
     let chunkData: Buffer;
     try {
         if (req.file?.path) {
@@ -1321,6 +1500,13 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
             chunkData = Buffer.from(String(chunkBase64 || ''), 'base64');
         }
     } catch (err: any) {
+        logger.warn('backend.upload', 'chunk_decode_failed', {
+            uploadId,
+            userId: req.user.id,
+            chunkIndex,
+            contentLength,
+            message: String(err?.message || 'invalid_chunk_payload'),
+        });
         if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
         return res.status(400).json({ success: false, error: err?.message || 'Invalid chunk payload' });
     } finally {
@@ -1336,6 +1522,14 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
         : chunkSize;
 
     if (chunkData.length !== expectedChunkLength) {
+        logger.warn('backend.upload', 'chunk_length_mismatch', {
+            uploadId,
+            userId: req.user.id,
+            chunkIndex,
+            expectedChunkLength,
+            actualChunkLength: chunkData.length,
+            contentLength,
+        });
         return res.status(422).json({
             success: false,
             error: `Chunk length mismatch for index ${chunkIndex}. Expected ${expectedChunkLength}, got ${chunkData.length}`,
@@ -1468,6 +1662,7 @@ export const uploadStream = async (req: AuthRequest, res: Response) => {
     if (!uploadId) return res.status(400).json({ success: false, error: 'Missing uploadId' });
 
     const contentType = String(req.headers['content-type'] || '').toLowerCase();
+    const contentLength = parseContentLengthHeader(req.headers['content-length']);
     if (!contentType.includes('multipart/form-data')) {
         return res.status(415).json({ success: false, error: 'Expected multipart/form-data payload' });
     }
@@ -1540,6 +1735,24 @@ export const uploadStream = async (req: AuthRequest, res: Response) => {
         return sendApiError(res, 409, 'invalid_stream_session', 'Upload session is missing expected byte size.', { retryable: false });
     }
 
+    if (contentLength && contentLength < expectedBytes) {
+        return sendApiError(
+            res,
+            422,
+            'stream_size_header_mismatch',
+            'Upload payload appears truncated before reaching server.',
+            { retryable: true, details: { contentLength, expectedBytes } }
+        );
+    }
+
+    logger.info('backend.upload', 'stream_upload_started', {
+        uploadId,
+        userId: req.user.id,
+        expectedBytes,
+        contentLength,
+        contentType,
+    });
+
     const expectedMime = String(session.mime_type || '').trim().toLowerCase();
     if (!isAllowedUploadMime(expectedMime)) {
         return sendApiError(res, 400, 'unsupported_mime_type', `File type '${expectedMime || 'unknown'}' is not permitted.`, { retryable: false });
@@ -1591,9 +1804,58 @@ export const uploadStream = async (req: AuthRequest, res: Response) => {
             let seenMime = expectedMime;
             const hash = crypto.createHash('sha256');
             let pipePromise: Promise<void> | null = null;
+            let pendingProgressWrite: Promise<void> | null = null;
+            let lastProgressPersistAt = 0;
+            let lastPersistedBytes = 0;
             let idleTimer: ReturnType<typeof setTimeout> | null = null;
             let activeFileStream: any = null;
             let activeOutStream: fs.WriteStream | null = null;
+
+            const persistProgress = (force = false) => {
+                if (bytesWritten <= lastPersistedBytes) return;
+                if (pendingProgressWrite) return;
+
+                const now = Date.now();
+                if (!force) {
+                    const elapsed = now - lastProgressPersistAt;
+                    const deltaBytes = bytesWritten - lastPersistedBytes;
+                    if (elapsed < 900 && deltaBytes < (512 * 1024)) return;
+                }
+
+                const bytesSnapshot = bytesWritten;
+                lastProgressPersistAt = now;
+                pendingProgressWrite = pool.query(
+                    `UPDATE upload_sessions
+                     SET received_bytes = $2,
+                         updated_at = NOW()
+                     WHERE upload_id = $1 AND status = 'uploading'`,
+                    [uploadId, bytesSnapshot]
+                )
+                    .then(() => {
+                        lastPersistedBytes = Math.max(lastPersistedBytes, bytesSnapshot);
+                    })
+                    .catch(() => undefined)
+                    .finally(() => {
+                        pendingProgressWrite = null;
+                    });
+            };
+
+            const flushPendingProgress = async () => {
+                if (pendingProgressWrite) {
+                    await pendingProgressWrite;
+                }
+                if (bytesWritten > lastPersistedBytes) {
+                    const bytesSnapshot = bytesWritten;
+                    await pool.query(
+                        `UPDATE upload_sessions
+                         SET received_bytes = $2,
+                             updated_at = NOW()
+                         WHERE upload_id = $1 AND status = 'uploading'`,
+                        [uploadId, bytesSnapshot]
+                    ).catch(() => undefined);
+                    lastPersistedBytes = Math.max(lastPersistedBytes, bytesSnapshot);
+                }
+            };
 
             const clearIdleTimer = () => {
                 if (idleTimer) {
@@ -1659,6 +1921,7 @@ export const uploadStream = async (req: AuthRequest, res: Response) => {
                     transform(chunk, _enc, callback) {
                         bytesWritten += chunk.length;
                         hash.update(chunk);
+                        persistProgress(false);
                         callback(null, chunk);
                     },
                 });
@@ -1685,6 +1948,8 @@ export const uploadStream = async (req: AuthRequest, res: Response) => {
                     if (pipePromise) {
                         await pipePromise;
                     }
+
+                    await flushPendingProgress();
 
                     if (bytesWritten !== expectedBytes) {
                         finish(new Error(`STREAM_SIZE_MISMATCH:${bytesWritten}:${expectedBytes}`));
@@ -1730,6 +1995,13 @@ export const uploadStream = async (req: AuthRequest, res: Response) => {
         startUploadFinalizer(uploadId, req.user.sessionString);
 
         const capacity = await getCapacitySnapshot(req.user.id);
+        logger.info('backend.upload', 'stream_upload_received', {
+            uploadId,
+            userId: req.user.id,
+            receivedBytes: streamResult.bytesWritten,
+            expectedBytes,
+            mimeType: streamResult.fileMime || expectedMime,
+        });
         return res.json({
             success: true,
             uploadId,
@@ -1757,6 +2029,14 @@ export const uploadStream = async (req: AuthRequest, res: Response) => {
                         : 'stream_upload_failed';
 
         await updateSessionFailure(uploadId, errorCode, 'Stream upload failed. Please retry.', retryable);
+
+        logger.warn('backend.upload', 'stream_upload_failed', {
+            uploadId,
+            userId: req.user.id,
+            errorCode,
+            contentLength,
+            message,
+        });
 
         const httpStatus = errorCode === 'stream_file_too_large'
             ? 413
@@ -2102,8 +2382,21 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
         });
     }
 
-    const chunkStats = await getChunkStats(uploadId);
     const totalChunks = toInt(session.total_chunks);
+    const chunkSize = Math.max(1, toInt(session.chunk_size_bytes) || FIXED_CHUNK_SIZE_BYTES);
+    const totalBytes = Math.max(0, toInt(session.total_bytes));
+    const manifestIntegrity = await validateChunkManifestIntegrity(uploadId, totalChunks, chunkSize, totalBytes);
+    if (!manifestIntegrity.valid) {
+        return res.status(409).json({
+            success: false,
+            error: 'Upload manifest integrity check failed. Missing or corrupted chunks detected.',
+            code: 'UPLOAD_MANIFEST_INVALID',
+            retryable: true,
+            ...manifestIntegrity,
+        });
+    }
+
+    const chunkStats = await getChunkStats(uploadId);
     if (chunkStats.uploadedCount < totalChunks) {
         const nextExpectedChunk = computeNextExpectedChunk(totalChunks, chunkStats.uploadedChunks);
         return res.status(409).json({
@@ -2142,6 +2435,44 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
         idempotency_key: idempotencyKey,
         ...buildBackpressureHints('processing', capacity),
     });
+};
+
+export const resumeUploadSession = async (req: AuthRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+    const resumeToken = getResumeTokenFromRequest(req);
+    if (!resumeToken) {
+        return sendApiError(res, 400, 'resume_token_required', 'Missing resume token.', { retryable: false });
+    }
+
+    const parsed = verifyUploadResumeToken(resumeToken);
+    if (!parsed) {
+        return sendApiError(res, 401, 'resume_token_invalid', 'Resume token is invalid or expired.', { retryable: false });
+    }
+
+    if (parsed.userId !== req.user.id) {
+        return sendApiError(res, 403, 'resume_token_forbidden', 'Resume token is not valid for this user.', { retryable: false });
+    }
+
+    const hintedUploadId = String(req.body?.uploadId || '').trim();
+    if (hintedUploadId && hintedUploadId !== parsed.uploadId) {
+        return res.status(409).json({
+            success: false,
+            code: 'resume_upload_mismatch',
+            error: 'resume token does not match requested uploadId',
+            retryable: false,
+        });
+    }
+
+    await promoteQueuedSessionsIfCapacity();
+
+    const session = await getOwnedUploadSession(parsed.uploadId, req.user.id);
+    if (!session) {
+        return res.status(404).json({ success: false, error: 'Upload not found or expired' });
+    }
+
+    const payload = await toUploadStatusPayload(session);
+    return res.json({ ...payload, resumed: true });
 };
 
 // ─── Step 4: Cancel Upload ───────────────────────────────────────────────────

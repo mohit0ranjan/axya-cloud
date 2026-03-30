@@ -98,7 +98,8 @@ async function initUpload(fileName, fileSize, chunkSizeBytes = TEST_CHUNK_SIZE) 
   assert(response.data.success === true, 'Upload init did not report success=true');
   assert(typeof response.data.uploadId === 'string' && response.data.uploadId.length > 0, 'Upload init did not return uploadId');
   assert(Number(response.data.chunkSizeBytes) === TEST_CHUNK_SIZE, `Expected chunkSizeBytes=${TEST_CHUNK_SIZE}`);
-  return response.data.uploadId;
+  assert(typeof response.data.resumeToken === 'string' && response.data.resumeToken.length > 20, 'Upload init did not return resumeToken');
+  return response.data;
 }
 
 async function initUploadRaw(payload, expectedStatuses = [200]) {
@@ -133,6 +134,14 @@ async function uploadChunk(uploadId, chunkIndex, chunkBuffer) {
   }
 
   throw new Error('Chunk upload remained queued beyond retry budget');
+}
+
+async function resolveUploadByResumeToken(resumeToken, expectedStatuses = [200]) {
+  const response = await requestJson('POST', '/files/upload/resume', {
+    expectedStatuses,
+    body: { resumeToken },
+  });
+  return response.data;
 }
 
 async function completeUpload(uploadId) {
@@ -192,8 +201,18 @@ async function runReliabilityResumeScenario() {
   assert(chunks.length >= 3, 'Expected at least 3 chunks for reliability scenario');
   const fileName = `upload-lifecycle-${Date.now()}-${randomUUID().slice(0, 8)}.bin`;
 
-  const uploadId = await initUpload(fileName, payload.length, TEST_CHUNK_SIZE);
+  const init = await initUpload(fileName, payload.length, TEST_CHUNK_SIZE);
+  const uploadId = String(init.uploadId);
+  const resumeToken = String(init.resumeToken);
   console.log(`[Step] initialized uploadId=${uploadId}`);
+
+  const resumeAtStart = await resolveUploadByResumeToken(resumeToken);
+  assert(resumeAtStart.success === true, 'Resume endpoint did not return success=true at start');
+  assert(String(resumeAtStart.uploadId || '') === uploadId, 'Resume endpoint returned mismatched uploadId');
+  assert(Number(resumeAtStart.nextExpectedChunk) === 0, 'Expected nextExpectedChunk=0 at upload start');
+
+  const invalidResume = await resolveUploadByResumeToken(`${resumeToken}.tampered`, [401]);
+  assert(String(invalidResume.code || '').toLowerCase() === 'resume_token_invalid', 'Expected resume_token_invalid for tampered token');
 
   await waitForQueueRelease(uploadId);
 
@@ -205,6 +224,10 @@ async function runReliabilityResumeScenario() {
   const outOfOrder = await uploadChunk(uploadId, 1, chunks[1]);
   assert(outOfOrder.data.success === true, 'Out-of-order chunk should be accepted');
   assert(outOfOrder.data.nextExpectedChunk === 0, 'Expected nextExpectedChunk=0 after uploading chunk 1 first');
+
+  const resumedAfterOutOfOrder = await resolveUploadByResumeToken(resumeToken);
+  assert(resumedAfterOutOfOrder.success === true, 'Resume endpoint failed after out-of-order chunk');
+  assert(Number(resumedAfterOutOfOrder.nextExpectedChunk) === 0, 'Resume endpoint should preserve nextExpectedChunk after out-of-order chunk');
 
   const statusAfterOutOfOrder = await readUploadStatus(uploadId);
   assert(statusAfterOutOfOrder.nextExpectedChunk === 0, 'Status should persist nextExpectedChunk=0 after out-of-order write');
@@ -248,6 +271,10 @@ async function runReliabilityResumeScenario() {
     assert(chunk2Retry.data.duplicate === true || chunk2Retry.data.duplicate === false, 'Chunk retry should be handled idempotently');
   }
 
+  const resumedAfterNetworkInterruption = await resolveUploadByResumeToken(resumeToken);
+  assert(resumedAfterNetworkInterruption.success === true, 'Resume endpoint failed after simulated interruption');
+  assert(Number(resumedAfterNetworkInterruption.nextExpectedChunk) >= 0, 'Resume endpoint returned invalid nextExpectedChunk');
+
   const resumeStatus = await readUploadStatus(uploadId);
   assert(resumeStatus.success === true, 'Status endpoint did not report success=true');
 
@@ -284,7 +311,8 @@ async function runCancelScenario() {
   const [chunk0] = splitIntoChunks(payload, TEST_CHUNK_SIZE);
   const fileName = `upload-cancel-${Date.now()}-${randomUUID().slice(0, 8)}.bin`;
 
-  const uploadId = await initUpload(fileName, payload.length, TEST_CHUNK_SIZE);
+  const init = await initUpload(fileName, payload.length, TEST_CHUNK_SIZE);
+  const uploadId = String(init.uploadId);
   console.log(`[Step] initialized uploadId=${uploadId}`);
 
   await waitForQueueRelease(uploadId);

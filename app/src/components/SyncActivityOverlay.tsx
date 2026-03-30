@@ -33,7 +33,8 @@ const UpRow = React.memo(({ task, onCancel, onPause, onResume }: any) => {
     const isDone = task.status === 'completed';
 
     const color = isDone ? theme.colors.success : isFailed ? theme.colors.danger : theme.colors.primary;
-    const label = isDone ? 'Done' : isFailed ? 'Failed' : isPaused ? 'Paused' : `${task.telegramProgressPercent}%`;
+    const safeProgress = Number.isFinite(task.progress) ? task.progress : 0;
+    const label = isDone ? 'Done' : isFailed ? 'Failed' : isPaused ? 'Paused' : `${safeProgress}%`;
 
     return (
         <View style={s.row}>
@@ -41,12 +42,12 @@ const UpRow = React.memo(({ task, onCancel, onPause, onResume }: any) => {
                 <UploadCloud color={color} size={16} />
             </View>
             <View style={s.rowInfo}>
-                <Text style={[s.rowName, { color: theme.colors.textHeading }]} numberOfLines={1}>{task.fileName}</Text>
+                <Text style={[s.rowName, { color: theme.colors.textHeading }]} numberOfLines={1}>{task.file?.name}</Text>
                 <View style={s.rowBottom}>
                     <View style={[s.progressTrack, { backgroundColor: theme.colors.border }]}>
                         <View style={[
                             s.progressFill,
-                            { width: `${Math.max(task.telegramProgressPercent || 0, isDone ? 100 : 0)}%`, backgroundColor: color }
+                            { width: `${isDone ? 100 : safeProgress}%`, backgroundColor: color }
                         ]} />
                     </View>
                     <Text style={[s.rowStatus, { color }]}>{label}</Text>
@@ -223,6 +224,18 @@ export default function SyncActivityOverlay() {
         }
     }, [totalActive, cancelAllUploads, cancelAllDownloads, clearUpFinished, clearDownFinished]);
 
+    const handlePauseAll = useCallback(() => {
+        upTasks.forEach(t => {
+            if (t.status === 'uploading' || t.status === 'queued' || t.status === 'preparing') pauseUpload(t.id);
+        });
+    }, [upTasks, pauseUpload]);
+
+    const handleResumeAll = useCallback(() => {
+        upTasks.forEach(t => {
+            if (t.status === 'paused') resumeUpload(t.id);
+        });
+    }, [upTasks, resumeUpload]);
+
     if (!hasTasks || isDismissed) return null;
 
     // Priority Theming
@@ -284,6 +297,16 @@ export default function SyncActivityOverlay() {
                     )}
                 </View>
                 <View style={s.headerRight}>
+                    {(upActive > 0 || upQueued > 0) && (
+                        <TouchableOpacity style={s.dismissBtn} onPress={handlePauseAll} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                            <Pause color={theme.colors.muted} size={18} />
+                        </TouchableOpacity>
+                    )}
+                    {upTasks.some((t: any) => t.status === 'paused') && (
+                        <TouchableOpacity style={s.dismissBtn} onPress={handleResumeAll} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                            <Play color={theme.colors.muted} size={18} />
+                        </TouchableOpacity>
+                    )}
                     {isExpanded ? <ChevronDown color={theme.colors.muted} size={20} /> : <ChevronUp color={theme.colors.muted} size={20} />}
                     <TouchableOpacity style={s.dismissBtn} onPress={handleDismiss} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                         <X color={theme.colors.muted} size={20} />

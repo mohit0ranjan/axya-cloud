@@ -185,6 +185,11 @@ export default function UploadManagerScreen({ navigation }: any) {
     const cancelledTasks = useMemo(() => tasks.filter((t) => t.status === 'cancelled'), [tasks]);
 
     const hasAny = activeTasks.length > 0 || failedTasks.length > 0 || completedTasks.length > 0 || cancelledTasks.length > 0;
+    const safeOverallProgress = useMemo(() => {
+        const value = Number(overallProgress);
+        if (!Number.isFinite(value)) return 0;
+        return Math.max(0, Math.min(Math.round(value), 100));
+    }, [overallProgress]);
 
     const renderTask = (item: any) => (
         <UploadProgress
@@ -222,10 +227,10 @@ export default function UploadManagerScreen({ navigation }: any) {
             <View style={s.statsCard}>
                 <View style={s.statsRow}>
                     <Text style={s.statsLabel}>Overall progress</Text>
-                    <Text style={s.statsValue}>{overallProgress}%</Text>
+                    <Text style={s.statsValue}>{safeOverallProgress}%</Text>
                 </View>
                 <View style={s.progressTrack}>
-                    <View style={[s.progressFill, { width: `${overallProgress}%` }]} />
+                    <View style={[s.progressFill, { width: `${safeOverallProgress}%` }]} />
                 </View>
                 <View style={[s.statsRow, { marginTop: 10, marginBottom: 0 }]}>
                     <Text style={s.statsValue}>{formatBytes(uploadedBytes)} / {formatBytes(totalBytes)}</Text>

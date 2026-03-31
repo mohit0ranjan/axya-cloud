@@ -13,13 +13,15 @@ import { initSchema } from './services/db.service';
 import pool from './config/db';
 import authRoutes from './routes/auth.routes';
 import fileRoutes from './routes/file.routes';
+import uploadRoutes from './routes/upload.routes';
 import shareV2Routes from './routes/share-v2.routes';
 import streamRoutes from './routes/stream.routes';
 import { logger } from './utils/logger';
 import { getDynamicClient } from './services/telegram.service';
 import { sendApiError } from './utils/apiError';
 import { FRONTEND_BASE_URL, SERVER_BASE_URL } from './config/urls';
-import { startUploadMaintenanceLoop } from './controllers/upload.controller';
+import { startUploadMaintenanceLoop } from './controllers/upload';
+import { globalErrorHandler } from './middlewares/errorHandler';
 
 dotenv.config();
 
@@ -273,6 +275,7 @@ const authLimiter = rateLimit({
 // ── Routes ──────────────────────────────────────────────────────────────────
 app.use('/auth', authLimiter, authRoutes);
 app.use('/files', fileRoutes);
+app.use('/upload', uploadRoutes);
 app.use('/api/v2', shareV2Routes);
 app.use('/stream', streamRoutes);
 
@@ -357,31 +360,19 @@ app.get('/', (req: Request, res: Response) => {
     res.json({ status: 'OK', service: 'Axya Cloud API', version: '1.0.0' });
 });
 
-// ── Global Error Handler ────────────────────────────────────────────────────
-app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-    const requestId = getRequestId(req, res);
-    logger.error('backend.http', 'unhandled_error', {
-        method: req.method,
-        url: redactSensitiveQuery(req.originalUrl || req.url || ''),
-        message: err.message,
-        stack: err.stack,
-        requestId: requestId || null,
-    });
-    if (res.headersSent) return next(err);
-
-    // Handle multer errors
-    if ((err as any).code === 'LIMIT_FILE_SIZE') {
-        return sendApiError(res, 413, 'invalid_request', 'File too large', {
-            retryable: false,
-            details: { requestId: requestId || null },
-        });
-    }
-
-    return sendApiError(res, 500, 'internal_error', 'Internal Server Error', {
-        retryable: true,
-        details: { requestId: requestId || null },
+app.use((req: Request, res: Response) => {
+    return sendApiError(res, 404, 'not_found', 'Route not found', {
+        retryable: false,
+        details: {
+            method: req.method,
+            path: req.originalUrl || req.url,
+            requestId: String((req as any).requestId || req.headers['x-request-id'] || '').trim() || null,
+        },
     });
 });
+
+// ── Global Error Handler ────────────────────────────────────────────────────
+app.use(globalErrorHandler);
 
 // ── Graceful Shutdown ────────────────────────────────────────────────────────
 const shutdown = async (signal: string) => {

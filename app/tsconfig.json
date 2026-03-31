@@ -2,7 +2,6 @@
   "compilerOptions": {},
   "extends": "expo/tsconfig.base",
   "exclude": [
-    "temp.tsx",
     "dist",
     ".expo",
     "android"

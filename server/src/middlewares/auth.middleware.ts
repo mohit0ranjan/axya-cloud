@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import pool from '../config/db';
+import { sendApiError } from '../utils/apiError';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('FATAL: JWT_SECRET environment variable is not set. Server cannot start safely.');
@@ -16,7 +17,7 @@ export interface AuthRequest extends Request {
 export const requireAuth = async (req: AuthRequest, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ success: false, error: 'Unauthorized: Missing or invalid token format' });
+        return sendApiError(res, 401, 'unauthorized', 'Unauthorized: Missing or invalid token format', { retryable: false });
     }
 
     const token = authHeader.split(' ')[1];
@@ -27,7 +28,7 @@ export const requireAuth = async (req: AuthRequest, res: Response, next: NextFun
         const userResult = await pool.query('SELECT id, phone, session_string FROM users WHERE id = $1', [decoded.userId]);
 
         if (userResult.rows.length === 0) {
-            return res.status(401).json({ success: false, error: 'Unauthorized: Requesting user not found in database' });
+            return sendApiError(res, 401, 'unauthorized', 'Unauthorized: Requesting user not found in database', { retryable: false });
         }
 
         req.user = {
@@ -38,6 +39,6 @@ export const requireAuth = async (req: AuthRequest, res: Response, next: NextFun
 
         next();
     } catch {
-        return res.status(401).json({ success: false, error: 'Unauthorized: Invalid token payload' });
+        return sendApiError(res, 401, 'unauthorized', 'Unauthorized: Invalid token payload', { retryable: false });
     }
 };

@@ -11,6 +11,7 @@ import { File } from 'expo-file-system';
 import { Platform } from 'react-native';
 import { Buffer } from 'buffer';
 import apiClient, { uploadClient } from './apiClient';
+import { normalizeUploadFile } from '../utils/fileSafety';
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
 const DEFAULT_POLL_MS = 2000;
@@ -27,43 +28,6 @@ export type ProgressCallback = (progress: number, bytesUploaded: number) => void
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-    return Buffer.from(bytes).toString('base64');
-}
-
-/**
- * Read `length` bytes from a file URI starting at `offset`, returns Base64.
- * Uses File + FileHandle (new SDK 55 API) for file:// URIs.
- * Falls back to fetch() + Range header for content:// URIs.
- */
-async function readFileChunkAsBase64(
-    uri: string,
-    offset: number,
-    length: number
-): Promise<string> {
-    if (uri.startsWith('file://')) {
-        try {
-            const fileObj = new File(uri);
-            const handle = fileObj.open();
-            handle.offset = offset;
-            const chunk = handle.readBytes(length);
-            handle.close();
-            return uint8ArrayToBase64(chunk);
-        } catch (e) {
-            console.warn('[uploadService] FileHandle failed, using fetch fallback:', e);
-        }
-    }
-
-    const response = await fetch(uri, {
-        headers: { Range: `bytes=${offset}-${offset + length - 1}` },
-    });
-    if (!response.ok && response.status !== 206 && response.status !== 200) {
-        throw new Error(`Failed to read file chunk (HTTP ${response.status})`);
-    }
-    const buffer = await response.arrayBuffer();
-    return uint8ArrayToBase64(new Uint8Array(buffer));
-}
-
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export const uploadFile = async (
@@ -74,8 +38,11 @@ export const uploadFile = async (
     isCancelled: () => boolean,
     abortSignal?: AbortSignal
 ): Promise<void> => {
-    const { uri, name, size, mimeType } = file;
-    const mimetype = mimeType || 'application/octet-stream';
+    const normalized = normalizeUploadFile(file);
+    const uri = normalized.uri;
+    const name = normalized.name;
+    const size = Math.max(0, Number(file?.size || 0));
+    const mimetype = normalized.type || 'application/octet-stream';
 
     const throwIfCancelled = () => {
         if (isCancelled() || abortSignal?.aborted) throw new Error('Cancelled');
@@ -141,14 +108,22 @@ export const uploadFile = async (
         while (offset < size) {
             throwIfCancelled();
             const length = Math.min(CHUNK_SIZE, size - offset);
-            const chunkBase64 = await readFileChunkAsBase64(uri, offset, length);
-            throwIfCancelled();
+            
+            const formData = new FormData();
+            formData.append('uploadId', uploadId);
+            formData.append('chunkIndex', String(chunkIndex));
+            formData.append('chunk', {
+                uri: uri,
+                name: name,
+                type: mimetype,
+            } as any);
 
             const chunkRes = await uploadClient.post(
                 '/files/upload/chunk',
-                { uploadId, chunkIndex, chunkBase64 },
+                formData,
                 { signal: abortSignal }
             );
+            
             // Fix #5: Respect server backpressure hints between chunks
             const chunkDelay = chunkRes.data?.recommendedChunkDelayMs ?? DEFAULT_CHUNK_DELAY_MS;
             if (chunkDelay > 0) await new Promise(r => setTimeout(r, chunkDelay));
@@ -216,10 +191,14 @@ export const uploadFile = async (
                 }
             }
 
-            if (!settled) setTimeout(poll, nextPollMs);
+            if (!settled) {
+                pollTimerId = setTimeout(poll, nextPollMs);
+            }
         };
 
+        let pollTimerId: NodeJS.Timeout | null = null;
         abortSignal?.addEventListener('abort', () => {
+            if (pollTimerId) clearTimeout(pollTimerId);
             settle(() => reject(new Error('Cancelled')));
         }, { once: true });
 

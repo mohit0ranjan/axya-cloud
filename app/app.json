@@ -75,7 +75,8 @@
     "updates": {
       "enabled": true,
       "checkAutomatically": "ON_LOAD",
-      "fallbackToCacheTimeout": 0
+      "fallbackToCacheTimeout": 0,
+      "url": "https://u.expo.dev/45b9b1cf-3739-4f90-82f0-e5c60b9cbdfd"
     },
     "plugins": [
       "expo-updates",
@@ -107,8 +108,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "6f616215-0dfa-43cd-a895-32751f6864d9"
+        "projectId": "45b9b1cf-3739-4f90-82f0-e5c60b9cbdfd"
       }
-    }
+    },
+    "owner": "mohit5656"
   }
 }

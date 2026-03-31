@@ -7,6 +7,15 @@ import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_7
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+// Ignore React 18/19 specific warning originating from react-native-web passing standard React Native props to valid DOM elements
+const originalConsoleError = console.error;
+console.error = (...args: any[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('Received false for a non-boolean attribute collapsable')) {
+        return;
+    }
+    originalConsoleError.apply(console, args);
+};
+
 import { AuthProvider, AuthContext } from './src/context/AuthContext';
 import { ToastProvider } from './src/context/ToastContext';
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
@@ -245,24 +254,24 @@ export default function App() {
     }
 
     return (
-        <AppErrorBoundary>
-            <GestureHandlerRootView style={{ flex: 1 }}>
-                <SafeAreaProvider>
-                    <ThemeProvider>
-                        <ServerStatusProvider>
-                            <UploadProvider>
-                                <DownloadProvider>
-                                    <AuthProvider>
-                                        <ToastProvider>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+            <SafeAreaProvider>
+                <ThemeProvider>
+                    <ServerStatusProvider>
+                        <UploadProvider>
+                            <DownloadProvider>
+                                <AuthProvider>
+                                    <ToastProvider>
+                                        <AppErrorBoundary>
                                             <RootNavigator />
-                                        </ToastProvider>
-                                    </AuthProvider>
-                                </DownloadProvider>
-                            </UploadProvider>
-                        </ServerStatusProvider>
-                    </ThemeProvider>
-                </SafeAreaProvider>
-            </GestureHandlerRootView>
-        </AppErrorBoundary>
+                                        </AppErrorBoundary>
+                                    </ToastProvider>
+                                </AuthProvider>
+                            </DownloadProvider>
+                        </UploadProvider>
+                    </ServerStatusProvider>
+                </ThemeProvider>
+            </SafeAreaProvider>
+        </GestureHandlerRootView>
     );
 }

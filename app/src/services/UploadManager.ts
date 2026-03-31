@@ -17,7 +17,7 @@
  * ✅ Byte-accurate overallProgress = uploadedBytes / totalBytes * 100
  */
 
-import { File, Paths } from 'expo-file-system';
+import { File, Paths, Directory } from 'expo-file-system';
 import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
@@ -26,7 +26,7 @@ import { getNotificationsEnabled } from '../utils/preferences';
 import { Buffer } from 'buffer';
 import apiClient, { uploadClient } from './apiClient';
 import { syncAfterFileMutation } from './fileStateSync';
-import { sanitizeFileName } from '../utils/fileSafety';
+import { normalizeUploadFile, sanitizeFileName } from '../utils/fileSafety';
 import { serverReadiness } from './serverReadiness';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -91,15 +91,10 @@ export const UPLOAD_NOTIFICATION_ACTION_CANCEL = 'UPLOAD_ACTION_CANCEL';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Convert a Uint8Array to a Base64 string (used for native chunk uploads) */
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-    return Buffer.from(bytes).toString('base64');
-}
-
 /** Generate a fingerprint for deduplication */
 function makeFingerprint(file: FileAsset): string {
-    const safeName = sanitizeFileName(file.name, 'file');
-    return `${file.uri}|${safeName}|${file.size}`;
+    const normalized = normalizeUploadFile(file);
+    return `${normalized.uri}|${normalized.name}|${file.size}`;
 }
 
 function toFiniteNumber(value: unknown, fallback = 0): number {
@@ -112,44 +107,59 @@ function clampProgress(value: unknown): number {
 }
 
 /**
- * Read `length` bytes starting at `offset` from a file URI as Base64.
- *
- * Strategy (in priority order):
- * 1. Native (iOS/Android): Use expo-file-system's new `File` + `FileHandle` API.
- *    FileHandle.readBytes(n) reads from the current offset position.
- *    This is the canonical SDK 55+ approach — zero deprecated APIs.
- *
- * 2. Fallback: Use fetch() with a Range header.
- *    Works for file:// and content:// URIs on React Native >= 0.71.
- *    Used as a fallback for URIs that the new FileHandle may not support
- *    (e.g. content:// URIs from Android DocumentPicker on some devices).
+ * Write a chunk from `uri` at [offset, offset+length) to a temp file and return
+ * its path. The temp file is suitable for FormData upload and should be deleted
+ * after the upload completes.
  */
-async function readFileChunkAsBase64(
+async function writeChunkToTempFile(
     uri: string,
     offset: number,
-    length: number
+    length: number,
+    chunkIndex: number
 ): Promise<string> {
-    // Prefer new File API for all URI types; content:// often works here too.
+    const tmpDirName = "upload_chunks";
+    const tmpDirObj = new Directory(Paths.cache, tmpDirName);
+    if (!tmpDirObj.exists) {
+        // createDirectory internally handles it or we can use create
+        tmpDirObj.create({ intermediates: true, idempotent: true });
+    }
+    const tmpFileName = `chunk_${chunkIndex}_${Date.now()}.bin`;
+    const tmpFileObj = new File(tmpDirObj, tmpFileName);
+    
+    // new API allows setting overwrite: true to overwrite any existing file
+    tmpFileObj.create({ overwrite: true });
+    const tmpPath = tmpFileObj.uri;
+
     try {
         const fileObj = new File(uri);
         const handle = fileObj.open();
-        handle.offset = offset;
-        const chunk = handle.readBytes(length);
-        handle.close();
-        return uint8ArrayToBase64(chunk);
-    } catch (e) {
-        // Fall through to fetch fallback
-        console.warn('[UploadManager] FileHandle read failed, using fetch fallback:', e);
+        try {
+            handle.offset = offset;
+            const chunkBytes = handle.readBytes(length);
+            // Write raw bytes directly to temp file
+            tmpFileObj.write(chunkBytes);
+            return tmpPath;
+        } finally {
+            handle.close();
+        }
+    } catch {
+        // Fallback for URIs that FileHandle can't access
+        // We still need to use legacy readAsStringAsync since File doesn't support reading by offset via promises
+        // wait, we can just use File.readBytes if it opens, but if it throws we'll fallback
+        // The legacy API still works for content:// URIs on Android
+        const legacyFileSystem = require('expo-file-system/legacy');
+        const base64 = await legacyFileSystem.readAsStringAsync(uri, {
+            encoding: 'base64',
+            position: offset,
+            length: length,
+        });
+        
+        // Write the base64 content
+        await legacyFileSystem.writeAsStringAsync(tmpPath, base64, {
+            encoding: 'base64',
+        });
+        return tmpPath;
     }
-
-    // Native fallback specifically for content:// URIs on Android
-    // (File API sometimes throws on virtual/content URIs without caching)
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-        encoding: 'base64',
-        position: offset,
-        length: length,
-    });
-    return base64;
 }
 
 // ─── UploadManager ────────────────────────────────────────────────────────────
@@ -162,9 +172,7 @@ class UploadManager {
     private readonly INITIAL_ACTIVE_WINDOW = 20;
     private readonly INITIAL_VISIBLE_PROGRESS = 7;
     private readonly MAX_RETRIES = 3;
-    private readonly STREAM_MODE = 'stream';
     private readonly CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB chunks
-    private readonly STREAM_TIMEOUT_MS = 30 * 60 * 1000;
     // ✅ Throttle notify to ~200ms to avoid excessive React re-renders
     private readonly NOTIFY_THROTTLE_MS = 200;
     private readonly SPEED_WINDOW_MS = 3000;
@@ -212,12 +220,19 @@ class UploadManager {
         return new Set(windowed.map((task) => task.id));
     }
 
+    /** Debounced queue pump — prevents thundering herd of concurrent processQueue calls */
+    private queuePumpTimer: ReturnType<typeof setTimeout> | null = null;
+
     private scheduleQueuePump() {
-        const target = this.getAdaptiveConcurrency();
-        const missingSlots = Math.max(0, target - this.inFlightTaskIds.size);
-        for (let i = 0; i < missingSlots; i += 1) {
-            void this.processQueue();
-        }
+        if (this.queuePumpTimer) return;
+        this.queuePumpTimer = setTimeout(() => {
+            this.queuePumpTimer = null;
+            const target = this.getAdaptiveConcurrency();
+            const missingSlots = Math.max(0, target - this.inFlightTaskIds.size);
+            for (let i = 0; i < missingSlots; i += 1) {
+                void this.processQueue();
+            }
+        }, 50);
     }
 
     private static VALID_TRANSITIONS: Record<UploadStatus, UploadStatus[]> = {
@@ -344,6 +359,11 @@ class UploadManager {
     private lastNotifyTime = 0;
     private pendingNotifyTimer: ReturnType<typeof setTimeout> | null = null;
 
+    /** Throttled persistence to avoid excessive AsyncStorage writes */
+    private lastSaveTime = 0;
+    private pendingSaveTimer: ReturnType<typeof setTimeout> | null = null;
+    private readonly SAVE_THROTTLE_MS = 3000;
+
     private appStateSubscription: any = null;
 
     constructor() {
@@ -352,7 +372,7 @@ class UploadManager {
             if (!this.tasks.some((task) => task.status === 'preparing' || task.status === 'queued' || task.status === 'retrying')) return;
             void this.processQueue();
         });
-        
+
         // Background AppState handling
         if (Platform.OS !== 'web') {
             this.appStateSubscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
@@ -364,7 +384,7 @@ class UploadManager {
                 }
             });
         }
-        
+
         this.loadQueue();
     }
 
@@ -580,9 +600,7 @@ class UploadManager {
         if (code === 'schema_not_ready') return 'Service is starting. Please retry in a moment.';
         if (code === 'telegram_session_expired') return 'Telegram session expired. Please reconnect Telegram in Profile.';
         if (code === 'telegram_transient') return 'Telegram is temporarily unavailable. Retrying may help.';
-        if (code === 'stream_file_too_large' || code === 'file_too_large') return 'This file is larger than the current upload limit.';
-        if (code === 'stream_size_mismatch') return 'Upload was interrupted. Retry to continue.';
-        if (code === 'stream_idle_timeout') return 'Upload paused due to network inactivity. Retrying should continue safely.';
+        if (code === 'file_too_large') return 'This file is larger than the current upload limit.';
         if (code === 'mime_type_mismatch' || code === 'unsupported_mime_type') return 'This file type is not supported.';
         if (backendMessage) return backendMessage;
         return error?.message || 'Upload failed';
@@ -602,6 +620,25 @@ class UploadManager {
             clearedTotalFiles: this.clearedTotalFiles,
         };
         AsyncStorage.setItem('@upload_stats_v2', JSON.stringify(statsToSave)).catch(() => { });
+    }
+
+    /** Throttled save — writes to AsyncStorage at most once per SAVE_THROTTLE_MS */
+    private scheduleSave(force = false) {
+        const now = Date.now();
+        if (force || (now - this.lastSaveTime >= this.SAVE_THROTTLE_MS)) {
+            if (this.pendingSaveTimer) {
+                clearTimeout(this.pendingSaveTimer);
+                this.pendingSaveTimer = null;
+            }
+            this.lastSaveTime = now;
+            this.saveQueue();
+        } else if (!this.pendingSaveTimer) {
+            this.pendingSaveTimer = setTimeout(() => {
+                this.pendingSaveTimer = null;
+                this.lastSaveTime = Date.now();
+                this.saveQueue();
+            }, this.SAVE_THROTTLE_MS - (now - this.lastSaveTime));
+        }
     }
 
     // ── Subscription ─────────────────────────────────────────────────────────
@@ -631,7 +668,7 @@ class UploadManager {
      * rapid chunk uploads. Forces immediate notify for status changes (force=true).
      */
     private notifyListeners(force = false) {
-        this.saveQueue();
+        this.scheduleSave(force);
         this.cachedStats = null; // Invalidate stats cache on every notify
 
         const now = Date.now();
@@ -894,7 +931,14 @@ class UploadManager {
         );
 
         const newTasks: UploadTask[] = [];
-        for (const file of files) {
+        for (const rawFile of files) {
+            const normalized = normalizeUploadFile(rawFile);
+            const file: FileAsset = {
+                uri: normalized.uri,
+                name: normalized.name,
+                size: Math.max(0, toFiniteNumber(rawFile?.size, 0)),
+                mimeType: normalized.type,
+            };
             const safeName = sanitizeFileName(file.name, 'file');
             const fp = makeFingerprint(file);
             if (existingFingerprints.has(fp)) {
@@ -905,7 +949,7 @@ class UploadManager {
             const now = Date.now();
             newTasks.push({
                 id: this.makeTaskId(),
-                file: { ...file, name: safeName },
+                file: { ...file, name: safeName, uri: normalized.uri, mimeType: normalized.type },
                 folderId,
                 chatTarget,
                 progress: 0,
@@ -922,14 +966,8 @@ class UploadManager {
         if (newTasks.length === 0) return;
 
         this.tasks.push(...newTasks);
-        // Seed processors up to adaptive target concurrency.
-        const slotsAvailable = this.getAdaptiveConcurrency() - this.inFlightTaskIds.size;
-        const immediateCount = Math.min(slotsAvailable, newTasks.length);
-        for (let i = 0; i < immediateCount; i++) {
-            newTasks[i].status = 'preparing';
-            newTasks[i].progress = Math.max(newTasks[i].progress, this.INITIAL_VISIBLE_PROGRESS);
-        }
         this.notifyListeners(true);
+        void this.processQueue();
         this.scheduleQueuePump();
     }
 
@@ -1123,7 +1161,7 @@ class UploadManager {
 
         const runnableWindowIds = this.getRunnableWindowTaskIds();
 
-        let nextTask = this.tasks.find(
+        const nextTask = this.tasks.find(
             t =>
                 (t.status === 'preparing' || t.status === 'queued' || t.status === 'retrying')
                 && !this.inFlightTaskIds.has(t.id)
@@ -1132,45 +1170,50 @@ class UploadManager {
         if (!nextTask) {
             // Starvation guard: if current window is blocked by paused/retrying tasks,
             // keep progress moving by allowing the oldest runnable task outside window.
-            nextTask = this.tasks.find(
+            const fallbackTask = this.tasks.find(
                 t => (t.status === 'preparing' || t.status === 'queued' || t.status === 'retrying') && !this.inFlightTaskIds.has(t.id)
             );
-        }
-        if (!nextTask) return;
+            if (!fallbackTask) return;
+            this.inFlightTaskIds.add(fallbackTask.id);
 
-        const isReady = await serverReadiness.waitUntilReady({ reason: 'upload_queue' });
-        if (!isReady) {
-            // Keep tasks queued while server wakes; user can retry wake-up without losing queue state.
+            this.updateTask(fallbackTask.id, {
+                status: 'uploading',
+                error: undefined,
+                progress: Math.max(clampProgress(fallbackTask.progress), this.INITIAL_VISIBLE_PROGRESS),
+            });
+
+            try {
+                await this.performUpload(fallbackTask);
+                this.updateTask(fallbackTask.id, {
+                    status: 'completed',
+                    progress: 100,
+                    bytesUploaded: fallbackTask.file.size,
+                    currentSpeedBps: 0,
+                    etaSeconds: 0,
+                    completedAt: Date.now(),
+                });
+                syncAfterFileMutation();
+                this.pruneTerminalTaskHistory();
+                this.scheduleTaskClearing(fallbackTask, 8000);
+            } catch (e: any) {
+                this.handleUploadError(fallbackTask, e);
+            } finally {
+                this.abortControllers.delete(fallbackTask.id);
+                this.inFlightTaskIds.delete(fallbackTask.id);
+                if (fallbackTask.status !== 'waiting_retry') {
+                    this.scheduleQueuePump();
+                }
+            }
             return;
-        }
-
-        const refreshedWindowIds = this.getRunnableWindowTaskIds();
-        nextTask = this.tasks.find(
-            t =>
-                (t.status === 'preparing' || t.status === 'queued' || t.status === 'retrying')
-                && !this.inFlightTaskIds.has(t.id)
-                && refreshedWindowIds.has(t.id)
-        );
-        if (!nextTask) {
-            nextTask = this.tasks.find(
-                t => (t.status === 'preparing' || t.status === 'queued' || t.status === 'retrying') && !this.inFlightTaskIds.has(t.id)
-            );
         }
         if (!nextTask) return;
 
         this.inFlightTaskIds.add(nextTask.id);
 
-        if (nextTask.status === 'queued' || nextTask.status === 'preparing') {
-            this.updateTask(nextTask.id, {
-                status: 'preparing',
-                error: undefined,
-                progress: Math.max(clampProgress(nextTask.progress), this.INITIAL_VISIBLE_PROGRESS),
-            });
-        }
-
         // Immediately mark as uploading so concurrent processQueue calls skip it
         this.updateTask(nextTask.id, {
             status: 'uploading',
+            error: undefined,
             progress: Math.max(clampProgress(nextTask.progress), this.INITIAL_VISIBLE_PROGRESS),
         });
 
@@ -1188,81 +1231,7 @@ class UploadManager {
             this.pruneTerminalTaskHistory();
             this.scheduleTaskClearing(nextTask, 8000);
         } catch (e: any) {
-            const status = nextTask.status as UploadStatus;
-
-            const isCancelOrPauseError = e?.name === 'AbortError' || e?.message === 'Cancelled';
-            const isFatalSchemaError = e?.message?.includes('constraint') || e?.message?.includes('duplicate key');
-            // ✅ Telegram fatal errors should NOT be retried
-            const isFatalTelegramError = e?.message?.includes('FILE_PARTS_INVALID')
-                || e?.message?.includes('FILE_REFERENCE_EXPIRED')
-                || e?.message?.includes('MEDIA_EMPTY')
-                || e?.message?.includes('FILE_ID_INVALID')
-                || (e?.message?.includes('400:') && !e?.message?.includes('FLOOD'));
-            const isFatalUploadError = this.isFatalUploadError(e);
-
-            if (isCancelOrPauseError || status === 'cancelled') {
-                if (status !== 'paused') {
-                    this.updateTask(nextTask.id, { status: 'cancelled', currentSpeedBps: 0, etaSeconds: 0, completedAt: Date.now() });
-                    this.pruneTerminalTaskHistory();
-                }
-                // If status is already 'paused', keep it
-            } else if (status === 'paused') {
-                // Keep paused
-            } else if (isFatalSchemaError || isFatalTelegramError || isFatalUploadError) {
-                // Do not retry fatal database/Telegram errors
-                if (nextTask.uploadId) {
-                    uploadClient.post('/files/upload/cancel', { uploadId: nextTask.uploadId }).catch(() => { });
-                }
-                this.updateTask(nextTask.id, {
-                    status: 'failed',
-                    error: this.toUserFacingUploadError(e),
-                    currentSpeedBps: 0,
-                    etaSeconds: 0,
-                    completedAt: Date.now(),
-                });
-            } else {
-                const newRetryCount = nextTask.retryCount + 1;
-                if (newRetryCount <= this.MAX_RETRIES) {
-                    const errorStatus = Number(e?.response?.status || 0);
-                    const errorMessage = String(e?.response?.data?.error || e?.message || '').toLowerCase();
-                    const resetSession = errorStatus === 404 || errorMessage.includes('upload session not found');
-
-                    if (resetSession && nextTask.uploadId) {
-                        try { uploadClient.post('/files/upload/cancel', { uploadId: nextTask.uploadId }).catch(() => { }); } catch { }
-                    }
-                    this.updateTask(nextTask.id, {
-                        status: 'waiting_retry',
-                        retryCount: newRetryCount,
-                        error: `Retrying upload (attempt ${newRetryCount} of ${this.MAX_RETRIES})`,
-                        uploadId: resetSession ? undefined : nextTask.uploadId,
-                        progress: resetSession ? 0 : nextTask.progress,
-                        bytesUploaded: resetSession ? 0 : nextTask.bytesUploaded,
-                    });
-                    const delay = (Math.pow(2, newRetryCount) + 1) * 1000;
-                    console.warn(
-                        `[UploadManager] Retry ${newRetryCount}/${this.MAX_RETRIES}`,
-                        `"${nextTask.file.name}" in ${delay / 1000}s:`, e?.message
-                    );
-                    setTimeout(() => {
-                        const t = this.tasks.find(x => x.id === nextTask.id);
-                        if (t && t.status === 'waiting_retry') {
-                            this.updateTask(t.id, { status: 'retrying' });
-                            this.processQueue();
-                        } else {
-                            // Task was cancelled/paused while waiting — still trigger process
-                            this.processQueue();
-                        }
-                    }, delay);
-                } else {
-                    this.updateTask(nextTask.id, {
-                        status: 'failed',
-                        error: this.toUserFacingUploadError(e),
-                        currentSpeedBps: 0,
-                        etaSeconds: 0,
-                        completedAt: Date.now(),
-                    });
-                }
-            }
+            this.handleUploadError(nextTask, e);
         } finally {
             this.abortControllers.delete(nextTask.id);
             this.inFlightTaskIds.delete(nextTask.id);
@@ -1270,6 +1239,84 @@ class UploadManager {
             // — the retry timer will handle it after the backoff delay
             if (nextTask.status !== 'waiting_retry') {
                 this.scheduleQueuePump();
+            }
+        }
+    }
+
+    /**
+     * Shared error handler for upload tasks — deduplicates error classification,
+     * retry scheduling, and terminal state transitions from processQueue.
+     */
+    private handleUploadError(task: UploadTask, e: any) {
+        const status = task.status as UploadStatus;
+
+        const isCancelOrPauseError = e?.name === 'AbortError' || e?.message === 'Cancelled';
+        const isFatalSchemaError = e?.message?.includes('constraint') || e?.message?.includes('duplicate key');
+        const isFatalTelegramError = e?.message?.includes('FILE_PARTS_INVALID')
+            || e?.message?.includes('FILE_REFERENCE_EXPIRED')
+            || e?.message?.includes('MEDIA_EMPTY')
+            || e?.message?.includes('FILE_ID_INVALID')
+            || (e?.message?.includes('400:') && !e?.message?.includes('FLOOD'));
+        const isFatalUploadError = this.isFatalUploadError(e);
+
+        if (isCancelOrPauseError || status === 'cancelled') {
+            if (status !== 'paused') {
+                this.updateTask(task.id, { status: 'cancelled', currentSpeedBps: 0, etaSeconds: 0, completedAt: Date.now() });
+                this.pruneTerminalTaskHistory();
+            }
+        } else if (status === 'paused') {
+            // Keep paused — UI initiated pause during upload
+        } else if (isFatalSchemaError || isFatalTelegramError || isFatalUploadError) {
+            if (task.uploadId) {
+                uploadClient.post('/files/upload/cancel', { uploadId: task.uploadId }).catch(() => { });
+            }
+            this.updateTask(task.id, {
+                status: 'failed',
+                error: this.toUserFacingUploadError(e),
+                currentSpeedBps: 0,
+                etaSeconds: 0,
+                completedAt: Date.now(),
+            });
+        } else {
+            const newRetryCount = task.retryCount + 1;
+            if (newRetryCount <= this.MAX_RETRIES) {
+                const errorStatus = Number(e?.response?.status || 0);
+                const errorMessage = String(e?.response?.data?.error || e?.message || '').toLowerCase();
+                const resetSession = errorStatus === 404 || errorMessage.includes('upload session not found');
+
+                if (resetSession && task.uploadId) {
+                    try { uploadClient.post('/files/upload/cancel', { uploadId: task.uploadId }).catch(() => { }); } catch { }
+                }
+                this.updateTask(task.id, {
+                    status: 'waiting_retry',
+                    retryCount: newRetryCount,
+                    error: `Retrying upload (attempt ${newRetryCount} of ${this.MAX_RETRIES})`,
+                    uploadId: resetSession ? undefined : task.uploadId,
+                    progress: resetSession ? 0 : task.progress,
+                    bytesUploaded: resetSession ? 0 : task.bytesUploaded,
+                });
+                const delay = (Math.pow(2, newRetryCount) + 1) * 1000;
+                console.warn(
+                    `[UploadManager] Retry ${newRetryCount}/${this.MAX_RETRIES}`,
+                    `"${task.file.name}" in ${delay / 1000}s:`, e?.message
+                );
+                setTimeout(() => {
+                    const t = this.tasks.find(x => x.id === task.id);
+                    if (t && t.status === 'waiting_retry') {
+                        this.updateTask(t.id, { status: 'retrying' });
+                        this.processQueue();
+                    } else {
+                        this.processQueue();
+                    }
+                }, delay);
+            } else {
+                this.updateTask(task.id, {
+                    status: 'failed',
+                    error: this.toUserFacingUploadError(e),
+                    currentSpeedBps: 0,
+                    etaSeconds: 0,
+                    completedAt: Date.now(),
+                });
             }
         }
     }
@@ -1287,7 +1334,17 @@ class UploadManager {
             if (isCancelled()) throw new Error('Cancelled');
         };
 
-        const { file, folderId, chatTarget } = task;
+        const normalizedFile = normalizeUploadFile(task.file);
+        const file: FileAsset = {
+            ...task.file,
+            uri: normalizedFile.uri,
+            name: normalizedFile.name,
+            mimeType: normalizedFile.type,
+        };
+        const { folderId, chatTarget } = task;
+        if (file.uri !== task.file.uri || file.name !== task.file.name || file.mimeType !== task.file.mimeType) {
+            this.updateTask(task.id, { file: { ...task.file, ...file } });
+        }
 
         // ── Step 0: Resolve file size if DocumentPicker returned 0 ────────
         if (!file.size || file.size <= 0) {
@@ -1390,13 +1447,12 @@ class UploadManager {
             const initRes = await uploadClient.post(
                 '/files/upload/init',
                 {
-                    originalname: sanitizeFileName(file.name, 'file'),
+                    originalname: file.name.replace(/[^\w.-]/g, '_'),
                     size: file.size,
                     mimetype: file.mimeType || 'application/octet-stream',
                     telegram_chat_id: chatTarget,
                     folder_id: folderId,
                     hash: fileHash,
-                    upload_mode: this.STREAM_MODE,
                     chunk_size_bytes: this.CHUNK_SIZE,
                 },
                 { signal: abort.signal }
@@ -1500,19 +1556,8 @@ class UploadManager {
             }
         }
 
-        let uploadedViaStream = false;
-        if (!telegramFinalizingAlready) {
-            uploadedViaStream = await this.uploadViaSingleStream(task, uploadId, abort.signal, throwIfCancelled);
-            if (uploadedViaStream) {
-                offset = file.size;
-                chunkIndex = Math.max(chunkIndex, 1);
-                this.updateTaskProgressWithTelemetry(task, file.size, Math.max(task.progress, 50));
-                telegramFinalizingAlready = true;
-            }
-        }
-
-        if (!uploadedViaStream && Platform.OS === 'web') {
-            // Web: Blob.slice chunking via fetch
+        if (Platform.OS === 'web') {
+            // Web: Blob.slice chunking via fetch + FormData
             const blobResp = await fetch(file.uri);
             const blob = await blobResp.blob();
 
@@ -1522,7 +1567,7 @@ class UploadManager {
                 const formData = new FormData();
                 formData.append('uploadId', uploadId);
                 formData.append('chunkIndex', String(chunkIndex));
-                formData.append('chunk', new globalThis.File([chunk], sanitizeFileName(file.name, 'file'), { type: file.mimeType }));
+                formData.append('chunk', new globalThis.File([chunk], file.name.replace(/[^\w.-]/g, '_'), { type: file.mimeType || 'application/octet-stream' }));
 
                 try {
                     const chunkRes = await uploadClient.post('/files/upload/chunk', formData, {
@@ -1551,14 +1596,17 @@ class UploadManager {
                     if (Number(chunkErr?.response?.status || 0) === 409) {
                         const code = String(chunkErr?.response?.data?.code || '').toUpperCase();
                         if (code === 'UPLOAD_QUEUED') {
-                            this.updateTask(task.id, { status: 'queued', error: undefined });
-                            const waitMs = this.clampRecommendedMs(
-                                chunkErr?.response?.data?.recommendedPollMs,
-                                1500,
-                                10000,
-                                3000
-                            );
-                            await this.delayWithAbort(waitMs, abort.signal);
+                            this.updateTask(task.id, {
+                                status: 'queued',
+                                error: undefined,
+                                queuePositionGlobal: Math.max(0, Number(chunkErr?.response?.data?.queuePositionGlobal || 0)),
+                                queuePositionUser: Math.max(0, Number(chunkErr?.response?.data?.queuePositionUser || 0)),
+                            });
+                            serverQueued = true;
+                            await waitForQueueAdmission();
+                            if (['completed', 'paused', 'cancelled'].includes(task.status)) {
+                                return;
+                            }
                             continue;
                         }
                         const expectedChunk = Number(chunkErr?.response?.data?.expectedChunk);
@@ -1576,20 +1624,29 @@ class UploadManager {
                 chunkIndex++;
                 this.updateTaskProgressWithTelemetry(task, offset, Math.round(Math.min((offset / file.size) * 50, 50)));
             }
-        } else if (!uploadedViaStream) {
-            // Native (iOS/Android): new File + FileHandle API
+        } else {
+            // Native (iOS/Android): write chunk to temp file, upload via FormData
             while (offset < file.size) {
                 throwIfCancelled();
 
                 const length = Math.min(this.CHUNK_SIZE, file.size - offset);
-                const chunkBase64 = await readFileChunkAsBase64(file.uri, offset, length);
+                const tmpChunkPath = await writeChunkToTempFile(file.uri, offset, length, chunkIndex);
 
                 throwIfCancelled();
 
                 try {
+                    const formData = new FormData();
+                    formData.append('uploadId', uploadId);
+                    formData.append('chunkIndex', String(chunkIndex));
+                    formData.append('chunk', {
+                        uri: tmpChunkPath,
+                        name: file.name.replace(/[^\w.-]/g, '_'),
+                        type: file.mimeType || 'application/octet-stream',
+                    } as any);
+
                     const chunkRes = await uploadClient.post(
                         '/files/upload/chunk',
-                        { uploadId, chunkIndex, chunkBase64 },
+                        formData,
                         {
                             signal: abort.signal,
                             onUploadProgress: (progressEvent: any) => {
@@ -1617,14 +1674,17 @@ class UploadManager {
                     if (Number(chunkErr?.response?.status || 0) === 409) {
                         const code = String(chunkErr?.response?.data?.code || '').toUpperCase();
                         if (code === 'UPLOAD_QUEUED') {
-                            this.updateTask(task.id, { status: 'queued', error: undefined });
-                            const waitMs = this.clampRecommendedMs(
-                                chunkErr?.response?.data?.recommendedPollMs,
-                                1500,
-                                10000,
-                                3000
-                            );
-                            await this.delayWithAbort(waitMs, abort.signal);
+                            this.updateTask(task.id, {
+                                status: 'queued',
+                                error: undefined,
+                                queuePositionGlobal: Math.max(0, Number(chunkErr?.response?.data?.queuePositionGlobal || 0)),
+                                queuePositionUser: Math.max(0, Number(chunkErr?.response?.data?.queuePositionUser || 0)),
+                            });
+                            serverQueued = true;
+                            await waitForQueueAdmission();
+                            if (['completed', 'paused', 'cancelled'].includes(task.status)) {
+                                return;
+                            }
                             continue;
                         }
                         const expectedChunk = Number(chunkErr?.response?.data?.expectedChunk);
@@ -1636,6 +1696,9 @@ class UploadManager {
                         }
                     }
                     throw chunkErr;
+                } finally {
+                    // Always clean up the temp chunk file
+                    FileSystem.deleteAsync(tmpChunkPath, { idempotent: true }).catch(() => {});
                 }
 
                 offset += length;
@@ -1648,18 +1711,47 @@ class UploadManager {
         this.updateTaskProgressWithTelemetry(task, Math.max(offset, Math.min(file.size, task.bytesUploaded || 0)), 50);
 
         // ── Step 4: Finalise on server ───────────────────────────────────────
-        if (!telegramFinalizingAlready) {
+        try {
             const completeRes = await uploadClient.post(
                 '/files/upload/complete',
                 { uploadId },
                 { signal: abort.signal }
             );
             const completeStatus = String(completeRes?.data?.status || '').toLowerCase();
+            if (completeStatus === 'completed') {
+                this.updateTask(task.id, {
+                    status: 'completed',
+                    progress: 100,
+                    bytesUploaded: file.size,
+                    queuePositionGlobal: 0,
+                    queuePositionUser: 0,
+                });
+                return;
+            }
             if (completeStatus === 'processing' || completeStatus === 'uploading_to_telegram') {
                 this.updateTask(task.id, { status: 'processing', queuePositionGlobal: 0, queuePositionUser: 0 });
             }
-        } else {
-            this.updateTask(task.id, { status: 'processing', queuePositionGlobal: 0, queuePositionUser: 0 });
+        } catch (completeErr: any) {
+            const completeStatus = Number(completeErr?.response?.status || 0);
+            const completeCode = String(completeErr?.response?.data?.code || '').toUpperCase();
+            if (completeStatus === 409 && completeCode === 'UPLOAD_QUEUED') {
+                this.updateTask(task.id, {
+                    status: 'queued',
+                    error: undefined,
+                    queuePositionGlobal: Math.max(0, Number(completeErr?.response?.data?.queuePositionGlobal || 0)),
+                    queuePositionUser: Math.max(0, Number(completeErr?.response?.data?.queuePositionUser || 0)),
+                });
+                serverQueued = true;
+                await waitForQueueAdmission();
+                if (task.status === 'completed') {
+                    return;
+                }
+                if (task.status === 'processing' || task.status === 'uploading') {
+                    this.updateTask(task.id, { status: 'processing', queuePositionGlobal: 0, queuePositionUser: 0 });
+                }
+            } else {
+                throw completeErr;
+            }
         }
 
         // ── Step 5: Poll Telegram delivery status (50% → 100%) ───────────────
@@ -1667,10 +1759,12 @@ class UploadManager {
         await new Promise<void>((resolve, reject) => {
             const maxWait = Date.now() + 10 * 60 * 1000;
             let settled = false;
+            let pollTimerId: ReturnType<typeof setTimeout> | null = null;
 
             const settle = (fn: () => void) => {
                 if (settled) return;
                 settled = true;
+                if (pollTimerId) { clearTimeout(pollTimerId); pollTimerId = null; }
                 fn();
             };
 
@@ -1724,13 +1818,12 @@ class UploadManager {
                         this.updateTaskProgressWithTelemetry(task, Math.round((pollProgress / 100) * file.size), pollProgress);
                         nextPollMs = this.clampRecommendedMs(statusPayload.recommendedPollMs, 1500, 10000, 2600);
                     } else {
-                        // Fix: update bytesUploaded during poll phase so stats compute correctly
                         const pollProgress = Math.round(50 + ((tgProgress || 0) * 0.5));
                         this.updateTask(task.id, { status: 'uploading', queuePositionGlobal: 0, queuePositionUser: 0 });
                         this.updateTaskProgressWithTelemetry(task, Math.round((pollProgress / 100) * file.size), pollProgress);
                     }
 
-                    if (!settled) setTimeout(poll, nextPollMs);
+                    if (!settled) pollTimerId = setTimeout(poll, nextPollMs);
                     return;
                 } catch (e: any) {
                     if (e.name === 'CanceledError' || e.name === 'AbortError') {
@@ -1747,11 +1840,12 @@ class UploadManager {
                     }
                 }
 
-                if (!settled) setTimeout(poll, 2600);
+                if (!settled) pollTimerId = setTimeout(poll, 2600);
             };
 
-            // Use {once: true} to prevent memory leak
+            // Clean up poll timer on abort to prevent memory leaks
             abort.signal.addEventListener('abort', () => {
+                if (pollTimerId) { clearTimeout(pollTimerId); pollTimerId = null; }
                 settle(() => reject(new Error('Cancelled')));
             }, { once: true });
 
@@ -1759,103 +1853,19 @@ class UploadManager {
         });
     }
 
-    private async uploadViaSingleStream(
-        task: UploadTask,
-        uploadId: string,
-        signal: AbortSignal,
-        throwIfCancelled: () => void,
-    ): Promise<boolean> {
-        const safeName = sanitizeFileName(task.file.name, 'file');
-        const mime = task.file.mimeType || 'application/octet-stream';
-
-        for (let attempt = 0; attempt < 4; attempt += 1) {
-            throwIfCancelled();
-
-            const formData = new FormData();
-            if (Platform.OS === 'web') {
-                const blobResp = await fetch(task.file.uri);
-                const blob = await blobResp.blob();
-                formData.append('file', new globalThis.File([blob], safeName, { type: mime }));
-            } else {
-                formData.append('file', {
-                    uri: task.file.uri,
-                    name: safeName,
-                    type: mime,
-                } as any);
-            }
-
-            try {
-                const response = await uploadClient.post(
-                    `/files/upload/stream/${uploadId}`,
-                    formData,
-                    {
-                        signal,
-                        timeout: this.STREAM_TIMEOUT_MS,
-                        onUploadProgress: (progressEvent: any) => {
-                            const fraction = this.resolveProgressFraction(progressEvent, task.file.size || 1);
-                            this.updateTask(task.id, { status: 'uploading', queuePositionGlobal: 0, queuePositionUser: 0 });
-                            this.updateTaskProgressWithTelemetry(
-                                task,
-                                Math.round(task.file.size * fraction),
-                                Math.round(Math.min(50 * fraction, 50))
-                            );
-                        },
-                    }
-                );
-
-                const serverStatus = String(response?.data?.status || '').toLowerCase();
-                if (serverStatus === 'completed') {
-                    this.updateTask(task.id, {
-                        status: 'completed',
-                        progress: 100,
-                        bytesUploaded: task.file.size,
-                        queuePositionGlobal: 0,
-                        queuePositionUser: 0,
-                    });
-                } else {
-                    this.updateTask(task.id, {
-                        status: 'processing',
-                        progress: Math.max(task.progress, 50),
-                        bytesUploaded: Math.max(task.bytesUploaded, task.file.size),
-                        queuePositionGlobal: 0,
-                        queuePositionUser: 0,
-                    });
-                }
-                return true;
-            } catch (err: any) {
-                const status = Number(err?.response?.status || 0);
-                const code = String(err?.response?.data?.code || '').toUpperCase();
-
-                if (status === 409 && code === 'UPLOAD_QUEUED') {
-                    this.updateTask(task.id, {
-                        status: 'queued',
-                        error: undefined,
-                        queuePositionGlobal: Math.max(0, Number(err?.response?.data?.queuePositionGlobal || 0)),
-                        queuePositionUser: Math.max(0, Number(err?.response?.data?.queuePositionUser || 0)),
-                    });
-                    const waitMs = this.clampRecommendedMs(err?.response?.data?.recommendedPollMs, 1500, 10000, 3000);
-                    await this.delayWithAbort(waitMs, signal);
-                    continue;
-                }
-
-                if (status === 404 || status === 405 || code === 'UPLOAD_CHUNK_ONLY' || code === 'UPLOAD_STREAM_ONLY') {
-                    return false;
-                }
-
-                throw err;
-            }
-        }
-
-        return false;
-    }
+    // uploadViaSingleStream removed — chunk-only architecture
 
     // ── Background support ────────────────────────────────────────────────────
 
     public resumeAllBackground() {
         let changed = false;
         this.tasks.forEach((task) => {
-            if (task.status === 'preparing' || task.status === 'uploading' || task.status === 'processing' || task.status === 'retrying' || task.status === 'waiting_retry') {
+            if (['preparing', 'uploading', 'processing', 'retrying', 'waiting_retry'].includes(task.status)) {
+                // Abort in-flight HTTP requests to prevent duplicate concurrent uploads
+                this.abortControllers.get(task.id)?.abort();
+                this.inFlightTaskIds.delete(task.id);
                 this.transition(task, 'queued');
+                this.resetTaskTelemetry(task.id);
                 changed = true;
             }
         });

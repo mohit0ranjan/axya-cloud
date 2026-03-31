@@ -6,6 +6,7 @@ import { useMemo, useState } from 'react';
 import FolderCard, { FolderCardData } from '../../components/folders/FolderCard';
 import FoldersBottomNav from '../../components/folders/FoldersBottomNav';
 import FoldersHeader from '../../components/folders/FoldersHeader';
+import UploadExperience from '../../components/upload/UploadExperience';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -84,6 +85,7 @@ export default function FoldersPage() {
       </main>
 
       <FoldersBottomNav />
+      <UploadExperience />
     </div>
   );
 }

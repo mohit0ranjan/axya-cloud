@@ -15,21 +15,21 @@ interface FileGridProps {
 }
 
 function FileGridComponent({ files, share, onPreview, onDownload, ticketMap, previewUrlMap, onLoadThumbnail, onEndReached }: FileGridProps) {
-    const renderItem = useCallback((index: number, file: SharedFile) => {
+const renderItem = useCallback((index: number, file: SharedFile, context: any) => {
         return (
             <div className="w-full">
                 <FileCard
                     file={file}
-                    share={share}
-                    onPreview={onPreview}
-                    onDownload={onDownload}
-                    ticketMap={ticketMap}
-                    previewUrlMap={previewUrlMap}
-                    onLoadThumbnail={onLoadThumbnail}
+                    share={context.share}
+                    onPreview={context.onPreview}
+                    onDownload={context.onDownload}
+                    ticketMap={context.ticketMap}
+                    previewUrlMap={context.previewUrlMap}
+                    onLoadThumbnail={context.onLoadThumbnail}
                 />
             </div>
         );
-    }, [onDownload, onLoadThumbnail, onPreview, previewUrlMap, share, ticketMap]);
+    }, []);
 
     if (!files || files.length === 0) {
         return (

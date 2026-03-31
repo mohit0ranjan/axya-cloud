@@ -190,7 +190,7 @@ const FileListItem = ({ item, token, apiBaseUrl, theme, isDark, onPress, onOptio
                     {thumbSource ? (
                         <Image
                             source={thumbSource}
-                            placeholder={item.blurhash || undefined}
+                            placeholder={item.blurhash ? { blurhash: item.blurhash } : undefined}
                             style={{ width: '100%', height: '100%' }}
                             contentFit="cover"
                             cachePolicy="disk"

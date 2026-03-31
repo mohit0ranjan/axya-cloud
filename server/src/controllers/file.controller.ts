@@ -1,7 +1,6 @@
 import { Response } from 'express';
 import { AuthRequest } from '../middlewares/auth.middleware';
 import { getDynamicClient } from '../services/telegram.service';
-import { CustomFile } from 'telegram/client/uploads';
 import pool from '../config/db';
 import fs from 'fs';
 import path from 'path';
@@ -14,7 +13,6 @@ import { mapTelegramError } from '../utils/telegramErrors';
 import { formatFileRow, extractTelegramNativeMeta } from '../utils/formatters';
 import { getMessageCacheState } from '../services/share-v2/telegram-read-cache.service';
 import { cacheDelByPrefix, cacheGet, cacheSet } from '../services/cache.service';
-import { isAllowedUploadMime } from '../utils/uploadMime';
 
 const clampInt = (value: unknown, fallback: number, min: number, max: number) => {
     const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -151,12 +149,12 @@ const deleteTrashRowsAtomically = async (
     userId: string,
     ownerSessionString: string,
     options?: {
-        fileIds?: string[];
-        includeFolders?: boolean;
+        itemIds?: string[];
+        includeFolders?: boolean; // if true, deletes ALL folders if itemIds is empty
     }
 ): Promise<{ deletedFiles: number; deletedFolders: number }> => {
-    const fileIdsFilter = Array.isArray(options?.fileIds)
-        ? options.fileIds.map((id) => String(id || '').trim()).filter(Boolean)
+    const itemIdsFilter = Array.isArray(options?.itemIds)
+        ? options.itemIds.map((id) => String(id || '').trim()).filter(Boolean)
         : [];
     const includeFolders = Boolean(options?.includeFolders);
 
@@ -164,7 +162,7 @@ const deleteTrashRowsAtomically = async (
     try {
         await client.query('BEGIN');
 
-        const fileRowsRes = fileIdsFilter.length > 0
+        const fileRowsRes = itemIdsFilter.length > 0
             ? await client.query(
                 `SELECT id, telegram_chat_id, telegram_message_id
                  FROM files
@@ -173,7 +171,7 @@ const deleteTrashRowsAtomically = async (
                    AND id = ANY($2::uuid[])
                  ORDER BY trashed_at ASC NULLS LAST, created_at ASC
                  FOR UPDATE`,
-                [userId, fileIdsFilter]
+                [userId, itemIdsFilter]
             )
             : await client.query(
                 `SELECT id, telegram_chat_id, telegram_message_id
@@ -186,12 +184,19 @@ const deleteTrashRowsAtomically = async (
             );
 
         const fileRows = fileRowsRes.rows as TrashDeleteFileRow[];
-        if (fileIdsFilter.length > 0 && fileRows.length !== fileIdsFilter.length) {
-            throw new Error('Some selected files are no longer in trash.');
-        }
 
-        const folderRowsRes = includeFolders
+        const folderRowsRes = itemIdsFilter.length > 0
             ? await client.query(
+                `SELECT id
+                 FROM folders
+                 WHERE user_id = $1
+                   AND is_trashed = true
+                   AND id = ANY($2::uuid[])
+                 ORDER BY trashed_at ASC NULLS LAST, created_at ASC
+                 FOR UPDATE`,
+                [userId, itemIdsFilter]
+            )
+            : includeFolders ? await client.query(
                 `SELECT id
                  FROM folders
                  WHERE user_id = $1
@@ -199,10 +204,13 @@ const deleteTrashRowsAtomically = async (
                  ORDER BY trashed_at ASC NULLS LAST, created_at ASC
                  FOR UPDATE`,
                 [userId]
-            )
-            : { rows: [] as Array<{ id: string }> };
+            ) : { rows: [] as Array<{ id: string }> };
 
         const folderRows = folderRowsRes.rows as Array<{ id: string }>;
+        
+        if (itemIdsFilter.length > 0 && (fileRows.length + folderRows.length) !== itemIdsFilter.length) {
+            throw new Error('Some selected items are no longer in trash.');
+        }
         if (fileRows.length === 0 && folderRows.length === 0) {
             await client.query('COMMIT');
             return { deletedFiles: 0, deletedFolders: 0 };
@@ -285,7 +293,7 @@ const deleteTrashRowsAtomically = async (
         if (errMessage.includes('share_links_v2_root_xor') || errMessage.includes('violates check constraint')) {
             logger.error('trash.delete', 'constraint_violation_during_delete', {
                 userId,
-                fileCount: fileIdsFilter.length || 'all',
+                fileCount: itemIdsFilter.length || 'all',
                 constraint: 'share_links_v2_root_xor',
                 originalError: errMessage,
             });
@@ -307,80 +315,6 @@ const logActivity = async (userId: string, action: string, fileId?: string, fold
 };
 
 // formatFileRow and extractTelegramNativeMeta imported from ../utils/formatters
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UPLOAD
-// ─────────────────────────────────────────────────────────────────────────────
-export const uploadFile = async (req: AuthRequest, res: Response) => {
-
-    if (!req.file || !req.user) {
-        return res.status(400).json({ success: false, error: 'Request invalid or Unauthorized.' });
-    }
-
-    const { originalname, path: filePath, mimetype, size } = req.file;
-    let { folder_id, telegram_chat_id, source_tag } = req.body;
-    folder_id = folder_id || null;
-    telegram_chat_id = telegram_chat_id || 'me';
-
-    if (!isAllowedUploadMime(mimetype)) {
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        return res.status(400).json({ success: false, error: `File type '${mimetype}' is not permitted.` });
-    }
-
-    try {
-        const client = await getDynamicClient(req.user.sessionString);
-
-        const uploadedMessage = await client.sendFile(telegram_chat_id, {
-            file: new CustomFile(originalname, size, filePath),
-            caption: `[Axya] ${originalname}`,
-        });
-
-        const messageId = uploadedMessage.id;
-        const fileId = uploadedMessage.document
-            ? uploadedMessage.document.id.toString()
-            : uploadedMessage.photo
-                ? uploadedMessage.photo.id.toString()
-                : '';
-        const nativeMeta = extractTelegramNativeMeta(uploadedMessage);
-
-        const result = await pool.query(
-            `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, tg_media_meta, tg_duration_sec, tg_width, tg_height, tg_caption, tg_source_tag)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14) RETURNING *`,
-            [
-                req.user.id,
-                folder_id,
-                originalname,
-                size,
-                fileId,
-                messageId,
-                telegram_chat_id,
-                mimetype,
-                JSON.stringify(nativeMeta.mediaMeta || {}),
-                nativeMeta.durationSec,
-                nativeMeta.width,
-                nativeMeta.height,
-                nativeMeta.caption,
-                String(source_tag || '').trim().toLowerCase() || null,
-            ]
-        );
-
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        await logActivity(req.user.id, 'upload', result.rows[0].id, folder_id || undefined, { name: originalname, size });
-        invalidateUserPerformanceCaches(req.user.id);
-
-        res.status(201).json({ success: true, file: formatFileRow(result.rows[0]) });
-    } catch (err: any) {
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        logger.error('backend.upload', 'upload_failed', {
-            userId: req.user?.id,
-            fileName: originalname,
-            mimeType: mimetype,
-            message: err?.message,
-            stack: err?.stack,
-        });
-        res.status(500).json({ success: false, error: err.message });
-    }
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LIST FILES
@@ -666,14 +600,38 @@ export const restoreFile = async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
 
     try {
-        const result = await pool.query(
+        let result = await pool.query(
             `UPDATE files SET is_trashed = false, trashed_at = NULL WHERE id = $1 AND user_id = $2 RETURNING id`,
             [id, req.user.id]
         );
-        if (result.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
+        
+        let type = 'File';
+        if (result.rows.length === 0) {
+            result = await pool.query(
+                `UPDATE folders SET is_trashed = false, trashed_at = NULL,
+                 name = CASE 
+                     WHEN EXISTS (
+                         SELECT 1 FROM folders f2 
+                         WHERE f2.user_id = folders.user_id 
+                           AND f2.parent_id IS NOT DISTINCT FROM folders.parent_id 
+                           AND f2.name = folders.name 
+                           AND f2.is_trashed = false 
+                           AND f2.id != folders.id
+                     ) 
+                     THEN folders.name || ' (Restored ' || substr(folders.id::text, 1, 4) || ')'
+                     ELSE folders.name 
+                 END
+                 WHERE id = $1 AND user_id = $2 RETURNING id`,
+                [id, req.user.id]
+            );
+            type = 'Folder';
+        }
+        
+        if (result.rows.length === 0) return res.status(404).json({ success: false, error: 'Item not found in trash' });
+        
         await logActivity(req.user.id, 'restore', String(id));
         invalidateUserPerformanceCaches(req.user.id);
-        res.json({ success: true, message: 'File restored.' });
+        res.json({ success: true, message: `${type} restored.` });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -743,11 +701,31 @@ export const deleteFile = async (req: AuthRequest, res: Response) => {
 export const fetchTrash = async (req: AuthRequest, res: Response) => {
     if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     try {
-        const result = await pool.query(
-            `SELECT * FROM files WHERE user_id = $1 AND is_trashed = true ORDER BY trashed_at DESC`,
-            [req.user.id]
-        );
-        res.json({ success: true, files: result.rows.map(formatFileRow) });
+        const [filesRes, foldersRes] = await Promise.all([
+            pool.query(
+                `SELECT * FROM files WHERE user_id = $1 AND is_trashed = true ORDER BY trashed_at DESC`,
+                [req.user.id]
+            ),
+            pool.query(
+                `SELECT id, name, parent_id as folder_id, 0 as file_size, 'inode/directory' as mime_type, created_at, updated_at, trashed_at,
+                 false as is_starred, true as is_trashed, null as telegram_chat_id, 'folder' as result_type
+                 FROM folders WHERE user_id = $1 AND is_trashed = true ORDER BY trashed_at DESC`,
+                [req.user.id]
+            )
+        ]);
+
+        const merged = [
+            ...foldersRes.rows.map(r => ({ ...r, name: r.name })),
+            ...filesRes.rows.map(formatFileRow).map(r => ({ ...r, result_type: 'file' }))
+        ];
+
+        merged.sort((a, b) => {
+            const dA = a.trashed_at ? new Date(a.trashed_at).getTime() : 0;
+            const dB = b.trashed_at ? new Date(b.trashed_at).getTime() : 0;
+            return dB - dA;
+        });
+
+        res.json({ success: true, files: merged });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -1486,7 +1464,38 @@ export const bulkAction = async (req: AuthRequest, res: Response) => {
                 affected = (await pool.query(`UPDATE files SET is_trashed = true, trashed_at = NOW() WHERE id = ANY($1::uuid[]) AND user_id = $2`, [ids, req.user.id])).rowCount || 0;
                 break;
             case 'restore':
-                affected = (await pool.query(`UPDATE files SET is_trashed = false, trashed_at = NULL WHERE id = ANY($1::uuid[]) AND user_id = $2`, [ids, req.user.id])).rowCount || 0;
+                {
+                    const client = await pool.connect();
+                    try {
+                        await client.query('BEGIN');
+                        const fileRes = await client.query(`UPDATE files SET is_trashed = false, trashed_at = NULL WHERE id = ANY($1::uuid[]) AND user_id = $2 RETURNING id`, [ids, req.user.id]);
+                        const folderRes = await client.query(`
+                            UPDATE folders
+                            SET is_trashed = false, trashed_at = NULL,
+                                name = CASE 
+                                    WHEN EXISTS (
+                                        SELECT 1 FROM folders f2 
+                                        WHERE f2.user_id = folders.user_id 
+                                          AND f2.parent_id IS NOT DISTINCT FROM folders.parent_id 
+                                          AND f2.name = folders.name 
+                                          AND f2.is_trashed = false 
+                                          AND f2.id != folders.id
+                                    ) 
+                                    THEN folders.name || ' (Restored ' || substr(folders.id::text, 1, 4) || ')'
+                                    ELSE folders.name 
+                                END
+                            WHERE id = ANY($1::uuid[]) AND user_id = $2
+                            RETURNING id
+                        `, [ids, req.user.id]);
+                        await client.query('COMMIT');
+                        affected = (fileRes.rowCount || 0) + (folderRes.rowCount || 0);
+                    } catch (err) {
+                        await client.query('ROLLBACK');
+                        throw err;
+                    } finally {
+                        client.release();
+                    }
+                }
                 break;
             case 'star':
                 affected = (await pool.query(`UPDATE files SET is_starred = true WHERE id = ANY($1::uuid[]) AND user_id = $2`, [ids, req.user.id])).rowCount || 0;
@@ -1509,21 +1518,40 @@ export const bulkAction = async (req: AuthRequest, res: Response) => {
                         return res.status(404).json({ success: false, error: 'Destination folder not found' });
                     }
                 }
-                affected = (await pool.query(
-                    `UPDATE files
-                     SET folder_id = $1, updated_at = NOW()
-                     WHERE id = ANY($2::uuid[]) AND user_id = $3 AND is_trashed = false`,
-                    [folder_id || null, ids, req.user.id]
-                )).rowCount || 0;
+                
+                // Also support moving folders via bulk action
+                {
+                    const client = await pool.connect();
+                    try {
+                        await client.query('BEGIN');
+                        const fileRes = await client.query(
+                            `UPDATE files SET folder_id = $1, updated_at = NOW() WHERE id = ANY($2::uuid[]) AND user_id = $3 AND is_trashed = false`,
+                            [folder_id || null, ids, req.user.id]
+                        );
+                        // Make sure we don't accidentally move a folder into itself or its descendants here? That might be complex.
+                        // Assuming frontend prevents dragging folder into itself natively. Backend will just do it, which could orphan if parent loop is created.
+                        const folderRes = await client.query(
+                            `UPDATE folders SET parent_id = $1, updated_at = NOW() WHERE id = ANY($2::uuid[]) AND user_id = $3 AND is_trashed = false AND id != $1`,
+                            [folder_id || null, ids, req.user.id]
+                        );
+                        await client.query('COMMIT');
+                        affected = (fileRes.rowCount || 0) + (folderRes.rowCount || 0);
+                    } catch (err) {
+                        await client.query('ROLLBACK');
+                        throw err;
+                    } finally {
+                        client.release();
+                    }
+                }
                 break;
             case 'delete':
                 {
                     try {
-                        const result = await deleteTrashRowsAtomically(req.user.id, req.user.sessionString, { fileIds: ids });
-                        affected = result.deletedFiles;
+                        const result = await deleteTrashRowsAtomically(req.user.id, req.user.sessionString, { itemIds: ids });
+                        affected = result.deletedFiles + result.deletedFolders;
                     } catch (err: any) {
                         const message = String(err?.message || 'Could not delete selected trash items.');
-                        const status = message.includes('no longer in trash') ? 409 : 502;
+                        const status = message.includes('no longer in trash') || message.includes('are no longer') ? 409 : 502;
                         return sendApiError(res, status, status === 409 ? 'conflict' : 'trash_delete_failed', message, {
                             retryable: status >= 500,
                         });

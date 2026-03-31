@@ -24,6 +24,12 @@ export interface ApiErrorPayload {
     details?: unknown;
 }
 
+export interface ApiSuccessPayload<T = unknown> {
+    success: true;
+    data: T;
+    meta?: Record<string, unknown>;
+}
+
 type ApiErrorOptions = {
     retryable?: boolean;
     retryAfterSeconds?: number;
@@ -46,6 +52,8 @@ export const sendApiError = (
         retryable,
     };
 
+    const requestId = String(res.getHeader('x-request-id') || '').trim();
+
     if (typeof options.retryAfterSeconds === 'number' && options.retryAfterSeconds > 0) {
         payload.retry_after_seconds = Math.floor(options.retryAfterSeconds);
         res.setHeader('Retry-After', String(Math.floor(options.retryAfterSeconds)));
@@ -55,5 +63,28 @@ export const sendApiError = (
         payload.details = options.details;
     }
 
+    if (requestId) {
+        if (payload.details && typeof payload.details === 'object' && !Array.isArray(payload.details)) {
+            payload.details = { ...(payload.details as Record<string, unknown>), requestId };
+        } else if (payload.details === undefined) {
+            payload.details = { requestId };
+        }
+    }
+
     return res.status(status).json(payload);
+};
+
+export const sendApiSuccess = <T>(
+    res: Response,
+    data: T,
+    meta?: Record<string, unknown>
+) => {
+    const payload: ApiSuccessPayload<T> = {
+        success: true,
+        data,
+    };
+    if (meta && Object.keys(meta).length > 0) {
+        payload.meta = meta;
+    }
+    return res.json(payload);
 };

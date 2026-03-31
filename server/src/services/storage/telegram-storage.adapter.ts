@@ -117,20 +117,32 @@ export class TelegramStorageAdapter implements StorageAdapter {
             request.filePath
         );
 
-        const uploadedMessage = await uploadToTelegramWithRetry(
-            client,
-            target.chatId,
-            {
-                file: customFile,
-                caption: request.caption || `[Axya] ${request.fileName}`,
-                workers: 4,
-                progressCallback: (progress: number) => {
-                    if (!request.onProgress) return;
-                    request.onProgress(Math.max(0, Math.min(1, Number(progress || 0))));
-                },
-            },
-            3
-        );
+        const timeoutMs = Math.max(30 * 60_000, (request.fileSize / (256 * 1024)) * 1000); // min 30min or ~256KB/s
+        let timeoutId: NodeJS.Timeout | undefined;
+        let uploadedMessage;
+        try {
+            uploadedMessage = await Promise.race([
+                uploadToTelegramWithRetry(
+                    client,
+                    target.chatId,
+                    {
+                        file: customFile,
+                        caption: request.caption || `[Axya] ${request.fileName}`,
+                        workers: request.fileSize > 500 * 1024 * 1024 ? 2 : 4,
+                        progressCallback: (progress: number) => {
+                            if (!request.onProgress) return;
+                            request.onProgress(Math.max(0, Math.min(1, Number(progress || 0))));
+                        },
+                    },
+                    3
+                ),
+                new Promise<any>((_, reject) => {
+                    timeoutId = setTimeout(() => reject(new Error('TELEGRAM_UPLOAD_TIMEOUT')), timeoutMs);
+                }),
+            ]);
+        } finally {
+            if (timeoutId) clearTimeout(timeoutId);
+        }
 
         if (!uploadedMessage) {
             throw new Error('Telegram upload returned no message');

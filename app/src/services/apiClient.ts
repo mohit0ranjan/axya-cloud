@@ -84,8 +84,11 @@ const injectTokenAndLog = async (config: CustomAxiosRequestConfig) => {
         timeout: config.timeout,
     });
 
+    const requestUrl = String(config.url || '');
+    const isUploadRequest = requestUrl.includes('/files/upload/');
     const shouldGateRequest =
         config._skipWakeGate !== true
+        && !isUploadRequest
         && !serverReadiness.shouldAllowRequest(config.url, config.baseURL);
 
     if (shouldGateRequest) {
@@ -126,7 +129,10 @@ const shouldRetryRequestMethod = (config: CustomAxiosRequestConfig): boolean => 
 };
 
 apiClient.interceptors.request.use(injectTokenAndLog as any, Promise.reject);
-uploadClient.interceptors.request.use(injectTokenAndLog as any, Promise.reject);
+uploadClient.interceptors.request.use(
+    (config) => injectTokenAndLog({ ...(config as any), _skipWakeGate: true }),
+    Promise.reject
+);
 
 apiClient.interceptors.response.use(
     (response: any) => {

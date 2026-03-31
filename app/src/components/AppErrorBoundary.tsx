@@ -1,20 +1,27 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { logger } from '../utils/logger';
+import { useTheme } from '../context/ThemeContext';
+
+type FallbackProps = {
+    error: Error;
+    resetError: () => void;
+};
 
 type Props = {
     children: React.ReactNode;
+    fallback?: React.ReactNode | ((props: FallbackProps) => React.ReactNode);
 };
 
 type State = {
-    hasError: boolean;
+    error: Error | null;
 };
 
-export default class AppErrorBoundary extends React.Component<Props, State> {
-    state: State = { hasError: false };
+class ErrorBoundaryCore extends React.Component<Props, State> {
+    state: State = { error: null };
 
-    static getDerivedStateFromError(): State {
-        return { hasError: true };
+    static getDerivedStateFromError(error: Error): State {
+        return { error };
     }
 
     componentDidCatch(error: Error, info: React.ErrorInfo) {
@@ -26,42 +33,52 @@ export default class AppErrorBoundary extends React.Component<Props, State> {
         });
     }
 
-    private handleReload = () => {
-        this.setState({ hasError: false });
+    resetError = () => {
+        this.setState({ error: null });
     };
 
     render() {
-        if (!this.state.hasError) {
-            return this.props.children;
+        if (this.state.error) {
+            if (typeof this.props.fallback === 'function') {
+                return this.props.fallback({ error: this.state.error, resetError: this.resetError });
+            }
+            if (this.props.fallback) {
+                return this.props.fallback;
+            }
+            return <DefaultFallback error={this.state.error} resetError={this.resetError} />;
         }
-
-        return (
-            <View style={styles.root}>
-                <Text style={styles.title}>Something went wrong</Text>
-                <Text style={styles.body}>Please reopen this screen.</Text>
-                <TouchableOpacity style={styles.button} onPress={this.handleReload}>
-                    <Text style={styles.buttonText}>Try Again</Text>
-                </TouchableOpacity>
-            </View>
-        );
+        return this.props.children;
     }
 }
+
+const DefaultFallback = ({ error, resetError }: FallbackProps) => {
+    const { theme } = useTheme();
+    return (
+        <View style={[styles.root, { backgroundColor: theme.colors.background }]}>
+            <Text style={[styles.title, { color: theme.colors.textHeading }]}>Something went wrong</Text>
+            <Text style={[styles.body, { color: theme.colors.textBody }]}>Please reopen this screen.</Text>
+            <TouchableOpacity 
+                style={[styles.button, { backgroundColor: theme.colors.primary }]} 
+                onPress={resetError}
+            >
+                <Text style={styles.buttonText}>Try Again</Text>
+            </TouchableOpacity>
+        </View>
+    );
+};
 
 const styles = StyleSheet.create({
     root: {
         flex: 1,
-        backgroundColor: '#0A0E1F',
         justifyContent: 'center',
         alignItems: 'center',
         padding: 24,
     },
     title: {
-        color: '#FFFFFF',
         fontSize: 20,
         fontWeight: '700',
     },
     body: {
-        color: 'rgba(255,255,255,0.7)',
         fontSize: 14,
         marginTop: 10,
         marginBottom: 20,
@@ -71,7 +88,6 @@ const styles = StyleSheet.create({
         height: 44,
         minWidth: 120,
         borderRadius: 12,
-        backgroundColor: '#4B6EF5',
         alignItems: 'center',
         justifyContent: 'center',
         paddingHorizontal: 16,
@@ -82,3 +98,6 @@ const styles = StyleSheet.create({
     },
 });
 
+export default function AppErrorBoundary(props: Props) {
+    return <ErrorBoundaryCore {...props} />;
+}

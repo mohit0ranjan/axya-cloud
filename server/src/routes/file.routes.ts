@@ -1,5 +1,6 @@
 import express from 'express';
 import multer from 'multer';
+import { sendApiError } from '../utils/apiError';
 import {
     fetchFiles, searchFiles, updateFile,
     trashFile, restoreFile, deleteFile, fetchTrash, emptyTrash,
@@ -18,6 +19,22 @@ const router = express.Router();
 
 // All file routes require auth
 router.use(requireAuth);
+
+const withTimeout = (ms: number): express.RequestHandler => {
+    return (req, res, next) => {
+        const timer = setTimeout(() => {
+            if (!res.headersSent) {
+                sendApiError(res, 408, 'request_timeout', 'Request took too long to process.', { retryable: true });
+                if (!req.destroyed) {
+                    req.destroy(new Error('request_timeout'));
+                }
+            }
+        }, ms);
+        res.on('finish', () => clearTimeout(timer));
+        res.on('close', () => clearTimeout(timer));
+        next();
+    };
+};
 
 // ── Stats & Activity ────────────────────────────────────────────────────────
 router.get('/stats', getStats);
@@ -49,8 +66,8 @@ router.delete('/folder/:id', trashFolder);
 
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import {
-    initUpload, uploadChunk, uploadStream, completeUpload, checkUploadStatus, cancelUpload, listUploadSessions, resumeUploadSession
-} from '../controllers/upload.controller';
+    initUpload, uploadChunk, completeUpload, checkUploadStatus, cancelUpload, listUploadSessions, resumeUploadSession, getUploadQueueHealth, pauseUpload, resumePausedUpload
+} from '../controllers/upload';
 
 const uploadLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -92,13 +109,15 @@ const chunkUpload = multer({
 
 // ── File Upload & List ───────────────────────────────────────────────────────
 router.post('/upload/init', uploadLimiter, initUpload);
-router.post('/upload/stream/:uploadId', uploadLimiter, uploadStream);
-router.post('/upload/chunk', chunkLimiter, chunkUpload.single('chunk'), uploadChunk);
+router.post('/upload/chunk', chunkLimiter, withTimeout(60000), chunkUpload.single('chunk'), uploadChunk);
 router.post('/upload/resume', uploadLimiter, resumeUploadSession);
+router.post('/upload/pause', uploadLimiter, pauseUpload);
+router.post('/upload/resume-paused', uploadLimiter, resumePausedUpload);
 router.post('/upload/complete', uploadLimiter, completeUpload);
 router.post('/upload/cancel', uploadLimiter, cancelUpload);
 router.get('/upload/status/:uploadId', checkUploadStatus);
 router.get('/upload/sessions', listUploadSessions);
+router.get('/upload/queue-health', getUploadQueueHealth);
 
 router.post('/upload', (_req, res) => {
     res.set('Deprecation', 'true');

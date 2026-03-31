@@ -2,6 +2,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import crypto from 'node:crypto';
 
 const BASE_URL = (process.env.UPLOAD_TEST_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
 const TOKEN = process.env.UPLOAD_TEST_BEARER_TOKEN || '';
@@ -10,6 +11,10 @@ const POLL_INTERVAL_MS = Number.parseInt(process.env.UPLOAD_TEST_POLL_INTERVAL_M
 const COMPLETE_TIMEOUT_MS = Number.parseInt(process.env.UPLOAD_TEST_COMPLETE_TIMEOUT_MS || '300000', 10);
 const SKIP_COMPLETE = process.env.UPLOAD_TEST_SKIP_COMPLETE === '1';
 const TEST_CHUNK_SIZE = Number.parseInt(process.env.UPLOAD_TEST_CHUNK_SIZE_BYTES || String(5 * 1024 * 1024), 10);
+const ENABLE_LARGE_TEST = process.env.UPLOAD_TEST_ENABLE_LARGE === '1';
+const LARGE_TEST_SIZE_BYTES = Number.parseInt(process.env.UPLOAD_TEST_LARGE_SIZE_BYTES || String(1024 * 1024 * 1024 + 5), 10);
+const LEAK_LOOP_COUNT = Number.parseInt(process.env.UPLOAD_TEST_LEAK_LOOP_COUNT || '12', 10);
+const MAX_HEAP_DELTA_MB = Number.parseInt(process.env.UPLOAD_TEST_MAX_HEAP_DELTA_MB || '180', 10);
 
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'failed', 'error']);
 
@@ -153,6 +158,22 @@ async function completeUpload(uploadId) {
   return response.data;
 }
 
+async function pauseUpload(uploadId) {
+  const response = await requestJson('POST', '/upload/pause', {
+    body: { uploadId },
+  });
+  assert(response.data.success === true, 'Upload pause did not report success=true');
+  return response.data;
+}
+
+async function resumePausedUpload(uploadId) {
+  const response = await requestJson('POST', '/upload/resume', {
+    body: { uploadId },
+  });
+  assert(response.data.success === true, 'Upload resume did not report success=true');
+  return response.data;
+}
+
 async function cancelUpload(uploadId) {
   const response = await requestJson('POST', '/files/upload/cancel', {
     body: { uploadId },
@@ -164,6 +185,13 @@ async function cancelUpload(uploadId) {
 async function readUploadStatus(uploadId, expectedStatuses = [200]) {
   const response = await requestJson('GET', `/files/upload/status/${encodeURIComponent(uploadId)}`, {
     expectedStatuses,
+  });
+  return response.data;
+}
+
+async function readUploadQueueHealth() {
+  const response = await requestJson('GET', '/upload/queue-health', {
+    expectedStatuses: [200],
   });
   return response.data;
 }
@@ -388,6 +416,184 @@ async function runConstraintScenario() {
   console.log('[Pass] constraints and queue semantics validated');
 }
 
+async function runPauseResumeScenario() {
+  console.log('\n[Scenario 4] pause/resume multiple times');
+
+  const payload = buildDeterministicBuffer((TEST_CHUNK_SIZE * 2) + 4096);
+  const chunks = splitIntoChunks(payload, TEST_CHUNK_SIZE);
+  const hash = crypto.createHash('sha256').update(payload).digest('hex');
+  const fileName = `upload-pause-resume-${Date.now()}-${randomUUID().slice(0, 8)}.bin`;
+
+  const init = await initUploadRaw({
+    originalname: fileName,
+    size: payload.length,
+    mimetype: 'application/octet-stream',
+    chunk_size_bytes: TEST_CHUNK_SIZE,
+    hash,
+  });
+  const uploadId = String(init.data.uploadId);
+  await waitForQueueRelease(uploadId);
+
+  for (let i = 0; i < 3; i += 1) {
+    await uploadChunk(uploadId, i % chunks.length, chunks[i % chunks.length]);
+    await pauseUpload(uploadId);
+    const paused = await readUploadStatus(uploadId);
+    assert(String(paused.status) === 'paused', `Expected paused status at cycle ${i + 1}`);
+    await resumePausedUpload(uploadId);
+    const resumed = await readUploadStatus(uploadId);
+    assert(['queued', 'uploading', 'processing'].includes(String(resumed.status)), `Unexpected status after resume cycle ${i + 1}`);
+  }
+
+  for (let idx = 0; idx < chunks.length; idx += 1) {
+    await uploadChunk(uploadId, idx, chunks[idx]);
+  }
+
+  await completeUpload(uploadId);
+  const terminal = await pollForTerminalStatus(uploadId, COMPLETE_TIMEOUT_MS);
+  assert(String(terminal.status) === 'completed', 'Pause/resume scenario should complete upload');
+  console.log(`[Pass] pause/resume scenario uploadId=${uploadId}`);
+}
+
+async function runDuplicateScenario() {
+  console.log('\n[Scenario 5] duplicate file upload (dedupe)');
+
+  const payload = buildDeterministicBuffer((2 * 1024 * 1024) + 123);
+  const hash = crypto.createHash('sha256').update(payload).digest('hex');
+  const fileName = `upload-dedupe-${Date.now()}-${randomUUID().slice(0, 8)}.bin`;
+
+  const firstInit = await initUploadRaw({
+    originalname: fileName,
+    size: payload.length,
+    mimetype: 'application/octet-stream',
+    chunk_size_bytes: TEST_CHUNK_SIZE,
+    hash,
+  });
+  const uploadId = String(firstInit.data.uploadId);
+  const chunks = splitIntoChunks(payload, TEST_CHUNK_SIZE);
+  await waitForQueueRelease(uploadId);
+  for (let idx = 0; idx < chunks.length; idx += 1) {
+    await uploadChunk(uploadId, idx, chunks[idx]);
+  }
+  await completeUpload(uploadId);
+  const firstTerminal = await pollForTerminalStatus(uploadId, COMPLETE_TIMEOUT_MS);
+  assert(String(firstTerminal.status) === 'completed', 'First dedupe upload did not complete');
+
+  const duplicateInit = await initUploadRaw({
+    originalname: `${fileName}-copy`,
+    size: payload.length,
+    mimetype: 'application/octet-stream',
+    chunk_size_bytes: TEST_CHUNK_SIZE,
+    hash,
+  });
+  assert(duplicateInit.data.success === true, 'Duplicate init should succeed');
+  assert(duplicateInit.data.duplicate === true, 'Expected duplicate=true for second upload init');
+  assert(duplicateInit.data.file, 'Expected existing file payload for duplicate init');
+  console.log('[Pass] duplicate upload dedupe validated');
+}
+
+async function runRestartRecoveryScenario() {
+  console.log('\n[Scenario 6] server restart recovery simulation');
+
+  const payload = buildDeterministicBuffer((TEST_CHUNK_SIZE * 3) + 77);
+  const chunks = splitIntoChunks(payload, TEST_CHUNK_SIZE);
+  const fileName = `upload-restart-${Date.now()}-${randomUUID().slice(0, 8)}.bin`;
+
+  const init = await initUpload(fileName, payload.length, TEST_CHUNK_SIZE);
+  const uploadId = String(init.uploadId);
+  const resumeToken = String(init.resumeToken);
+  await waitForQueueRelease(uploadId);
+
+  await uploadChunk(uploadId, 0, chunks[0]);
+  await uploadChunk(uploadId, 2, chunks[2]);
+
+  // Simulate server restart boundary by re-discovering session from persisted DB state.
+  const resumed = await resolveUploadByResumeToken(resumeToken);
+  assert(String(resumed.uploadId) === uploadId, 'Resume token should recover the same upload session after restart simulation');
+  assert(Number(resumed.uploadedChunksCount || 0) >= 2, 'Expected persisted chunk progress after restart simulation');
+
+  const listed = await requestJson('GET', '/files/upload/sessions');
+  const fromList = Array.isArray(listed.data.sessions) ? listed.data.sessions.find((s) => s?.uploadId === uploadId) : null;
+  assert(Boolean(fromList), 'Session should be discoverable from /files/upload/sessions after restart simulation');
+
+  for (let idx = 0; idx < chunks.length; idx += 1) {
+    await uploadChunk(uploadId, idx, chunks[idx]);
+  }
+  await completeUpload(uploadId);
+  const terminal = await pollForTerminalStatus(uploadId, COMPLETE_TIMEOUT_MS);
+  assert(String(terminal.status) === 'completed', 'Restart recovery scenario should complete upload');
+  console.log(`[Pass] restart recovery simulation uploadId=${uploadId}`);
+}
+
+async function runLargeFileScenario() {
+  if (!ENABLE_LARGE_TEST) {
+    console.log('\n[Scenario 7] large file (1GB+) skipped (set UPLOAD_TEST_ENABLE_LARGE=1 to run)');
+    return;
+  }
+
+  console.log(`\n[Scenario 7] large file upload (${LARGE_TEST_SIZE_BYTES} bytes)`);
+  assert(LARGE_TEST_SIZE_BYTES > (1024 * 1024 * 1024), 'Large file test must be > 1GB');
+
+  const chunkCount = Math.ceil(LARGE_TEST_SIZE_BYTES / TEST_CHUNK_SIZE);
+  const fileName = `upload-large-${Date.now()}-${randomUUID().slice(0, 8)}.bin`;
+  const init = await initUploadRaw({
+    originalname: fileName,
+    size: LARGE_TEST_SIZE_BYTES,
+    mimetype: 'application/octet-stream',
+    chunk_size_bytes: TEST_CHUNK_SIZE,
+  });
+  const uploadId = String(init.data.uploadId);
+
+  await waitForQueueRelease(uploadId, 180000);
+  const maxChunksToSend = Number.parseInt(process.env.UPLOAD_TEST_LARGE_CHUNKS_TO_SEND || '12', 10);
+  const toSend = Math.min(chunkCount, maxChunksToSend);
+
+  for (let i = 0; i < toSend; i += 1) {
+    const remaining = LARGE_TEST_SIZE_BYTES - (i * TEST_CHUNK_SIZE);
+    const chunkSize = Math.max(0, Math.min(TEST_CHUNK_SIZE, remaining));
+    const chunk = Buffer.allocUnsafe(chunkSize);
+    for (let j = 0; j < chunkSize; j += 1) chunk[j] = (i + j) % 251;
+    await uploadChunk(uploadId, i, chunk);
+  }
+
+  const status = await readUploadStatus(uploadId);
+  assert(Number(status.uploadedChunksCount || 0) >= toSend, 'Large-file scenario should persist uploaded chunk progress');
+
+  await cancelUpload(uploadId).catch(() => undefined);
+  console.log(`[Pass] large-file scenario exercised ${toSend}/${chunkCount} chunks before cancel`);
+}
+
+async function runMemoryLeakScenario() {
+  console.log('\n[Scenario 8] memory leak detection');
+
+  const before = await readUploadQueueHealth();
+  const beforeHeap = Number(before?.processMemory?.heapUsedBytes || 0);
+
+  for (let i = 0; i < LEAK_LOOP_COUNT; i += 1) {
+    const init = await initUploadRaw({
+      originalname: `upload-leak-probe-${Date.now()}-${i}.bin`,
+      size: TEST_CHUNK_SIZE + 7,
+      mimetype: 'application/octet-stream',
+      chunk_size_bytes: TEST_CHUNK_SIZE,
+    });
+    const uploadId = String(init.data.uploadId || '');
+    if (uploadId) {
+      await cancelUpload(uploadId).catch(() => undefined);
+    }
+  }
+
+  await delay(1500);
+
+  const after = await readUploadQueueHealth();
+  const afterHeap = Number(after?.processMemory?.heapUsedBytes || 0);
+  const heapDeltaMb = (afterHeap - beforeHeap) / (1024 * 1024);
+
+  const activeChunkMaps = Number(after?.queue?.activeChunkUploadMaps || 0);
+  assert(activeChunkMaps === 0, `Expected active chunk maps to settle at 0, got ${activeChunkMaps}`);
+  assert(heapDeltaMb < MAX_HEAP_DELTA_MB, `Heap growth too high (${heapDeltaMb.toFixed(2)}MB)`);
+
+  console.log(`[Pass] memory leak probe heap delta ${heapDeltaMb.toFixed(2)}MB`);
+}
+
 async function main() {
   if (!TOKEN) {
     console.error('Missing required env: UPLOAD_TEST_BEARER_TOKEN');
@@ -404,6 +610,11 @@ async function main() {
   await runReliabilityResumeScenario();
   await runCancelScenario();
   await runConstraintScenario();
+  await runPauseResumeScenario();
+  await runDuplicateScenario();
+  await runRestartRecoveryScenario();
+  await runLargeFileScenario();
+  await runMemoryLeakScenario();
 
   console.log('\nAll upload lifecycle integration scenarios passed.');
 }

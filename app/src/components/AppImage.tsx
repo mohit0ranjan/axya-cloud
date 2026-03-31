@@ -6,15 +6,20 @@ export type AppImageProps = ExpoImageProps & {
   // any custom props if needed
 };
 
-export function Image(props: AppImageProps) {
-  const source = useMemo(() => {
-    if (props.source && !Array.isArray(props.source) && typeof props.source === 'object' && 'uri' in props.source) {
-      return { ...props.source, uri: sanitizeRemoteUri(String((props.source as any).uri || '')) };
-    }
-    return props.source;
-  }, [props.source]);
+export const Image = React.memo((props: AppImageProps) => {
+  const { source: rawSource, ...rest } = props;
 
-  return <ExpoImage cachePolicy="memory-disk" {...props} source={source} />;
-}
+  const source = useMemo(() => {
+    if (rawSource && !Array.isArray(rawSource) && typeof rawSource === 'object' && 'uri' in rawSource) {
+      return { ...rawSource, uri: sanitizeRemoteUri(String((rawSource as any).uri || '')) };
+    }
+    return rawSource;
+  }, [
+    rawSource && typeof rawSource === 'object' && !Array.isArray(rawSource) ? (rawSource as any).uri : rawSource,
+    rawSource && typeof rawSource === 'object' && !Array.isArray(rawSource) ? JSON.stringify((rawSource as any).headers) : null
+  ]);
+
+  return <ExpoImage cachePolicy="memory-disk" {...rest} source={source} />;
+});
 
 export default Image;

@@ -33,7 +33,7 @@ const TaskRow = React.memo(({ task, onCancel, onPause, onResume }: any) => {
     if (isDone) label = 'Uploaded';
     else if (isFailed) label = 'Failed';
     else if (isPaused) label = 'Paused';
-    else if (task.status === 'queued') label = 'Waiting to upload...';
+    else if (task.status === 'queued') label = 'Queued...';
     else if (task.status === 'processing') label = 'Finalizing...';
     else if (task.status === 'preparing') label = 'Starting...';
     else if (task.status === 'retrying' || task.status === 'waiting_retry') label = 'Network paused...';

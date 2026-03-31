@@ -1,4 +1,4 @@
-export const safeDecodeURIComponent = (value: string): string => {
+export const safeDecode = (value: string): string => {
     const input = String(value || '');
     if (!input) return '';
 
@@ -15,8 +15,10 @@ export const safeDecodeURIComponent = (value: string): string => {
     }
 };
 
+export const safeDecodeURIComponent = safeDecode;
+
 export const sanitizeFileName = (value: string, fallback: string = 'file'): string => {
-    const decoded = safeDecodeURIComponent(String(value || '').trim());
+    const decoded = safeDecode(String(value || '').trim());
     const cleaned = decoded
         .replace(/[\/\\:*?"<>|#%\r\n\t]+/g, '_')
         .replace(/[^\w.\- ]+/g, '_')
@@ -39,7 +41,7 @@ export const sanitizeRemoteUri = (value: string): string => {
     const input = String(value || '').trim();
     if (!input) return '';
 
-    const decoded = safeDecodeURIComponent(input);
+    const decoded = safeDecode(input);
     const escapedPercents = decoded.replace(/%(?![0-9A-Fa-f]{2})/g, '%25');
 
     try {
@@ -54,4 +56,24 @@ export const buildApiFileUrl = (baseUrl: string, fileId: string | number, action
     const trimmedBase = String(baseUrl || '').replace(/\/$/, '');
     const encodedId = encodeURIComponent(String(fileId || '').trim());
     return sanitizeRemoteUri(`${trimmedBase}/files/${encodedId}/${action}`);
+};
+
+export interface NormalizedUploadFile {
+    uri: string;
+    name: string;
+    type: string;
+}
+
+export const normalizeUploadFile = (file: { uri?: string; name?: string; mimeType?: string; type?: string }): NormalizedUploadFile => {
+    const rawUri = String(file?.uri || '').trim();
+    const decodedUri = safeDecode(rawUri);
+    const safeUri = sanitizeRemoteUri(decodedUri);
+    const safeName = String(file?.name || 'file').replace(/[^\w.-]/g, '_') || 'file';
+    const type = String(file?.mimeType || file?.type || 'application/octet-stream');
+
+    return {
+        uri: safeUri,
+        name: safeName,
+        type,
+    };
 };

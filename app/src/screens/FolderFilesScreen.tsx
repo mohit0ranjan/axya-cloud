@@ -28,7 +28,7 @@ import { normalizeExternalShareUrl } from '../utils/shareUrls';
 import { formatFolderMeta } from '../utils/folderMeta';
 import { useFileRefresh, useOptimisticFiles } from '../utils/events';
 import { dedupeFilesById, getItemName, getItemSize, normalizeItems, sortItems, syncAfterFileMutation } from '../services/fileStateSync';
-import { sanitizeDisplayName, sanitizeFileName } from '../utils/fileSafety';
+import { normalizeUploadFile, sanitizeDisplayName, sanitizeFileName } from '../utils/fileSafety';
 
 
 const { width } = Dimensions.get('window');
@@ -448,12 +448,20 @@ export default function FolderFilesScreen({ route, navigation }: any) {
         try {
             const res = await DocumentPicker.getDocumentAsync({ type: '*/*', multiple: true, copyToCacheDirectory: true });
             if (res.canceled) return;
-            const fileAssets = res.assets.map(a => ({
-                uri: a.uri,
-                name: a.name,
-                size: a.size ?? 0,
-                mimeType: a.mimeType ?? 'application/octet-stream',
-            }));
+            const fileAssets = res.assets.map((a) => {
+                const normalized = normalizeUploadFile({
+                    uri: a.uri,
+                    name: a.name,
+                    mimeType: a.mimeType,
+                });
+
+                return {
+                    uri: normalized.uri,
+                    name: normalized.name,
+                    size: a.size ?? 0,
+                    mimeType: normalized.type,
+                };
+            });
             addUpload(fileAssets, folderId, 'me');
         } catch { showToast('Pick failed', 'error'); }
     };

@@ -16,6 +16,14 @@ import Busboy from 'busboy';
 import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { getStorageAdapter, resolveTelegramUploadTransport } from '../services/storage/telegram-storage.adapter';
+import { enqueueUploadFinalizerJob, getUploadFinalizerQueueHealth, isUploadFinalizerTracked, withUploadBandwidthBudget } from '../services/upload-job-queue.service';
+
+const logUploadStage = (event: string, details: Record<string, unknown>) => {
+    logger.info('backend.upload', event, {
+        at: new Date().toISOString(),
+        ...details,
+    });
+};
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -37,6 +45,33 @@ const computeFileHashes = async (filePath: string): Promise<{ sha256: string; md
         });
         stream.on('error', reject);
     });
+};
+
+const computePartialFileSha256 = async (filePath: string, totalBytes: number, sampleBytes = 2 * 1024 * 1024): Promise<string> => {
+    const fileSize = Math.max(0, totalBytes);
+    const headSize = Math.min(sampleBytes, fileSize);
+    const tailSize = fileSize > headSize ? Math.min(sampleBytes, fileSize - headSize) : 0;
+
+    const hash = crypto.createHash('sha256');
+    const handle = await fs.promises.open(filePath, 'r');
+    try {
+        if (headSize > 0) {
+            const head = Buffer.allocUnsafe(headSize);
+            const headRead = await handle.read(head, 0, headSize, 0);
+            hash.update(head.subarray(0, headRead.bytesRead));
+        }
+        if (tailSize > 0) {
+            const tail = Buffer.allocUnsafe(tailSize);
+            const tailOffset = Math.max(0, fileSize - tailSize);
+            const tailRead = await handle.read(tail, 0, tailSize, tailOffset);
+            hash.update(tail.subarray(0, tailRead.bytesRead));
+        }
+
+        hash.update(Buffer.from(`:${fileSize}:${headSize}:${tailSize}`, 'utf8'));
+        return hash.digest('hex');
+    } finally {
+        await handle.close();
+    }
 };
 
 const parseEnvIntInRange = (raw: unknown, fallback: number, min: number, max: number): number => {
@@ -102,7 +137,7 @@ const classifyUploadFailure = (err: unknown) => {
     };
 };
 
-type UploadLifecycleStatus = 'queued' | 'uploading' | 'processing' | 'completed' | 'cancelled' | 'failed';
+type UploadLifecycleStatus = 'queued' | 'uploading' | 'processing' | 'paused' | 'completed' | 'cancelled' | 'failed';
 type UploadProtocol = 'chunk' | 'stream';
 
 type UploadSessionRow = {
@@ -189,6 +224,12 @@ const CHUNK_DELAY_MS_MIN = 0;
 const CHUNK_DELAY_MS_MAX = 120;
 const MAX_ACTIVE_SESSION_FETCH = 250;
 const FINALIZER_PROGRESS_UPDATE_THROTTLE_MS = 800;
+const FINALIZER_RETRY_BASE_MS = parseEnvIntInRange(process.env.UPLOAD_FINALIZER_RETRY_BASE_MS, 2000, 500, 60_000);
+const FINALIZER_RETRY_MAX_MS = parseEnvIntInRange(process.env.UPLOAD_FINALIZER_RETRY_MAX_MS, 60_000, 1000, 10 * 60_000);
+const FINALIZER_MAX_RETRIES = parseEnvIntInRange(process.env.UPLOAD_FINALIZER_MAX_RETRIES, 5, 0, 12);
+const LARGE_FILE_PARTIAL_HASH_THRESHOLD_BYTES = parseEnvIntInRange(process.env.UPLOAD_PARTIAL_HASH_THRESHOLD_BYTES, 64 * 1024 * 1024, 8 * 1024 * 1024, 5 * 1024 * 1024 * 1024);
+const PARTIAL_HASH_SAMPLE_BYTES = parseEnvIntInRange(process.env.UPLOAD_PARTIAL_HASH_SAMPLE_BYTES, 2 * 1024 * 1024, 128 * 1024, 8 * 1024 * 1024);
+const MAX_PARALLEL_CHUNK_UPLOADS = parseEnvIntInRange(process.env.UPLOAD_MAX_PARALLEL_CHUNKS, 4, 1, 16);
 const UPLOAD_MAINTENANCE_INTERVAL_MS = Number.parseInt(String(process.env.UPLOAD_MAINTENANCE_INTERVAL_MS || String(15 * 60 * 1000)), 10) || (15 * 60 * 1000);
 const TERMINAL_TEMP_RETENTION_MS = Number.parseInt(String(process.env.UPLOAD_TERMINAL_TEMP_RETENTION_MS || String(6 * 60 * 60 * 1000)), 10) || (6 * 60 * 60 * 1000);
 const ORPHAN_TEMP_RETENTION_MS = Number.parseInt(String(process.env.UPLOAD_ORPHAN_TEMP_RETENTION_MS || String(6 * 60 * 60 * 1000)), 10) || (6 * 60 * 60 * 1000);
@@ -203,6 +244,9 @@ const UPLOAD_RESUME_TOKEN_SECRET = String(
 );
 
 const activeFinalizers = new Map<string, Promise<void>>();
+const pendingFinalizerRetries = new Map<string, ReturnType<typeof setTimeout>>();
+const finalizerAttemptByUploadId = new Map<string, number>();
+const activeChunksByUploadId = new Map<string, number>();
 let uploadMaintenanceTimer: ReturnType<typeof setInterval> | null = null;
 let tmpUsageCacheBytes = 0;
 let tmpUsageCacheAt = 0;
@@ -397,6 +441,15 @@ const computeNextExpectedChunk = (totalChunks: number, uploadedChunks: number[])
     return totalChunks;
 };
 
+const computeMissingChunks = (totalChunks: number, uploadedChunks: number[]): number[] => {
+    const seen = new Set(uploadedChunks);
+    const missing: number[] = [];
+    for (let i = 0; i < totalChunks; i += 1) {
+        if (!seen.has(i)) missing.push(i);
+    }
+    return missing;
+};
+
 const ensureTempUploadFile = (uploadId: string, fileName: string, totalBytes: number, preallocate = true): string => {
     const safeName = sanitizeUploadFileName(fileName);
     const uploadDir = path.join(UPLOAD_TMP_ROOT, uploadId);
@@ -440,7 +493,7 @@ const cleanupTerminalTempFiles = async () => {
     let cleaned = 0;
     for (const row of staleRows.rows) {
         const uploadId = String(row.upload_id || '').trim();
-        if (!uploadId || activeFinalizers.has(uploadId)) continue;
+        if (!uploadId || activeFinalizers.has(uploadId) || isUploadFinalizerTracked(uploadId)) continue;
         cleanupSessionTempFile(String(row.temp_file_path || ''));
         cleaned += 1;
     }
@@ -453,7 +506,7 @@ const cleanupOrphanTempDirectories = async () => {
     const activeRes = await pool.query(
         `SELECT upload_id
          FROM upload_sessions
-         WHERE status IN ('queued', 'uploading', 'processing')`
+            WHERE status IN ('queued', 'uploading', 'processing', 'paused')`
     );
     const protectedIds = new Set(activeRes.rows.map((r) => String(r.upload_id || '').trim()).filter(Boolean));
 
@@ -464,7 +517,7 @@ const cleanupOrphanTempDirectories = async () => {
         if (!entry.isDirectory()) continue;
         const uploadId = String(entry.name || '').trim();
         if (!uploadId) continue;
-        if (protectedIds.has(uploadId) || activeFinalizers.has(uploadId)) continue;
+        if (protectedIds.has(uploadId) || activeFinalizers.has(uploadId) || isUploadFinalizerTracked(uploadId)) continue;
 
         const fullPath = path.join(UPLOAD_TMP_ROOT, uploadId);
         let ageMs = Number.POSITIVE_INFINITY;
@@ -489,6 +542,7 @@ const cleanupOrphanTempDirectories = async () => {
 const runUploadMaintenance = async () => {
     const terminalCleaned = await cleanupTerminalTempFiles();
     const orphanDirsCleaned = await cleanupOrphanTempDirectories();
+    await recoverActiveFinalizers();
     if (terminalCleaned > 0 || orphanDirsCleaned > 0) {
         logger.info('backend.upload', 'maintenance_cleanup', {
             terminalFilesCleaned: terminalCleaned,
@@ -863,7 +917,7 @@ const calculateSessionProgress = (session: UploadSessionRow): number => {
     const telegramProgress = Math.min(Math.max(toInt(session.telegram_progress_percent), 0), 100);
 
     if (session.status === 'completed') return 100;
-    if (session.status === 'cancelled' || session.status === 'failed') {
+    if (session.status === 'cancelled' || session.status === 'failed' || session.status === 'paused') {
         if (totalBytes === 0) return 0;
         return Math.min(Math.round((receivedBytes / totalBytes) * 50), 99);
     }
@@ -880,6 +934,7 @@ const calculateSessionProgress = (session: UploadSessionRow): number => {
 
 const toClientUploadStatus = (session: UploadSessionRow): string => {
     if (session.status === 'failed') return 'error';
+    if (session.status === 'paused') return 'paused';
     if (session.status === 'processing') {
         return 'processing';
     }
@@ -893,6 +948,7 @@ const toUploadStatusPayload = async (session: UploadSessionRow, capacityOverride
     const uploadedChunks = parseUploadedChunks(session.uploaded_chunks);
     const totalChunks = toInt(session.total_chunks);
     const nextExpectedChunk = computeNextExpectedChunk(totalChunks, uploadedChunks);
+    const missingChunks = computeMissingChunks(totalChunks, uploadedChunks);
 
     let filePayload: any = null;
     if (session.file_id) {
@@ -922,6 +978,8 @@ const toUploadStatusPayload = async (session: UploadSessionRow, capacityOverride
         totalBytes: toInt(session.total_bytes),
         uploadedChunks,
         uploadedChunksCount: uploadedChunks.length,
+        missingChunks: missingChunks.slice(0, 256),
+        missingChunksCount: missingChunks.length,
         totalChunks,
         nextExpectedChunk,
         uploadId: session.upload_id,
@@ -960,6 +1018,94 @@ const updateSessionFailure = async (uploadId: string, code: string, message: str
     );
 };
 
+const queueRetryableFinalizerFailure = async (uploadId: string, code: string, message: string) => {
+    await pool.query(
+        `UPDATE upload_sessions
+         SET status = 'queued',
+             error_code = $2,
+             error_message = $3,
+             retryable = true,
+             updated_at = NOW()
+         WHERE upload_id = $1 AND status IN ('processing', 'uploading', 'queued')`,
+        [uploadId, code, message]
+    );
+};
+
+const getFinalizerBackoffMs = (attempt: number) => {
+    const safeAttempt = Math.max(1, attempt);
+    const exponential = Math.min(FINALIZER_RETRY_MAX_MS, FINALIZER_RETRY_BASE_MS * Math.pow(2, safeAttempt - 1));
+    const jitter = Math.floor(Math.random() * Math.max(250, Math.floor(exponential * 0.2)));
+    return Math.min(FINALIZER_RETRY_MAX_MS, exponential + jitter);
+};
+
+const clearFinalizerRetryState = (uploadId: string) => {
+    const timer = pendingFinalizerRetries.get(uploadId);
+    if (timer) {
+        clearTimeout(timer);
+        pendingFinalizerRetries.delete(uploadId);
+    }
+    finalizerAttemptByUploadId.delete(uploadId);
+};
+
+const scheduleUploadFinalizerRetry = (uploadId: string, ownerSessionString: string, reason: string) => {
+    if (FINALIZER_MAX_RETRIES <= 0) return;
+    if (pendingFinalizerRetries.has(uploadId)) return;
+
+    const currentAttempt = finalizerAttemptByUploadId.get(uploadId) || 0;
+    const nextAttempt = currentAttempt + 1;
+    if (nextAttempt > FINALIZER_MAX_RETRIES) {
+        finalizerAttemptByUploadId.delete(uploadId);
+        logger.error('backend.upload', 'finalizer_retry_exhausted', {
+            uploadId,
+            attempts: currentAttempt,
+            reason,
+        });
+        return;
+    }
+
+    finalizerAttemptByUploadId.set(uploadId, nextAttempt);
+    const delayMs = getFinalizerBackoffMs(nextAttempt);
+    const timer = setTimeout(() => {
+        pendingFinalizerRetries.delete(uploadId);
+        startUploadFinalizer(uploadId, ownerSessionString);
+    }, delayMs);
+    timer.unref?.();
+    pendingFinalizerRetries.set(uploadId, timer);
+
+    logger.warn('backend.upload', 'finalizer_retry_scheduled', {
+        uploadId,
+        attempt: nextAttempt,
+        maxAttempts: FINALIZER_MAX_RETRIES,
+        delayMs,
+        reason,
+    });
+};
+
+const recoverActiveFinalizers = async () => {
+    const rows = await pool.query(
+        `SELECT us.upload_id, u.session_string
+         FROM upload_sessions us
+         JOIN users u ON u.id = us.user_id
+         WHERE us.status = 'processing'
+         ORDER BY us.updated_at ASC
+         LIMIT 50`
+    );
+
+    let scheduled = 0;
+    for (const row of rows.rows) {
+        const uploadId = String(row.upload_id || '').trim();
+        const ownerSessionString = String(row.session_string || '').trim();
+        if (!uploadId || !ownerSessionString) continue;
+        if (activeFinalizers.has(uploadId) || pendingFinalizerRetries.has(uploadId) || isUploadFinalizerTracked(uploadId)) continue;
+        scheduled += 1;
+        startUploadFinalizer(uploadId, ownerSessionString);
+    }
+
+    if (scheduled > 0) {
+        logger.info('backend.upload', 'recovered_processing_finalizers', { scheduled });
+    }
+};
+
 export const listUploadSessions = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
     const includeCompleted = String(req.query.include_completed || '').trim() === '1';
@@ -969,7 +1115,7 @@ export const listUploadSessions = async (req: AuthRequest, res: Response) => {
         : `SELECT *
            FROM upload_sessions
            WHERE user_id = $1
-                         AND (status IN ('queued', 'uploading', 'processing', 'failed', 'cancelled') OR updated_at > NOW() - INTERVAL '24 hours')
+                                 AND (status IN ('queued', 'uploading', 'processing', 'paused', 'failed', 'cancelled') OR updated_at > NOW() - INTERVAL '24 hours')
            ORDER BY updated_at DESC
            LIMIT $2`;
 
@@ -979,7 +1125,7 @@ export const listUploadSessions = async (req: AuthRequest, res: Response) => {
         sessionsRes.rows.map((row) => toUploadStatusPayload(row as UploadSessionRow, capacity))
     );
 
-    return res.json({ success: true, sessions: payload.map((item) => item) });
+    return res.json({ success: true, sessions: payload });
 };
 
 // ─── Step 1: Init Upload ────────────────────────────────────────────────────
@@ -987,7 +1133,7 @@ export const listUploadSessions = async (req: AuthRequest, res: Response) => {
 export const initUpload = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
-    const { originalname, size, mimetype, folder_id, telegram_chat_id, hash, source_tag, chunk_size_bytes, upload_mode } = req.body;
+    const { originalname, size, mimetype, folder_id, telegram_chat_id, hash, partial_hash, source_tag, chunk_size_bytes, upload_mode } = req.body;
 
     if (!originalname || size === undefined || size === null) {
         return res.status(400).json({ success: false, error: 'Missing file info (originalname, size required)' });
@@ -1080,6 +1226,8 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
         );
     }
 
+    let dedupeHint: { strategy: 'partial-hash'; fileId: string; fileName: string } | null = null;
+
     if (hash) {
         try {
             const hashValue = String(hash).trim();
@@ -1106,8 +1254,8 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
                 const effectiveFolderId = folder_id || null;
                 if (effectiveFolderId && effectiveFolderId !== existingFile.folder_id) {
                     const newFileRes = await pool.query(
-                        `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash, blurhash, tg_media_meta, tg_duration_sec, tg_width, tg_height, tg_caption, tg_source_tag)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17)
+                        `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash, partial_sha256, blurhash, tg_media_meta, tg_duration_sec, tg_width, tg_height, tg_caption, tg_source_tag)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18)
                          RETURNING *`,
                         [
                             req.user.id,
@@ -1120,6 +1268,7 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
                             existingFile.mime_type,
                             existingFile.sha256_hash,
                             existingFile.md5_hash,
+                            existingFile.partial_sha256 || null,
                             existingFile.blurhash || null,
                             JSON.stringify(existingFile.tg_media_meta || {}),
                             existingFile.tg_duration_sec || null,
@@ -1149,6 +1298,35 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
                 userId: req.user.id,
                 fileName,
                 message: hashCheckErr?.message,
+            });
+        }
+    }
+
+    const clientPartialHash = String(partial_hash || '').trim().toLowerCase();
+    if (!hash && clientPartialHash && clientPartialHash.length === 64 && fileSize >= LARGE_FILE_PARTIAL_HASH_THRESHOLD_BYTES) {
+        try {
+            const partialCandidate = await pool.query(
+                `SELECT id, file_name
+                 FROM files
+                 WHERE user_id = $1
+                   AND file_size = $2
+                   AND partial_sha256 = $3
+                   AND is_trashed = false
+                 LIMIT 1`,
+                [req.user.id, fileSize, clientPartialHash]
+            );
+            if (partialCandidate.rows.length > 0) {
+                dedupeHint = {
+                    strategy: 'partial-hash',
+                    fileId: String(partialCandidate.rows[0].id || ''),
+                    fileName: String(partialCandidate.rows[0].file_name || ''),
+                };
+            }
+        } catch (partialErr: any) {
+            logger.warn('backend.upload', 'partial_hash_hint_failed', {
+                userId: req.user.id,
+                fileName,
+                message: partialErr?.message,
             });
         }
     }
@@ -1224,10 +1402,13 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
             status: initialStatus,
             uploadMode,
             queued: initialStatus === 'queued',
+            parallelChunkUploads: uploadMode === 'chunk',
+            maxParallelChunkUploads: uploadMode === 'chunk' ? MAX_PARALLEL_CHUNK_UPLOADS : 1,
             chunkSizeBytes: chunkSize,
             totalChunks,
             queuePositionGlobal: queuePosition.queuePositionGlobal,
             queuePositionUser: queuePosition.queuePositionUser,
+            dedupeHint,
             ...hints,
         });
     } catch (err: any) {
@@ -1267,20 +1448,12 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
         });
     }
 
-    await promoteQueuedSessionsIfCapacity();
-
     let session = await getOwnedUploadSession(uploadId, req.user.id);
     if (!session) {
         return res.status(404).json({ success: false, error: 'Upload session not found' });
     }
 
-    if (session.status === 'queued') {
-        await promoteQueuedSessionsIfCapacity();
-        session = await getOwnedUploadSession(uploadId, req.user.id);
-        if (!session) {
-            return res.status(404).json({ success: false, error: 'Upload session not found' });
-        }
-    }
+
 
     if (session.status === 'completed') {
         const payload = await toUploadStatusPayload(session);
@@ -1299,6 +1472,15 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
             queuePositionGlobal: queuePosition.queuePositionGlobal,
             queuePositionUser: queuePosition.queuePositionUser,
             ...hints,
+        });
+    }
+    if (session.status === 'paused') {
+        return res.status(409).json({
+            success: false,
+            status: 'paused',
+            code: 'UPLOAD_PAUSED',
+            error: 'Upload is paused. Resume before sending more chunks.',
+            retryable: true,
         });
     }
     if (session.status === 'cancelled') {
@@ -1326,6 +1508,20 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
             retryable: false,
         });
     }
+
+    const inFlight = activeChunksByUploadId.get(uploadId) || 0;
+    if (inFlight >= MAX_PARALLEL_CHUNK_UPLOADS) {
+        return res.status(429).json({
+            success: false,
+            code: 'CHUNK_PARALLEL_LIMIT',
+            error: 'Too many parallel chunk uploads for this file.',
+            retryable: true,
+            maxParallelChunkUploads: MAX_PARALLEL_CHUNK_UPLOADS,
+        });
+    }
+    activeChunksByUploadId.set(uploadId, inFlight + 1);
+
+    try {
 
     const capacityBeforeChunk = await getCapacitySnapshot(req.user.id);
     const hintsBeforeChunk = buildBackpressureHints(session.status, capacityBeforeChunk);
@@ -1472,6 +1668,7 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
     }
 
     try {
+        await withUploadBandwidthBudget(req.user.id, chunkData.length);
         await persistBufferChunk(session.temp_file_path, chunkIndex, chunkSize, chunkData);
 
         await pool.query(
@@ -1533,10 +1730,16 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
         nextExpectedChunk,
         ...buildBackpressureHints('uploading', capacity),
     });
+    } finally {
+        const remaining = Math.max(0, (activeChunksByUploadId.get(uploadId) || 1) - 1);
+        if (remaining === 0) activeChunksByUploadId.delete(uploadId);
+        else activeChunksByUploadId.set(uploadId, remaining);
+    }
 };
 
 export const uploadStream = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    const userId = req.user.id;
 
     const uploadId = String(req.params.uploadId || '').trim();
     if (!uploadId) return res.status(400).json({ success: false, error: 'Missing uploadId' });
@@ -1588,6 +1791,16 @@ export const uploadStream = async (req: AuthRequest, res: Response) => {
             queuePositionGlobal: queuePosition.queuePositionGlobal,
             queuePositionUser: queuePosition.queuePositionUser,
             ...buildBackpressureHints('queued', capacity),
+        });
+    }
+
+    if (session.status === 'paused') {
+        return res.status(409).json({
+            success: false,
+            status: 'paused',
+            code: 'UPLOAD_PAUSED',
+            error: 'Upload is paused. Resume before streaming data.',
+            retryable: true,
         });
     }
 
@@ -1802,7 +2015,9 @@ export const uploadStream = async (req: AuthRequest, res: Response) => {
                         bytesWritten += chunk.length;
                         hash.update(chunk);
                         persistProgress(false);
-                        callback(null, chunk);
+                        withUploadBandwidthBudget(userId, chunk.length)
+                            .then(() => callback(null, chunk))
+                            .catch((err: any) => callback(new Error(String(err?.message || 'bandwidth_limit_error'))));
                     },
                 });
 
@@ -1833,6 +2048,12 @@ export const uploadStream = async (req: AuthRequest, res: Response) => {
 
                     if (bytesWritten === 0) {
                         finish(new Error('STREAM_EMPTY_PAYLOAD'));
+                        return;
+                    }
+
+                    // Reject truncated uploads — file must match declared size
+                    if (bytesWritten !== expectedBytes) {
+                        finish(new Error('STREAM_SIZE_MISMATCH'));
                         return;
                     }
 
@@ -1952,6 +2173,9 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
         }
 
         const { sha256: serverHash, md5: serverMd5 } = await computeFileHashes(session.temp_file_path);
+        const partialHash = toInt(session.total_bytes) >= LARGE_FILE_PARTIAL_HASH_THRESHOLD_BYTES
+            ? await computePartialFileSha256(session.temp_file_path, toInt(session.total_bytes), PARTIAL_HASH_SAMPLE_BYTES)
+            : serverHash;
 
         const preCheck = await pool.query(
             `SELECT * FROM files WHERE (sha256_hash = $1 OR md5_hash = $2) AND user_id = $3 AND is_trashed = false LIMIT 1`,
@@ -1983,6 +2207,7 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
                 deduped: true,
                 fileId: reused.id,
             });
+            finalizerAttemptByUploadId.delete(uploadId);
             return;
         }
 
@@ -2044,6 +2269,7 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             }
             cleanupSessionTempFile(session.temp_file_path);
             await promoteQueuedSessionsIfCapacity();
+            finalizerAttemptByUploadId.delete(uploadId);
             return;
         }
 
@@ -2084,8 +2310,8 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
 
         let fileRow: any = null;
         const insertResult = await pool.query(
-            `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash, blurhash, tg_media_meta, tg_duration_sec, tg_width, tg_height, tg_caption, tg_source_tag)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17)
+            `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash, partial_sha256, blurhash, tg_media_meta, tg_duration_sec, tg_width, tg_height, tg_caption, tg_source_tag)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18)
              ON CONFLICT (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL AND is_trashed = false
              DO NOTHING
              RETURNING *`,
@@ -2100,6 +2326,7 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
                 session.mime_type || 'application/octet-stream',
                 serverHash,
                 serverMd5,
+                partialHash,
                 finalBlurhash,
                 JSON.stringify(nativeMeta.mediaMeta || {}),
                 nativeMeta.durationSec,
@@ -2165,9 +2392,18 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             userId: session.user_id,
             fileId: fileRow?.id || null,
         });
+        finalizerAttemptByUploadId.delete(uploadId);
         await promoteQueuedSessionsIfCapacity();
     } catch (err: any) {
         const mapped = classifyUploadFailure(err);
+        if (mapped.retryable) {
+            await queueRetryableFinalizerFailure(uploadId, mapped.code, mapped.message);
+            throw Object.assign(new Error(mapped.message), {
+                code: mapped.code,
+                retryable: true,
+            });
+        }
+
         await updateSessionFailure(uploadId, mapped.code, mapped.message, mapped.retryable);
         logger.error('backend.upload', 'upload_failed', {
             uploadId,
@@ -2183,19 +2419,84 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
 };
 
 const startUploadFinalizer = (uploadId: string, ownerSessionString: string) => {
-    if (activeFinalizers.has(uploadId)) return;
-    const promise = finalizeUploadSession(uploadId, ownerSessionString)
-        .catch((err) => {
+    if (activeFinalizers.has(uploadId) || pendingFinalizerRetries.has(uploadId) || isUploadFinalizerTracked(uploadId)) return;
+
+    const queued = enqueueUploadFinalizerJob(uploadId, async () => {
+        await finalizeUploadSession(uploadId, ownerSessionString);
+    });
+    if (!queued) {
+        logUploadStage('finalizer_enqueue_skipped', {
+            uploadId,
+            reason: 'already_tracked_or_invalid',
+            activeFinalizers: activeFinalizers.size,
+            pendingRetries: pendingFinalizerRetries.size,
+        });
+        return;
+    }
+
+    logUploadStage('finalizer_enqueued', {
+        uploadId,
+        activeFinalizers: activeFinalizers.size,
+        pendingRetries: pendingFinalizerRetries.size,
+    });
+
+    const promise = queued
+        .catch((err: any) => {
             logger.error('backend.upload', 'finalizer_crashed', {
                 uploadId,
                 message: err?.message,
                 stack: err?.stack,
             });
+
+            if (Boolean(err?.retryable)) {
+                scheduleUploadFinalizerRetry(uploadId, ownerSessionString, String(err?.code || err?.message || 'retryable_failure'));
+            } else {
+                clearFinalizerRetryState(uploadId);
+            }
         })
         .finally(() => {
             activeFinalizers.delete(uploadId);
         });
+
     activeFinalizers.set(uploadId, promise);
+};
+
+export const getUploadQueueHealth = async (_req: AuthRequest, res: Response) => {
+    const queueRes = await pool.query(
+        `SELECT
+            COUNT(*) FILTER (WHERE status = 'queued')::int AS queued,
+            COUNT(*) FILTER (WHERE status = 'uploading')::int AS uploading,
+            COUNT(*) FILTER (WHERE status = 'processing')::int AS processing,
+            COUNT(*) FILTER (WHERE status = 'paused')::int AS paused,
+            COUNT(*) FILTER (WHERE status = 'failed' AND retryable = true)::int AS retryable_failed
+         FROM upload_sessions`
+    );
+    const row = queueRes.rows[0] || {};
+    const queueHealth = getUploadFinalizerQueueHealth();
+    const mem = process.memoryUsage();
+
+    return res.json({
+        success: true,
+        queue: {
+            queued: Number(row.queued || 0),
+            uploading: Number(row.uploading || 0),
+            processing: Number(row.processing || 0),
+            paused: Number(row.paused || 0),
+            retryableFailed: Number(row.retryable_failed || 0),
+            activeFinalizers: activeFinalizers.size,
+            scheduledRetries: pendingFinalizerRetries.size,
+            finalizerAttemptsTracked: finalizerAttemptByUploadId.size,
+            activeChunkUploadMaps: activeChunksByUploadId.size,
+            finalizerQueue: queueHealth,
+        },
+        processMemory: {
+            rssBytes: mem.rss,
+            heapTotalBytes: mem.heapTotal,
+            heapUsedBytes: mem.heapUsed,
+            externalBytes: mem.external,
+            arrayBuffersBytes: mem.arrayBuffers,
+        },
+    });
 };
 
 // ─── Step 3: Complete Upload ────────────────────────────────────────────────
@@ -2207,8 +2508,23 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
     const uploadId = String(req.body.uploadId || '').trim();
     if (!uploadId) return res.status(400).json({ success: false, error: 'Missing uploadId' });
 
-    const session = await getOwnedUploadSession(uploadId, req.user.id);
+    logUploadStage('complete_requested', {
+        uploadId,
+        userId: req.user.id,
+        correlationId,
+        idempotencyKey: idempotencyKey || null,
+    });
+
+    await promoteQueuedSessionsIfCapacity();
+
+    let session = await getOwnedUploadSession(uploadId, req.user.id);
     if (!session) return res.status(404).json({ success: false, error: 'Upload session not found' });
+
+    if (session.status === 'queued') {
+        await promoteQueuedSessionsIfCapacity();
+        const refreshedSession = await getOwnedUploadSession(uploadId, req.user.id);
+        if (refreshedSession) session = refreshedSession;
+    }
 
     if (session.status === 'completed') {
         return res.json({ success: true, message: 'Already completed', correlation_id: correlationId, idempotency_key: idempotencyKey });
@@ -2225,6 +2541,15 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
             queuePositionGlobal: queuePosition.queuePositionGlobal,
             queuePositionUser: queuePosition.queuePositionUser,
             ...buildBackpressureHints('queued', capacity),
+        });
+    }
+    if (session.status === 'paused') {
+        return res.status(409).json({
+            success: false,
+            status: 'paused',
+            code: 'UPLOAD_PAUSED',
+            error: 'Upload is paused. Resume before completing.',
+            retryable: true,
         });
     }
     if (session.status === 'processing') {
@@ -2347,6 +2672,92 @@ export const resumeUploadSession = async (req: AuthRequest, res: Response) => {
     return res.json({ ...payload, resumed: true });
 };
 
+export const pauseUpload = async (req: AuthRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+    const uploadId = String(req.body.uploadId || '').trim();
+    if (!uploadId) return res.status(400).json({ success: false, error: 'Missing uploadId' });
+
+    const session = await getOwnedUploadSession(uploadId, req.user.id);
+    if (!session) return res.status(404).json({ success: false, error: 'Upload session not found' });
+
+    if (session.status === 'completed' || session.status === 'cancelled') {
+        return res.status(409).json({
+            success: false,
+            code: 'UPLOAD_TERMINAL',
+            error: 'Upload is already in a terminal state.',
+            retryable: false,
+        });
+    }
+
+    if (session.status === 'processing') {
+        return res.status(409).json({
+            success: false,
+            code: 'UPLOAD_PROCESSING',
+            error: 'Upload is already finalizing on Telegram and cannot be paused now.',
+            retryable: false,
+        });
+    }
+
+    await pool.query(
+        `UPDATE upload_sessions
+         SET status = 'paused',
+             error_code = 'UPLOAD_PAUSED',
+             error_message = 'Upload paused by user',
+             retryable = true,
+             updated_at = NOW()
+         WHERE upload_id = $1`,
+        [uploadId]
+    );
+    clearFinalizerRetryState(uploadId);
+
+    logUploadStage('upload_paused', {
+        uploadId,
+        userId: req.user.id,
+        previousStatus: session.status,
+    });
+
+    const refreshed = await getOwnedUploadSession(uploadId, req.user.id);
+    const payload = refreshed ? await toUploadStatusPayload(refreshed) : { success: true, status: 'paused', uploadId };
+    return res.json({ ...payload, paused: true });
+};
+
+export const resumePausedUpload = async (req: AuthRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+    const uploadId = String(req.body.uploadId || '').trim();
+    if (!uploadId) return res.status(400).json({ success: false, error: 'Missing uploadId' });
+
+    const session = await getOwnedUploadSession(uploadId, req.user.id);
+    if (!session) return res.status(404).json({ success: false, error: 'Upload session not found' });
+
+    if (session.status !== 'paused') {
+        const payload = await toUploadStatusPayload(session);
+        return res.json({ ...payload, resumed: false });
+    }
+
+    await pool.query(
+        `UPDATE upload_sessions
+         SET status = 'queued',
+             error_code = NULL,
+             error_message = NULL,
+             retryable = true,
+             updated_at = NOW()
+         WHERE upload_id = $1`,
+        [uploadId]
+    );
+    await promoteQueuedSessionsIfCapacity();
+
+    logUploadStage('upload_resumed', {
+        uploadId,
+        userId: req.user.id,
+    });
+
+    const refreshed = await getOwnedUploadSession(uploadId, req.user.id);
+    const payload = refreshed ? await toUploadStatusPayload(refreshed) : { success: true, status: 'queued', uploadId };
+    return res.json({ ...payload, resumed: true });
+};
+
 // ─── Step 4: Cancel Upload ───────────────────────────────────────────────────
 export const cancelUpload = async (req: AuthRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
@@ -2370,6 +2781,7 @@ export const cancelUpload = async (req: AuthRequest, res: Response) => {
     );
 
     await promoteQueuedSessionsIfCapacity();
+    clearFinalizerRetryState(uploadId);
 
     if (!activeFinalizers.has(uploadId)) {
         cleanupSessionTempFile(session.temp_file_path);
@@ -2379,6 +2791,12 @@ export const cancelUpload = async (req: AuthRequest, res: Response) => {
         uploadId,
         userId: req.user.id,
         fileName: session.file_name,
+    });
+
+    logUploadStage('upload_cancelled_stage', {
+        uploadId,
+        userId: req.user.id,
+        finalizerActive: activeFinalizers.has(uploadId),
     });
 
     return res.json({ success: true, message: 'Upload cancelled' });

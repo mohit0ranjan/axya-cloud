@@ -26,9 +26,9 @@ Telegram-Powered Cloud Drive with instant uploads, streaming, and unlimited stor
 
 ---
 
-# ✨ What is ANYX?
+# ✨ What is AYXA?
 
-**ANYX** is a self-hosted cloud storage system that uses **Telegram as the storage backend**.
+**AXYA** is a self-hosted cloud storage system that uses **Telegram as the storage backend**.
 
 Instead of paying for Google Drive or Dropbox subscriptions, ANYX stores files inside your **private Telegram channel** while giving you a **modern cloud-drive interface** via a mobile app.
 

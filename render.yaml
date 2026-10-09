@@ -10,7 +10,6 @@ services:
     autoDeployTrigger: checksPass
     preDeployCommand: node scripts/predeploy.cjs
     healthCheckPath: /readyz
-    maxShutdownDelaySeconds: 60
     disk:
       name: axya-upload-staging
       mountPath: /data/uploads

@@ -26,7 +26,7 @@ Use the existing axya-server and axya-web services if you own them. Verify actua
 
 API: Dockerfile server/Dockerfile with build context server. Web: root directory web, build npm ci && npm run build, start npm run start. The web start script uses Render's PORT. Auto deployment follows passing repository CI checks. Connect the correct reviewed Git branch; local uncommitted changes are not deployed by Render.
 
-For an existing backend, set the pre-deploy command to `node scripts/predeploy.cjs`, health check to `/readyz`, and shutdown delay to 60 seconds. Leave the Docker start command unset so the image's CMD runs. Keep one backend instance. The old Azure workflow is now manual so a future Git push cannot automatically deploy to two providers.
+For an existing backend, set the pre-deploy command to `node scripts/predeploy.cjs` and health check to `/readyz`. Do not set `maxShutdownDelaySeconds`: Render rejects a custom shutdown delay for services with a persistent disk. The application retains its bounded 25-second shutdown handler and durable upload recovery. Leave the Docker start command unset so the image's CMD runs. Keep one backend instance. The old Azure workflow is now manual so a future Git push cannot automatically deploy to two providers.
 
 The pre-deploy command validates production configuration and verifies that every currently encrypted Telegram session can be opened with the supplied key before running the existing transactional, advisory-locked schema migration. It does not re-encrypt sessions or touch disk files. Render runs pre-deploy commands in a separate instance without the persistent disk, so staging permissions are checked by `/readyz` at runtime. See [Render deploy steps](https://render.com/docs/deploys).
 

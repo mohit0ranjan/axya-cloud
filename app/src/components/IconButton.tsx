@@ -12,6 +12,7 @@ type Props = {
   disabled?: boolean;
   hitSlop?: Insets;
   style?: StyleProp<ViewStyle>;
+  accessibilityLabel?: string;
 };
 
 const DEFAULT_HIT_SLOP: Insets = { top: 8, right: 8, bottom: 8, left: 8 };
@@ -24,6 +25,7 @@ export default function IconButton({
   disabled = false,
   hitSlop = DEFAULT_HIT_SLOP,
   style,
+  accessibilityLabel,
 }: Props) {
   const { theme } = useTheme();
 
@@ -37,6 +39,8 @@ export default function IconButton({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled }}
       disabled={disabled}
       hitSlop={hitSlop}
       onPress={onPress}

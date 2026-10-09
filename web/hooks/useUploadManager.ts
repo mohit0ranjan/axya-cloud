@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { UploadEngine } from '../lib/upload/uploadEngine';
 import type { UploadStats, UploadTask } from '../lib/upload/types';
+import { readTransfers, saveTransfers } from '../lib/upload/transferStore';
 
 const makeId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -20,8 +21,10 @@ const initialStats: UploadStats = {
   avgSpeed: 0,
 };
 
-export function useUploadManager() {
+export function useUploadManager(owner?: string) {
   const [tasks, setTasks] = useState<UploadTask[]>([]);
+  const [storageError, setStorageError] = useState('');
+  const [restored, setRestored] = useState(!owner);
   const engineRef = useRef<UploadEngine | null>(null);
 
   useEffect(() => {
@@ -69,7 +72,25 @@ export function useUploadManager() {
     };
   }, []);
 
-  const addFiles = useCallback((files: File[]) => {
+  useEffect(() => {
+    if (!owner) return;
+    let active = true;
+    void readTransfers(owner).then(saved => {
+      if (!active) return;
+      const recovered = saved.map(task => ({ ...task, status: 'paused' as const, speedBps: 0, error: 'Recovered transfer. Resume when ready.' }));
+      setTasks(previous => [...recovered, ...previous]);
+    }).catch(() => { if (active) setStorageError('This browser cannot save transfers locally. Keep this page open until uploads finish.'); })
+      .finally(() => { if (active) setRestored(true); });
+    return () => { active = false; };
+  }, [owner]);
+
+  useEffect(() => {
+    if (!owner || !restored) return;
+    const timer = setTimeout(() => { void saveTransfers(owner, tasks).catch(() => setStorageError('Local transfer storage is full or unavailable. Keep this page open until uploads finish.')); }, 500);
+    return () => clearTimeout(timer);
+  }, [owner, restored, tasks]);
+
+  const addFiles = useCallback((files: File[], options?: { folderId?: string; telegramChatId?: string }) => {
     const now = Date.now();
     const next = files.map((file): UploadTask => ({
       id: makeId(),
@@ -90,6 +111,8 @@ export function useUploadManager() {
       showSkeletonUntil: now + 850,
       createdAt: now,
       error: undefined,
+      folderId: options?.folderId,
+      telegramChatId: options?.telegramChatId,
     }));
 
     setTasks(prev => [...next, ...prev]);
@@ -104,8 +127,10 @@ export function useUploadManager() {
   }, []);
 
   const resumeTask = useCallback((taskId: string) => {
-    engineRef.current?.resume(taskId);
-  }, []);
+    const task = tasks.find(task => task.id === taskId);
+    if (task?.error === 'Recovered transfer. Resume when ready.') engineRef.current?.enqueue(task);
+    else engineRef.current?.resume(taskId);
+  }, [tasks]);
 
   const cancelTask = useCallback((taskId: string) => {
     engineRef.current?.cancel(taskId);
@@ -118,7 +143,7 @@ export function useUploadManager() {
 
       const reset: UploadTask = {
         ...target,
-        uploadId: undefined,
+        uploadId: target.uploadId,
         status: 'queued',
         progress: 0,
         uploadedBytes: 0,
@@ -153,7 +178,7 @@ export function useUploadManager() {
     let speedCount = 0;
 
     for (const t of tasks) {
-      if (t.status === 'uploading') {
+      if (t.status === 'uploading' || t.status === 'processing') {
         uploading += 1;
         if (t.speedBps > 0) {
           speedTotal += t.speedBps;
@@ -178,6 +203,7 @@ export function useUploadManager() {
 
   return {
     tasks,
+    storageError,
     stats,
     addFiles,
     pauseTask,

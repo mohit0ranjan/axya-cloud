@@ -2,7 +2,7 @@
 
 ## Environment
 - Backend built from current branch (`server`: `npm.cmd run build` succeeded).
-- Use Node `20.x` (`.nvmrc` added in repo root and `server/`).
+- Use Node `24.x` (`.nvmrc` added in repo root and `server/`).
 - Production env must include `COOKIE_SECRET` and required values from `server/.env.example`.
 
 ## 1) Upload Flow: init/chunk/complete

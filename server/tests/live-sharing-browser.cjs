@@ -1,0 +1,50 @@
+require('dotenv').config({quiet:true});
+const assert=require('node:assert/strict'),jwt=require('jsonwebtoken'),pool=require('../dist/config/db').default;
+(async()=>{let shareId;try{
+ const owner=(await pool.query("SELECT id FROM users WHERE phone NOT LIKE 'test:%' ORDER BY created_at LIMIT 1")).rows[0];assert.ok(owner);
+ const file=(await pool.query("SELECT id FROM files WHERE user_id=$1 AND file_name='Axya upload diagnostic.txt' AND is_trashed=false LIMIT 1",[owner.id])).rows[0];assert.ok(file,'Generated diagnostic file is required');
+ const token=jwt.sign({userId:owner.id},process.env.JWT_SECRET,{expiresIn:'15m'}),base=process.env.TEST_API_BASE||'http://localhost:3000',ownerHeaders={Authorization:'Bearer '+token,'Content-Type':'application/json'};
+ async function call(path,body,expected=200,headers=ownerHeaders,method=body===undefined?'GET':'POST') {const r=await fetch(base+path,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(60000)});const d=await r.json();assert.equal(r.status,expected,d.error||d.message||path);return d;}
+ const request={resource_type:'file',root_file_id:file.id,require_password:true,allow_download:false,allow_preview:false};
+ await call('/api/v2/shares',request,400);console.log('PASS: password-enabled share rejects missing password');
+ await call('/api/v2/shares',{...request,require_password:false,password:'short'},400);console.log('PASS: supplied passwords cannot bypass minimum length');
+ const created=await call('/api/v2/shares',{...request,password:'Axya-diagnostic-only',expires_at:new Date(Date.now()+600000).toISOString()},201);shareId=created.share.id;
+ const open='/api/v2/public/shares/'+created.slug+'/open';const publicHeaders={'Content-Type':'application/json'};
+ await call(open,{secret:created.secret},401,publicHeaders);await call(open,{secret:created.secret,password:'wrong-password'},401,publicHeaders);
+ const unlocked=await call(open,{secret:created.secret,password:'Axya-diagnostic-only'},200,publicHeaders);const access={...publicHeaders,Authorization:'Bearer '+unlocked.session_token};console.log('PASS: password challenge and authenticated share session');
+ const items=await call('/api/v2/public/shares/'+created.slug+'/items',undefined,200,access);assert.equal(items.files.length,1);
+ const ticket='/api/v2/public/shares/'+created.slug+'/items/'+items.files[0].id+'/preview-ticket';
+ for(const disposition of ['attachment','inline','thumbnail'])await call(ticket,{disposition},403,access);console.log('PASS: download, preview and thumbnail permissions enforced');
+ await call('/api/v2/shares/'+shareId,{allow_download:true,allow_preview:true},200,ownerHeaders,'PATCH');
+ const granted=await call(ticket,{disposition:'attachment'},200,access);
+ const original=await fetch(base+'/files/'+file.id+'/download',{headers:ownerHeaders});const expectedBytes=Buffer.from(await original.arrayBuffer());
+ const shared=await fetch(base+granted.stream_url,{signal:AbortSignal.timeout(60000)});if(!shared.ok){const error=await shared.json();throw new Error(`Shared download failed (${shared.status}): ${error.code} ${error.details || error.error || error.message}`);}assert.deepEqual(Buffer.from(await shared.arrayBuffer()),expectedBytes);console.log('PASS: allowed public download matches private original');
+ const zipStart=await call('/api/v2/public/shares/'+created.slug+'/download-all?async=1',undefined,202,access);
+ let zipJob;for(let attempt=0;attempt<75;attempt++){await new Promise(resolve=>setTimeout(resolve,1000));zipJob=await call(zipStart.polling_url,undefined,200,access);if(zipJob.job.status==='completed'||zipJob.job.status==='failed')break;}
+ assert.equal(zipJob?.job?.status,'completed',zipJob?.job?.error_message||'ZIP job timed out');
+ const zipUrl=zipJob.job.download_url;assert.ok(zipUrl?.includes('ticket='));
+ const zipResponse=await fetch(base+zipUrl,{signal:AbortSignal.timeout(60000)});assert.equal(zipResponse.status,200);assert.match(zipResponse.headers.get('content-type')||'',/application\/zip/);const zipBytes=Buffer.from(await zipResponse.arrayBuffer());assert.equal(zipBytes.toString('hex',0,4),'504b0304');assert.ok(zipBytes.includes(Buffer.from('Axya upload diagnostic.txt')));console.log('PASS: async ZIP downloads with a scoped ticket and contains the shared file');
+ assert.match(shared.headers.get('cache-control')||'',/no-store/i);
+ const inline=await call(ticket,{disposition:'inline'},200,access);
+ const thumbnail=await call(ticket,{disposition:'thumbnail'},200,access);
+ await call('/api/v2/shares/'+shareId,{allow_download:false,allow_preview:false},200,ownerHeaders,'PATCH');
+ for(const issued of [granted,inline,thumbnail]){const denied=await fetch(base+issued.stream_url);assert.equal(denied.status,403);assert.match(denied.headers.get('cache-control')||'',/no-store/i);}
+ assert.equal((await fetch(base+zipUrl)).status,403);
+ console.log('PASS: permission changes invalidate already-issued download, preview and thumbnail tickets');
+ await call('/api/v2/shares/'+shareId,{allow_download:true,allow_preview:true},200,ownerHeaders,'PATCH');
+ const expiring=await call(ticket,{disposition:'attachment'},200,access);
+ await call('/api/v2/shares/'+shareId,{expires_at:new Date(Date.now()-1000).toISOString()},200,ownerHeaders,'PATCH');
+ await call('/api/v2/public/shares/'+created.slug+'/meta',undefined,410,access);
+ assert.equal((await fetch(base+expiring.stream_url)).status,410);
+ assert.equal((await fetch(base+zipUrl)).status,410);
+ await call('/api/v2/shares/'+shareId,{expires_at:new Date(Date.now()+600000).toISOString()},200,ownerHeaders,'PATCH');console.log('PASS: expired share denies existing sessions');
+ const revoking=await call(ticket,{disposition:'attachment'},200,access);
+ await call('/api/v2/shares/'+shareId,undefined,200,ownerHeaders,'DELETE');shareId=null;
+ await call('/api/v2/public/shares/'+created.slug+'/meta',undefined,410,access);console.log('PASS: revoked share rejects existing session');
+ assert.equal((await fetch(base+revoking.stream_url)).status,410);console.log('PASS: expired and revoked shares invalidate already-issued stream tickets');
+ assert.equal((await fetch(base+zipUrl)).status,410);console.log('PASS: expired and revoked shares invalidate the ZIP download ticket');
+ const r=await fetch(base+'/auth/browser-session',{method:'POST',headers:{...ownerHeaders,Origin:'http://localhost:8081'},body:'{}'});assert.equal(r.status,200);const cookie=r.headers.get('set-cookie')?.split(';')[0];assert.ok(cookie);assert.match(r.headers.get('set-cookie'),/HttpOnly/i);
+ const download=await fetch(base+'/files/'+file.id+'/download',{headers:{Cookie:cookie},signal:AbortSignal.timeout(60000)});assert.equal(download.status,200);assert.ok((await download.arrayBuffer()).byteLength>0);
+ const denied=await fetch(base+'/auth/browser-session',{method:'POST',headers:{...ownerHeaders,Origin:'https://unauthorized.example'},body:'{}'});assert.equal(denied.status,403);console.log('PASS: signed browser cookie accesses owned file and rejects foreign origin');
+ console.log('SHARING AND BROWSER CHECKS PASSED');
+ }finally{if(shareId)await pool.query('UPDATE share_links_v2 SET revoked_at=NOW() WHERE id=$1',[shareId]);await pool.end();}})().catch(e=>{console.error(e.message);process.exitCode=1;});

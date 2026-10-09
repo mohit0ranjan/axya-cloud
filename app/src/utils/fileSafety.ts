@@ -21,7 +21,7 @@ export const sanitizeFileName = (value: string, fallback: string = 'file'): stri
     const decoded = safeDecode(String(value || '').trim());
     const cleaned = decoded
         .replace(/[\/\\:*?"<>|#%\r\n\t]+/g, '_')
-        .replace(/[^\w.\- ]+/g, '_')
+        .replace(/[\u0000-\u001f\u007f]/g, '_')
         .replace(/\s+/g, ' ')
         .trim();
 
@@ -66,9 +66,10 @@ export interface NormalizedUploadFile {
 
 export const normalizeUploadFile = (file: { uri?: string; name?: string; mimeType?: string; type?: string }): NormalizedUploadFile => {
     const rawUri = String(file?.uri || '').trim();
-    const decodedUri = safeDecode(rawUri);
-    const safeUri = sanitizeRemoteUri(decodedUri);
-    const safeName = String(file?.name || 'file').replace(/[^\w.-]/g, '_') || 'file';
+    // Picker URIs are opaque handles. Decoding/re-encoding changes encoded
+    // separators, content-provider IDs and data URLs, making files unreadable.
+    const safeUri = rawUri;
+    const safeName = sanitizeFileName(String(file?.name || 'file'));
     const type = String(file?.mimeType || file?.type || 'application/octet-stream');
 
     return {

@@ -7,6 +7,7 @@ export type StorageUploadRequest = {
     mimeType: string;
     caption?: string;
     onProgress?: (fraction: number) => void;
+    idempotencyKey?: string;
 };
 
 export type StorageUploadResult = {
@@ -15,6 +16,7 @@ export type StorageUploadResult = {
     providerMessageId: string;
     storageChatId: string;
     providerContext?: Record<string, string>;
+    integrity?: { sha256: string; md5: string; partial: string };
     nativeMeta: {
         mediaMeta: Record<string, unknown>;
         durationSec: number | null;

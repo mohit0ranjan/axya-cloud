@@ -12,6 +12,7 @@ export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, 
  * - Retries on 408 Request Timeout
  */
 export const shouldRetry = (error: AxiosError): boolean => {
+    if (error.code === 'ERR_CANCELED') return false;
     const retryableFlag = (error.response?.data as any)?.retryable;
     if (retryableFlag === false) return false;
 

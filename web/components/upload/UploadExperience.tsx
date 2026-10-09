@@ -55,6 +55,8 @@ const statusLabel = (status: UploadStatus) => {
       return 'Queued';
     case 'uploading':
       return 'Uploading';
+    case 'processing':
+      return 'Saving to Telegram';
     case 'paused':
       return 'Paused';
     case 'completed':
@@ -244,7 +246,7 @@ export default function UploadExperience() {
           <div className="rounded-3xl border-2 border-dashed border-blue-500 bg-white/95 px-10 py-12 text-center shadow-2xl">
             <FolderUp className="mx-auto h-10 w-10 text-blue-600" />
             <p className="mt-3 text-lg font-semibold text-slate-900">Drop files to upload</p>
-            <p className="mt-1 text-sm text-slate-500">Uploads start instantly with optimistic progress.</p>
+            <p className="mt-1 text-sm text-slate-500">Track uploads and saving to Telegram in your transfer queue.</p>
           </div>
         </div>
       )}

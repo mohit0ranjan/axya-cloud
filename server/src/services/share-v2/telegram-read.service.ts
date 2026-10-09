@@ -113,12 +113,14 @@ export const resolveTelegramMessageForShareItem = async (
         priority?: 'interactive' | 'background';
     },
 ): Promise<{ client: any; message: any } | { failure: TelegramReadFailure }> => {
-    const sessions = await getSessionCandidates(ownerUserId);
+    const candidates = await getSessionCandidates(ownerUserId);
+    // Saved Messages IDs belong to one account; another account's matching ID is a different file.
+    const sessions = chatId === 'me' || process.env.ALLOW_LEGACY_STORAGE_READS !== 'true' ? candidates.slice(0, 1) : candidates;
     if (!sessions.length) {
         return { failure: toFailure('telegram_session_invalid') };
     }
 
-    const key = messageCacheKey(chatId, messageId);
+    const key = `${ownerUserId}:${messageCacheKey(chatId, messageId)}`;
     const preferred = String(messageClientCache.get(key) || getPreferredSessionHash(chatId, messageId) || '');
     if (preferred) {
         const idx = sessions.findIndex((s) => hashSessionForCache(s) === preferred);

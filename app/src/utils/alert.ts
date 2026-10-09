@@ -86,19 +86,11 @@ export function showActionSheet(
     cancelText?: string
 ): void {
     if (Platform.OS === 'web') {
-        // On web, show a confirm for destructive action or alert with options
-        const destructiveAction = actions.find(a => a.destructive);
-        if (destructiveAction) {
-            const confirmed = window.confirm(
-                `${title}\n\n${message || destructiveAction.text}?\n\nPress OK to ${destructiveAction.text.toLowerCase()}.`
-            );
-            if (confirmed) {
-                destructiveAction.onPress?.();
-            }
-        } else {
-            // For non-destructive actions on web, just show alert
-            window.alert(`${title}\n\n${message || ''}`);
-        }
+        const choice = window.prompt(`${title}\n${message || ''}\n\n${actions.map((a, i) => `${i + 1}. ${a.text}`).join('\n')}\n\nEnter an option number, or cancel.`);
+        if (!choice || !/^\d+$/.test(choice.trim())) return;
+        const action = actions[Number(choice) - 1];
+        if (!action) return;
+        if (!action.destructive || window.confirm(`${action.text}?`)) action.onPress?.();
     } else {
         const buttons: AlertButton[] = actions.map(action => ({
             text: action.text,
@@ -171,17 +163,22 @@ export const PlatformAlert = {
                 return;
             }
 
-            // For buttons with destructive action, use confirm
+            if (buttons.filter(b => b.style !== 'cancel').length > 1) {
+                showActionSheet(title, message, buttons.filter(b => b.style !== 'cancel').map(b => ({text: b.text, onPress: b.onPress, destructive: b.style === 'destructive'})));
+                return;
+            }
+            // Both ordinary and destructive confirmations must offer Cancel.
             const destructiveButton = buttons.find(b => b.style === 'destructive');
             const cancelButton = buttons.find(b => b.style === 'cancel');
             const defaultButton = buttons.find(b => !b.style || b.style === 'default');
 
-            if (destructiveButton && cancelButton) {
+            const actionButton = destructiveButton || defaultButton;
+            if (actionButton && cancelButton) {
                 const confirmed = window.confirm(
-                    `${title}\n\n${message || ''}\n\nPress OK to ${destructiveButton.text.toLowerCase()}.`
+                    `${title}\n\n${message || ''}\n\nPress OK to ${actionButton.text.toLowerCase()}.`
                 );
                 if (confirmed) {
-                    destructiveButton.onPress?.();
+                    actionButton.onPress?.();
                 } else {
                     cancelButton.onPress?.();
                 }

@@ -3,7 +3,7 @@
     "name": "Axya",
     "slug": "axya",
     "scheme": "axya",
-    "version": "1.1.1",
+    "version": "1.2.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -15,12 +15,6 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.mohit.axya",
       "associatedDomains": [
-        "applinks:axyzcloud.com",
-        "applinks:axya-web.onrender.com",
-        "applinks:axyzcloud.com",
-        "applinks:axya-web.onrender.com",
-        "applinks:axyzcloud.com",
-        "applinks:axya-web.onrender.com",
         "applinks:axyzcloud.com",
         "applinks:axya-web.onrender.com"
       ],
@@ -34,12 +28,20 @@
     "android": {
       "softwareKeyboardLayoutMode": "resize",
       "package": "com.mohit.axya",
-      "versionCode": 3,
+      "versionCode": 5,
       "permissions": [
         "CAMERA",
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
-        "USE_BIOMETRIC"
+        "USE_BIOMETRIC",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.DOWNLOAD_WITHOUT_NOTIFICATION",
+        "android.permission.ACCESS_NETWORK_STATE"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#4B6EF5",
@@ -63,6 +65,28 @@
               "host": "axya-web.onrender.com"
             }
           ]
+        },
+        {
+          "action": "SEND",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "mimeType": "*/*"
+            }
+          ]
+        },
+        {
+          "action": "SEND_MULTIPLE",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "mimeType": "*/*"
+            }
+          ]
         }
       ]
     },
@@ -76,7 +100,7 @@
       "enabled": true,
       "checkAutomatically": "ON_LOAD",
       "fallbackToCacheTimeout": 0,
-      "url": "https://u.expo.dev/45b9b1cf-3739-4f90-82f0-e5c60b9cbdfd"
+      "url": "https://u.expo.dev/6f616215-0dfa-43cd-a895-32751f6864d9"
     },
     "plugins": [
       "expo-updates",
@@ -104,13 +128,32 @@
           }
         }
       ],
-      "./plugins/with-android-gradle-tuning"
+      "./plugins/with-android-gradle-tuning",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Axya uses your microphone when you record a voice note."
+        }
+      ],
+      "expo-image",
+      "expo-secure-store",
+      "@config-plugins/react-native-blob-util",
+      "@config-plugins/react-native-pdf",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Axya backs up photos only from the album you choose.",
+          "granularPermissions": [
+            "photo"
+          ]
+        }
+      ]
     ],
+    "owner": "mohit5051",
     "extra": {
       "eas": {
-        "projectId": "45b9b1cf-3739-4f90-82f0-e5c60b9cbdfd"
+        "projectId": "6f616215-0dfa-43cd-a895-32751f6864d9"
       }
-    },
-    "owner": "mohit5656"
+    }
   }
 }

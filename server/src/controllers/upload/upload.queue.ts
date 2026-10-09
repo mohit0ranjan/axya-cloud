@@ -1,6 +1,6 @@
 import pool from '../../config/db';
 import { logUploadStage, toInt } from './upload.helpers';
-import { getCapacitySnapshot, getAdaptiveConcurrencyLimits } from './upload.capacity';
+import { getAdaptiveConcurrencyLimits } from './upload.capacity';
 import {
     QUEUE_PROMOTION_LOCK_KEY,
     MAX_ACTIVE_SESSION_FETCH,
@@ -11,14 +11,16 @@ import {
 export const promoteQueuedSessionsIfCapacity = async (): Promise<void> => {
     const lockClient = await pool.connect();
     try {
-        const lock = await lockClient.query('SELECT pg_try_advisory_lock($1)', [QUEUE_PROMOTION_LOCK_KEY]);
-        if (!lock.rows[0]?.pg_try_advisory_lock) return;
+        await lockClient.query('BEGIN');
+        const lock = await lockClient.query('SELECT pg_try_advisory_xact_lock($1) AS acquired', [QUEUE_PROMOTION_LOCK_KEY]);
+        if (!lock.rows[0]?.acquired) return;
 
-        try {
+        {
             const capRes = await lockClient.query(
                 `SELECT
                     COUNT(*) FILTER (WHERE status IN ('uploading', 'processing'))::int AS active_global,
-                    COUNT(*) FILTER (WHERE status = 'queued')::int AS queued_global
+                    COUNT(*) FILTER (WHERE status = 'queued'
+                        AND COALESCE(client_seen_at, created_at) > NOW() - INTERVAL '3 minutes')::int AS queued_global
                  FROM upload_sessions`
             );
             const activeGlobal = toInt(capRes.rows[0]?.active_global);
@@ -26,7 +28,9 @@ export const promoteQueuedSessionsIfCapacity = async (): Promise<void> => {
 
             if (queuedGlobal === 0) return;
 
-            const snapshot = await getCapacitySnapshot('__system__');
+            // System admission has no owner. Never bind a sentinel string to
+            // the UUID user_id column (PostgreSQL rejects '__system__').
+            const snapshot = { activeGlobal, queuedGlobal, activeForUser: 0, queuedForUser: 0 };
             const limits = getAdaptiveConcurrencyLimits(snapshot);
 
             if (limits.diskPauseNewUploads || limits.diskCritical) {
@@ -42,12 +46,18 @@ export const promoteQueuedSessionsIfCapacity = async (): Promise<void> => {
             if (slotsAvailable <= 0) return;
 
             const candidates = await lockClient.query(
-                `SELECT DISTINCT ON (user_id) upload_id, user_id
-                 FROM upload_sessions
-                 WHERE status = 'queued'
-                 ORDER BY user_id, created_at ASC
+                `SELECT upload_id, user_id FROM (
+                     SELECT DISTINCT ON (us.user_id) us.upload_id, us.user_id, us.created_at
+                     FROM upload_sessions us
+                     WHERE us.status = 'queued'
+                       AND COALESCE(us.client_seen_at, us.created_at) > NOW() - INTERVAL '3 minutes'
+                       AND (SELECT COUNT(*) FROM upload_sessions active
+                            WHERE active.user_id = us.user_id AND active.status IN ('uploading', 'processing')) < $2
+                     ORDER BY us.user_id, us.created_at ASC
+                 ) candidates
+                 ORDER BY created_at ASC
                  LIMIT $1`,
-                [Math.min(slotsAvailable, MAX_ACTIVE_SESSION_FETCH)]
+                [Math.min(slotsAvailable, MAX_ACTIVE_SESSION_FETCH), limits.perUserLimit]
             );
 
             if (candidates.rows.length === 0) return;
@@ -61,7 +71,7 @@ export const promoteQueuedSessionsIfCapacity = async (): Promise<void> => {
                      error_message = NULL,
                      retryable = true,
                      updated_at = NOW()
-                 WHERE upload_id = ANY($1::text[]) AND status = 'queued'`,
+                 WHERE upload_id = ANY($1::uuid[]) AND status = 'queued'`,
                 [idsToPromote]
             );
 
@@ -71,10 +81,12 @@ export const promoteQueuedSessionsIfCapacity = async (): Promise<void> => {
                 queuedGlobal,
                 slotsAvailable,
             });
-        } finally {
-            await lockClient.query('SELECT pg_advisory_unlock($1)', [QUEUE_PROMOTION_LOCK_KEY]);
         }
+    } catch (error) {
+        await lockClient.query('ROLLBACK');
+        throw error;
     } finally {
+        await lockClient.query('COMMIT').catch(() => undefined);
         lockClient.release();
     }
 };
@@ -87,7 +99,8 @@ export const getQueuePosition = async (uploadId: string, userId: string) => {
             COUNT(*) FILTER (WHERE created_at <= (SELECT created_at FROM upload_sessions WHERE upload_id = $1))::int AS global_pos,
             COUNT(*) FILTER (WHERE user_id = $2 AND created_at <= (SELECT created_at FROM upload_sessions WHERE upload_id = $1))::int AS user_pos
          FROM upload_sessions
-         WHERE status = 'queued'`,
+         WHERE status = 'queued'
+           AND COALESCE(client_seen_at, created_at) > NOW() - INTERVAL '3 minutes'`,
         [uploadId, userId]
     );
     return {

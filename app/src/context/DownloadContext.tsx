@@ -24,7 +24,7 @@ interface DownloadContextType {
     hasActive: boolean;
 }
 
-const DownloadContext = createContext<DownloadContextType | undefined>(undefined);
+export const DownloadContext = createContext<DownloadContextType | undefined>(undefined);
 
 export const DownloadProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [tasks, setTasks] = useState<DownloadTask[]>([]);

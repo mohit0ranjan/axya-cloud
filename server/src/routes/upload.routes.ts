@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { requireAuth } from '../middlewares/auth.middleware';
 import { validateRequest } from '../middlewares/validateRequest';
 import { sendApiError } from '../utils/apiError';
+import { UPLOAD_TMP_ROOT, MAX_FILE_SIZE_BYTES } from '../controllers/upload/upload.types';
 import {
     initUpload,
     uploadChunk,
@@ -65,13 +66,13 @@ const withQuery = <T extends z.ZodTypeAny>(query: T) => z.object({
     params: emptyObjectSchema,
 });
 
-const uploadIdSchema = z.string().trim().min(1).max(128);
+const uploadIdSchema = z.string().trim().uuid();
 
 const initUploadSchema = withBody(z.object({
     originalname: z.string().trim().min(1).max(512),
     size: z.coerce.number().int().positive(),
     mimetype: z.string().trim().min(1).max(256),
-    folder_id: z.coerce.number().int().positive().optional().nullable(),
+    folder_id: z.string().uuid().optional().nullable(),
     telegram_chat_id: z.string().trim().min(1).max(128).optional().nullable(),
     hash: z.string().trim().min(1).max(128).optional(),
     partial_hash: z.string().trim().min(1).max(128).optional(),
@@ -127,7 +128,7 @@ const chunkLimiter = rateLimit({
     ),
 });
 
-const chunkDir = path.join(os.tmpdir(), 'axya_uploads', 'multer_chunks');
+const chunkDir = path.join(UPLOAD_TMP_ROOT, 'multer_chunks');
 try { require('fs').mkdirSync(chunkDir, { recursive: true }); } catch { }
 
 const chunkUpload = multer({
@@ -138,18 +139,18 @@ const chunkUpload = multer({
 });
 
 // Production single-file upload configuration
-const fileUploadDir = path.join(os.tmpdir(), 'teledrive_uploads');
+const fileUploadDir = path.join(UPLOAD_TMP_ROOT, 'incoming');
 try { require('fs').mkdirSync(fileUploadDir, { recursive: true }); } catch { }
 
 const fileUpload = multer({
     dest: fileUploadDir,
     limits: {
-        fileSize: 5 * 1024 * 1024 * 1024, // 5GB
+        fileSize: MAX_FILE_SIZE_BYTES,
     },
 });
 
 router.post('/init', uploadLimiter, withTimeout(15000), validateRequest(initUploadSchema), asyncRoute(initUpload));
-router.post('/chunk', chunkLimiter, withTimeout(60000), chunkUpload.single('chunk'), validateRequest(uploadChunkSchema), asyncRoute(uploadChunk));
+router.post('/chunk', chunkLimiter, withTimeout(10*60*1000), chunkUpload.single('chunk'), validateRequest(uploadChunkSchema), asyncRoute(uploadChunk));
 router.post('/complete', uploadLimiter, withTimeout(30000), validateRequest(uploadIdBodySchema), asyncRoute(completeUpload));
 router.post('/pause', uploadLimiter, withTimeout(15000), validateRequest(uploadIdBodySchema), asyncRoute(pauseUpload));
 router.post('/resume', uploadLimiter, withTimeout(15000), validateRequest(uploadIdBodySchema), asyncRoute(resumePausedUpload));
@@ -174,7 +175,7 @@ router.post('/resume-token', uploadLimiter, withTimeout(15000), validateRequest(
 
 const simpleUploadSchema = z.object({
     body: z.object({
-        folderId: z.coerce.number().int().positive().optional(),
+        folderId: z.string().uuid().optional(),
         telegramChatId: z.string().trim().optional(),
     }).passthrough(),
     query: emptyObjectSchema,

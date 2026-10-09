@@ -9,8 +9,7 @@
  * ✅ All actions: add, cancel, cancelAll, pause, resume, retry, clear
  */
 
-import React, { createContext, useContext, useEffect, useState, useMemo, useRef } from 'react';
-import { AppState, AppStateStatus } from 'react-native';
+import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
 import { uploadManager, UploadTask, FileAsset } from '../services/UploadManager';
 
 interface UploadStats {
@@ -46,11 +45,10 @@ interface UploadContextType extends UploadStats {
     retryFailed: () => void;
 }
 
-const UploadContext = createContext<UploadContextType | undefined>(undefined);
+export const UploadContext = createContext<UploadContextType | undefined>(undefined);
 
 export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [tasks, setTasks] = useState<UploadTask[]>([]);
-    const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
     useEffect(() => {
         // Subscribe to UploadManager — new array + new object references on every notify
@@ -58,26 +56,6 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             setTasks(newTasks);
         });
         return unsubscribe;
-    }, []);
-
-    useEffect(() => {
-        const sub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
-            const prevState = appStateRef.current;
-            appStateRef.current = nextState;
-
-            if (nextState === 'active' && prevState !== 'active') {
-                uploadManager.resumeAllBackground();
-                uploadManager.ensureProcessing();
-                return;
-            }
-
-            if (prevState === 'active' && nextState !== 'active') {
-                // JS execution is suspended in background on many devices.
-                // Persist clean paused states so uploads resume predictably.
-                uploadManager.pauseAllBackground();
-            }
-        });
-        return () => sub.remove();
     }, []);
 
     // ── Actions ───────────────────────────────────────────────────────────────

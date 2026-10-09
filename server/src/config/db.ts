@@ -11,12 +11,10 @@ if (!connectionString) {
 }
 
 // Silence PG warnings about SSL modes
-let finalUrl = connectionString || '';
-if (finalUrl && !finalUrl.includes('localhost') && !finalUrl.includes('127.0.0.1')) {
-    if (!finalUrl.includes('sslmode=')) {
-        finalUrl += finalUrl.includes('?') ? '&sslmode=require' : '?sslmode=require';
-    }
-}
+const databaseUrl = new URL(connectionString);
+const remoteDatabase = !['localhost', '127.0.0.1', '::1'].includes(databaseUrl.hostname);
+if (remoteDatabase) databaseUrl.searchParams.set('sslmode', 'verify-full');
+const finalUrl = databaseUrl.toString();
 
 // ✅ Optimized for Render free tier + Neon serverless:
 // - max: 5 connections (prevent exhausting Neon free tier ~100 limit)
@@ -25,9 +23,7 @@ if (finalUrl && !finalUrl.includes('localhost') && !finalUrl.includes('127.0.0.1
 // - allowExitOnIdle: true (let Node.js exit cleanly when no DB work pending)
 const pool = new Pool({
     connectionString: finalUrl,
-    ssl: finalUrl.includes('sslmode=')
-        ? { rejectUnauthorized: false }
-        : false,
+    enableChannelBinding: remoteDatabase,
     max: 5,                        // ✅ was unlimited — 5 is plenty for a single Render dyno
     min: 0,                        // Avoid holding idle connections on low-traffic instances
     idleTimeoutMillis: 20_000,     // ✅ Release idle connections after 20s

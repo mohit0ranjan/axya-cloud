@@ -1,29 +1,8 @@
-import { API_URL } from '../urls';
+import { api } from '../api';
 
 type Json = Record<string, any>;
-
-const uploadBase = `${API_URL}/upload`;
-
-const toError = async (res: Response) => {
-  const payload = await res.json().catch(() => ({}));
-  const msg = String(payload?.error || payload?.message || `Upload request failed (${res.status})`);
-  const err = new Error(msg) as Error & { status?: number; payload?: Json };
-  err.status = res.status;
-  err.payload = payload;
-  return err;
-};
-
-const postJson = async <T>(path: string, body: Json): Promise<T> => {
-  const res = await fetch(`${uploadBase}${path}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw await toError(res);
-  return res.json() as Promise<T>;
-};
-
+const postJson = <T>(path: string, body: Json): Promise<T> =>
+  api<T>(`/upload${path}`, { method: 'POST', body: JSON.stringify(body) });
 export const uploadService = {
   initUpload: (input: {
     originalname: string;
@@ -33,6 +12,8 @@ export const uploadService = {
     upload_mode: 'chunk';
     hash?: string;
     partial_hash?: string;
+    folder_id?: string;
+    telegram_chat_id?: string;
   }) => postJson<any>('/init', input),
 
   uploadChunk: async (input: {
@@ -46,14 +27,7 @@ export const uploadService = {
     form.append('chunkIndex', String(input.chunkIndex));
     form.append('chunk', input.chunkBlob, `chunk-${input.chunkIndex}.bin`);
 
-    const res = await fetch(`${uploadBase}/chunk`, {
-      method: 'POST',
-      body: form,
-      credentials: 'include',
-      signal: input.signal,
-    });
-    if (!res.ok) throw await toError(res);
-    return res.json();
+    return api('/upload/chunk', { method: 'POST', body: form, signal: input.signal }, 600000);
   },
 
   completeUpload: (uploadId: string) => postJson<any>('/complete', { uploadId }),
@@ -63,11 +37,6 @@ export const uploadService = {
 
   getUploadStatus: async (uploadId: string) => {
     const encoded = encodeURIComponent(uploadId);
-    const res = await fetch(`${uploadBase}/status/${encoded}`, {
-      method: 'GET',
-      credentials: 'include',
-    });
-    if (!res.ok) throw await toError(res);
-    return res.json();
+    return api(`/upload/status/${encoded}`);
   },
 };

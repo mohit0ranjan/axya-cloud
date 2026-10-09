@@ -28,11 +28,21 @@ function FileCardComponent({ file, share, onPreview, onDownload, ticketMap, prev
     const isTicketLoading = ticketMap[`${file.id}:thumbnail`];
 
     useEffect(() => {
-        if ((isImg || isDoc) && isVisible && !previewUrl && !fetchAttempted.current) {
+        if ((isImg || isVid || isDoc) && isVisible && !previewUrl && !fetchAttempted.current) {
             fetchAttempted.current = true;
             onLoadThumbnail(file);
         }
-    }, [file, isDoc, isImg, isVisible, previewUrl, onLoadThumbnail]);
+    }, [file, isDoc, isImg, isVid, isVisible, previewUrl, onLoadThumbnail]);
+
+    useEffect(() => {
+        if (previewUrl) { setThumbLoaded(false); setThumbFailed(false); }
+    }, [previewUrl]);
+
+    useEffect(() => {
+        if (!isVisible || !(isImg || isVid || isDoc) || thumbLoaded || thumbFailed) return;
+        const timer = window.setTimeout(() => setThumbFailed(true), 20000);
+        return () => window.clearTimeout(timer);
+    }, [isVisible, isImg, isVid, isDoc, thumbLoaded, thumbFailed, previewUrl, isTicketLoading]);
 
     useEffect(() => {
         fetchAttempted.current = false;
@@ -69,7 +79,7 @@ function FileCardComponent({ file, share, onPreview, onDownload, ticketMap, prev
                 <div className="absolute inset-0 bg-gradient-to-t from-black/5 to-transparent z-0 opacity-0 group-hover:opacity-100 transition-opacity" />
 
                 {/* Shimmer skeleton while loading ticket */}
-                {(isImg || isDoc) && isTicketLoading && (
+                {(isImg || isVid || isDoc) && isVisible && !thumbLoaded && !thumbFailed && (
                     <div className="absolute inset-0 w-full h-full animate-pulse bg-gradient-to-r from-neutral-100 via-neutral-50 to-neutral-100 bg-[length:200%_100%] animate-shimmer" />
                 )}
 
@@ -115,14 +125,14 @@ function FileCardComponent({ file, share, onPreview, onDownload, ticketMap, prev
                 )}
 
                 {/* Hover Actions: Center */}
-                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/10 backdrop-blur-[2px] z-20">
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/10 backdrop-blur-[2px] z-20">
                     <button
                         type="button"
                         onClick={(e) => {
                             e.stopPropagation();
                             onPreview(file);
                         }}
-                        className="flex items-center gap-2 px-4 py-2 bg-white/90 rounded-full text-brand-text text-sm font-medium shadow-sm hover:bg-white hover:scale-105 transition-transform"
+                        className="pointer-events-auto flex items-center gap-2 px-4 py-2 bg-white/90 rounded-full text-brand-text text-sm font-medium shadow-sm hover:bg-white hover:scale-105 transition-transform"
                     >
                         <Maximize2 className="w-4 h-4" /> Preview
                     </button>

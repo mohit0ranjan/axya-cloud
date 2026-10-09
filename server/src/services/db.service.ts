@@ -1,6 +1,8 @@
 import pool from '../config/db';
+import { UPLOAD_TMP_ROOT } from '../controllers/upload/upload.types';
 
 export const initSchema = async () => {
+  const uploadRootSql = UPLOAD_TMP_ROOT.replace(/'/g, "''");
   const schema = `
         CREATE EXTENSION IF NOT EXISTS "pgcrypto";
         CREATE EXTENSION IF NOT EXISTS "pg_trgm";
@@ -46,7 +48,6 @@ export const initSchema = async () => {
             is_starred BOOLEAN DEFAULT false,
             sha256_hash TEXT,
             md5_hash TEXT,
-            partial_sha256 TEXT,
             partial_sha256 TEXT,
             tg_media_meta JSONB NOT NULL DEFAULT '{}'::jsonb,
             tg_duration_sec INT,
@@ -280,6 +281,7 @@ export const initSchema = async () => {
     `ALTER TABLE folders ADD COLUMN IF NOT EXISTS is_trashed BOOLEAN DEFAULT false`,
     `ALTER TABLE folders ADD COLUMN IF NOT EXISTS trashed_at TIMESTAMP`,
     `ALTER TABLE folders ADD COLUMN IF NOT EXISTS color TEXT DEFAULT '#3174ff'`,
+    `ALTER TABLE folders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`,
     `CREATE INDEX IF NOT EXISTS idx_files_user_trashed ON files (user_id, is_trashed)`,
     `CREATE INDEX IF NOT EXISTS idx_files_starred ON files (user_id) WHERE is_starred = true`,
     `CREATE INDEX IF NOT EXISTS idx_files_name_search ON files (user_id, file_name)`,
@@ -296,8 +298,8 @@ export const initSchema = async () => {
     `CREATE INDEX IF NOT EXISTS idx_files_sort_date ON files (user_id, folder_id, created_at DESC) WHERE is_trashed = false`,
     `CREATE INDEX IF NOT EXISTS idx_files_sort_name ON files (user_id, folder_id, file_name ASC) WHERE is_trashed = false`,
     `CREATE INDEX IF NOT EXISTS idx_files_sort_size ON files (user_id, folder_id, file_size DESC) WHERE is_trashed = false`,
-    `DELETE FROM files WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER(PARTITION BY user_id, sha256_hash ORDER BY created_at DESC) as row_num FROM files WHERE sha256_hash IS NOT NULL AND is_trashed = false) t WHERE t.row_num > 1)`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS files_user_sha256_unique ON files (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL AND is_trashed = false`,
+    // The same content can legitimately appear in different folders; never delete it on startup.
+    `DROP INDEX IF EXISTS files_user_sha256_unique`,
     `CREATE INDEX IF NOT EXISTS idx_share_links_v2_owner_created ON share_links_v2 (owner_user_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_share_links_v2_slug ON share_links_v2 (slug)`,
     `CREATE INDEX IF NOT EXISTS idx_share_items_v2_share_path ON share_items_v2 (share_id, relative_path)`,
@@ -386,10 +388,18 @@ export const initSchema = async () => {
      `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS error_code TEXT`,
      `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS error_message TEXT`,
      `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS retryable BOOLEAN NOT NULL DEFAULT false`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS storage_delivery JSONB`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS finalizer_attempts INT NOT NULL DEFAULT 0`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS finalizer_retry_at TIMESTAMP`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS worker_lease_token UUID`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS worker_lease_until TIMESTAMP`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS client_upload_key TEXT`,
+     `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS client_seen_at TIMESTAMP`,
+     `CREATE UNIQUE INDEX IF NOT EXISTS upload_sessions_client_key ON upload_sessions (user_id, client_upload_key) WHERE client_upload_key IS NOT NULL AND status NOT IN ('failed', 'cancelled')`,
      `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()`,
      `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()`,
      `ALTER TABLE upload_sessions ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP`,
-     `UPDATE upload_sessions SET temp_file_path = CONCAT('/tmp/axya_uploads/', upload_id::text, '/partial.bin') WHERE temp_file_path = ''`,
+     `UPDATE upload_sessions SET temp_file_path = '${uploadRootSql}' || '/' || upload_id::text WHERE temp_file_path = ''`,
      `CREATE INDEX IF NOT EXISTS idx_upload_sessions_user_status_updated ON upload_sessions (user_id, status, updated_at DESC)`,
      `CREATE INDEX IF NOT EXISTS idx_upload_sessions_updated ON upload_sessions (updated_at DESC)`,
      `CREATE INDEX IF NOT EXISTS idx_upload_sessions_file_id ON upload_sessions (file_id)`,
@@ -464,42 +474,35 @@ export const initSchema = async () => {
      END $$`,
   ];
 
-  const cleanupLegacy = [
-    `DROP TRIGGER IF EXISTS trg_validate_shared_link_owner ON shared_links`,
-    `DROP FUNCTION IF EXISTS validate_shared_link_owner()`,
-    `DROP TABLE IF EXISTS access_logs`,
-    `DROP TABLE IF EXISTS shared_files`,
-    `DROP TABLE IF EXISTS shared_spaces`,
-    `DROP TABLE IF EXISTS shares`,
-    `DROP TABLE IF EXISTS shared_links`,
-  ];
-
+  const client = await pool.connect();
   try {
-    await pool.query(schema);
-    console.log('Schema initialized.');
-
-    for (const migration of migrations) {
-      try {
-        await pool.query(migration);
-      } catch (e: any) {
-        if (!e.message?.includes('already exists')) {
-          console.warn('Migration warning:', e.message);
-        }
-      }
-    }
-
-    for (const stmt of cleanupLegacy) {
-      try {
-        await pool.query(stmt);
-      } catch (e: any) {
-        console.warn('Legacy cleanup warning:', e.message);
-      }
-    }
-
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(910206)');
+    await client.query(schema);
+    await client.query(`CREATE TABLE IF NOT EXISTS file_versions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(), file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, snapshot JSONB NOT NULL, manifest JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+      CREATE INDEX IF NOT EXISTS idx_file_versions_owner ON file_versions(user_id,file_id,created_at DESC)`);
+    await client.query(migrations.join(';\n'));
+    await client.query(`CREATE TABLE IF NOT EXISTS file_requests (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),owner_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      folder_id UUID NOT NULL REFERENCES folders(id) ON DELETE CASCADE,title TEXT NOT NULL,slug TEXT UNIQUE NOT NULL,
+      key_hash TEXT NOT NULL,password_hash TEXT,expires_at TIMESTAMPTZ NOT NULL,revoked_at TIMESTAMPTZ,
+      max_bytes BIGINT NOT NULL,max_files INT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS file_request_uploads (
+        request_id UUID NOT NULL REFERENCES file_requests(id) ON DELETE CASCADE,client_key TEXT NOT NULL,
+        upload_id UUID,name TEXT NOT NULL,bytes BIGINT NOT NULL,created_at TIMESTAMPTZ DEFAULT NOW(),PRIMARY KEY(request_id,client_key));
+      ALTER TABLE file_request_uploads ALTER COLUMN upload_id TYPE UUID USING upload_id::uuid;
+      CREATE INDEX IF NOT EXISTS idx_request_upload_session ON file_request_uploads(request_id,upload_id)`);
+    await client.query('COMMIT');
     console.log('Migrations applied.');
   } catch (error) {
-    console.error('Error initializing database schema:', error);
+    await client.query('ROLLBACK');
+    console.error('Database schema initialization rolled back.');
     throw error;
+  } finally {
+    client.release();
   }
 };
 

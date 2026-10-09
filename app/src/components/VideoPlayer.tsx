@@ -1,380 +1,80 @@
-/**
- * VideoPlayer.tsx — Production video player with streaming badges
- *
- * ✅ expo-video with auth headers for Range-based streaming
- * ✅ Loading overlay with progressive status messages
- * ✅ "Streaming…" badge while Telegram download is in progress
- * ✅ "Downloaded" badge once file is fully cached
- * ✅ Error overlay with retry button
- * ✅ Smooth controls overlay: play/pause, mute/unmute
- */
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, AppState, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import { RotateCcw } from 'lucide-react-native';
+import { isLocalVideo, VideoPlayerProps } from '../utils/videoPlayback';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
-import { VideoView, useVideoPlayer } from 'expo-video';
-import { Play, Pause, Volume2, VolumeX, RotateCcw, Wifi, HardDrive } from 'lucide-react-native';
-import apiClient from '../services/apiClient';
-import { sanitizeRemoteUri } from '../utils/fileSafety';
-
-interface VideoPlayerProps {
-    url: string;
-    token: string;
-    width: number;
-    fileId?: string;  // For stream status polling
-    onError?: (error: any) => void;
-}
-
-type StreamBadge = 'none' | 'streaming' | 'downloaded';
-
-function VideoPlayer({ url, token, width: w, fileId, onError }: VideoPlayerProps) {
-    const [loading, setLoading] = useState(true);
-    const [muted, setMuted] = useState(false);
-    const [isPlaying, setIsPlaying] = useState(true);
-    const [loadError, setLoadError] = useState<string | null>(null);
-    const [loadingMsg, setLoadingMsg] = useState('Preparing video…');
-    const [streamBadge, setStreamBadge] = useState<StreamBadge>('none');
-    const [downloadProgress, setDownloadProgress] = useState(0);
-    const loadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const statusInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-    const loadStartedAtRef = useRef<number>(Date.now());
-    const statusFailureCountRef = useRef(0);
-    const safeUrl = sanitizeRemoteUri(url);
-
-    const logVideoPreview = useCallback((event: string, meta?: Record<string, unknown>) => {
-        if (__DEV__ || process.env.EXPO_PUBLIC_PREVIEW_DEBUG === '1') {
-            console.info('[preview-video]', event, meta || {});
-        }
-    }, []);
-
-    const player = useVideoPlayer(
-        { uri: safeUrl, headers: { Authorization: `Bearer ${token}` } },
-        (p) => {
-            p.loop = false;
-            p.muted = muted;
-            p.play();
-        }
-    );
-
-    // ── Stream status polling ────────────────────────────────────────────────
-    // Polls the backend for cache status to show Streaming/Downloaded badge
+function VideoPlayer({ url, token, width, onError }: VideoPlayerProps) {
+    const local = isLocalVideo(url);
+    const source = useMemo(() => ({ uri: url, contentType: 'progressive' as const,
+        ...(local ? {} : { headers: { Authorization: `Bearer ${token}` } }),
+    }), [url, token, local]);
+    const player = useVideoPlayer(source, p => {
+        p.loop = false;
+        p.bufferOptions = { preferredForwardBufferDuration: 15, minBufferForPlayback: 1.5, maxBufferBytes: 32 * 1024 * 1024 };
+        p.play();
+    });
+    const [loading, setLoading] = useState(player.status !== 'readyToPlay');
+    const [error, setError] = useState('');
+    const [slow, setSlow] = useState(false);
+    const [rate, setRate] = useState(1);
+    const hasPlayed = useRef(false);
+    const onErrorRef = useRef(onError);
+    onErrorRef.current = onError;
     useEffect(() => {
-        if (!fileId) return;
-
-        const pollStatus = async () => {
-            try {
-                const res = await apiClient.get(`/stream/${fileId}/status`);
-                statusFailureCountRef.current = 0;
-                if (res.data?.success) {
-                    const { status, progress } = res.data;
-                    if (status === 'ready') {
-                        setStreamBadge('downloaded');
-                        setDownloadProgress(100);
-                        // Stop polling once fully cached
-                        if (statusInterval.current) {
-                            clearInterval(statusInterval.current);
-                            statusInterval.current = null;
-                        }
-                    } else if (status === 'downloading') {
-                        setStreamBadge('streaming');
-                        setDownloadProgress(progress || 0);
-                    }
-                }
-            } catch {
-                statusFailureCountRef.current += 1;
-                if (statusFailureCountRef.current >= 3 && statusInterval.current) {
-                    clearInterval(statusInterval.current);
-                    statusInterval.current = null;
-                    setStreamBadge('none');
-                }
+        hasPlayed.current = false;
+        setError(''); setSlow(false); setRate(1);
+        const update = ({ status, error: failure }: { status: string; error?: { message: string } }) => {
+            if (status === 'error') {
+                const message = failure?.message || 'Video could not load. Check your connection and retry.';
+                setError(message); setLoading(false); onErrorRef.current?.(failure);
+            } else {
+                setLoading(status === 'loading' || status === 'idle');
+                if (status === 'readyToPlay') { setError(''); hasPlayed.current = true; }
             }
         };
-
-        // Initial check
-        pollStatus();
-
-        // Poll every 2 seconds during active streaming
-        statusInterval.current = setInterval(pollStatus, 2000);
-
-        return () => {
-            if (statusInterval.current) {
-                clearInterval(statusInterval.current);
-                statusInterval.current = null;
-            }
-            statusFailureCountRef.current = 0;
-        };
-    }, [fileId]);
-
-    // ── Progressive loading messages ─────────────────────────────────────────
+        const subscription = player.addListener('statusChange', update);
+        update({ status: player.status });
+        const appState = AppState.addEventListener('change', state => { if (state !== 'active') player.pause(); });
+        return () => { subscription.remove(); appState.remove(); };
+    }, [player, source]);
     useEffect(() => {
+        setSlow(false);
         if (!loading) return;
-
-        loadTimer.current = setTimeout(() => {
-            setLoadingMsg('Downloading from Telegram…');
-        }, 3000);
-
-        const t2 = setTimeout(() => {
-            setLoadingMsg('Still loading — large files take longer…');
-        }, 10000);
-
-        const t3 = setTimeout(() => {
-            setLoadingMsg('Almost there…');
-        }, 25000);
-
-        return () => {
-            if (loadTimer.current) clearTimeout(loadTimer.current);
-            clearTimeout(t2);
-            clearTimeout(t3);
-        };
+        const timer = setTimeout(() => setSlow(true), 12000);
+        return () => clearTimeout(timer);
     }, [loading]);
-
-    useEffect(() => {
-        setLoading(true);
-        setLoadError(null);
-        setLoadingMsg('Preparing video…');
-        loadStartedAtRef.current = Date.now();
-        logVideoPreview('stream_load_start', { fileId, url: safeUrl });
-
-        const sub = player.addListener('statusChange', (payload: any) => {
-            if (payload?.error) {
-                const message = payload.error?.message || 'Video failed to load';
-                logVideoPreview('stream_load_error', {
-                    fileId,
-                    durationMs: Date.now() - loadStartedAtRef.current,
-                    error: message,
-                });
-                setLoadError(message);
-                setLoading(false);
-                onError?.(payload.error);
-                return;
-            }
-            if (payload?.status === 'readyToPlay') {
-                const durationMs = Date.now() - loadStartedAtRef.current;
-                logVideoPreview('stream_load_ready', { fileId, durationMs, slow: durationMs > 1500 });
-                setLoading(false);
-            }
-        });
-        return () => sub.remove();
-    }, [player, onError, fileId, safeUrl, logVideoPreview]);
-
-    useEffect(() => {
-        const sub = player.addListener('playingChange', (payload) => {
-            setIsPlaying(payload.isPlaying);
-        });
-        return () => sub.remove();
-    }, [player]);
-
-    useEffect(() => {
-        player.muted = muted;
-    }, [muted, player]);
-
-    const togglePlay = useCallback(() => {
-        if (isPlaying) player.pause();
-        else player.play();
-    }, [isPlaying, player]);
-
-    const toggleMute = useCallback(() => {
-        setMuted((m) => !m);
-    }, []);
-
-    const handleRetry = useCallback(() => {
-        setLoadError(null);
-        setLoading(true);
-        setLoadingMsg('Retrying…');
-        player.replace({ uri: safeUrl, headers: { Authorization: `Bearer ${token}` } });
-        player.play();
-    }, [player, safeUrl, token]);
-
-    return (
-        <View style={[s.container, { width: w, height: w * 0.5625 }]}>
-            <VideoView
-                player={player}
-                style={StyleSheet.absoluteFill}
-                contentFit="contain"
-                nativeControls
-                onPointerEnter={() => { }}
-            />
-
-            {/* ── Loading Overlay ──────────────────────────────────────── */}
-            {loading && !loadError && (
-                <View style={s.overlay}>
-                    <ActivityIndicator size="large" color="#4B6EF5" />
-                    <Text style={s.loadingText}>{loadingMsg}</Text>
-                    {downloadProgress > 0 && downloadProgress < 100 && (
-                        <Text style={s.progressText}>{downloadProgress}% cached</Text>
-                    )}
-                </View>
-            )}
-
-            {/* ── Error Overlay ──────────────────────────────────────── */}
-            {loadError && (
-                <View style={s.errorOverlay}>
-                    <Text style={s.errorText} numberOfLines={3}>
-                        {loadError}
-                    </Text>
-                    <TouchableOpacity style={s.retryBtn} onPress={handleRetry}>
-                        <RotateCcw color="#fff" size={16} />
-                        <Text style={s.retryText}>Retry</Text>
-                    </TouchableOpacity>
-                </View>
-            )}
-
-            {/* ── Controls Overlay ────────────────────────────────────── */}
-            <View style={s.controlsOverlay}>
-                <View style={s.topRow}>
-                    {/* Stream badge */}
-                    {streamBadge !== 'none' && !loading && (
-                        <View style={[
-                            s.streamBadge,
-                            streamBadge === 'downloaded' ? s.downloadedBadge : s.streamingBadge,
-                        ]}>
-                            {streamBadge === 'streaming' ? (
-                                <Wifi color="#fff" size={12} />
-                            ) : (
-                                <HardDrive color="#fff" size={12} />
-                            )}
-                            <Text style={s.badgeText}>
-                                {streamBadge === 'streaming'
-                                    ? `Caching… ${downloadProgress}%`
-                                    : 'Downloaded'
-                                }
-                            </Text>
-                        </View>
-                    )}
-                    <View style={{ flex: 1 }} />
-                    <TouchableOpacity style={s.iconBtn} onPress={toggleMute}>
-                        {muted
-                            ? <VolumeX color="#fff" size={20} />
-                            : <Volume2 color="#fff" size={20} />
-                        }
-                    </TouchableOpacity>
-                </View>
-
-                <View style={s.centerRow}>
-                    {!loading && !loadError && (
-                        <TouchableOpacity style={s.playBtn} onPress={togglePlay}>
-                            {isPlaying
-                                ? <Pause color="#fff" size={32} fill="#fff" />
-                                : <Play color="#fff" size={32} fill="#fff" />
-                            }
-                        </TouchableOpacity>
-                    )}
-                </View>
-
-                <View style={s.bottomRow} />
-            </View>
-        </View>
-    );
+    const retry = async () => {
+        const position = player.currentTime;
+        setError(''); setLoading(true);
+        try { await player.replaceAsync(source); player.currentTime = position; player.play(); }
+        catch (failure) { setLoading(false); setError('Video could not load. Check your connection and retry.'); onErrorRef.current?.(failure); }
+    };
+    return <View style={[styles.root, { width, height: width * 0.5625 }]}>
+        <VideoView player={player} style={StyleSheet.absoluteFill} contentFit="contain" nativeControls fullscreenOptions={{ enable: true }} />
+        {loading && !error && <View pointerEvents="none" style={styles.loading}>
+            <ActivityIndicator color="#FFFFFF" />
+            <Text style={styles.label}>{slow ? 'Taking longer to load. Check your connection.' : hasPlayed.current ? 'Buffering…' : 'Preparing video…'}</Text>
+        </View>}
+        {!loading && !error && <Pressable accessibilityRole="button" accessibilityLabel={`Playback speed ${rate} times. Change speed`}
+            style={styles.speed} onPress={() => { const next = rate === 1 ? 1.5 : rate === 1.5 ? 2 : 1; player.playbackRate = next; setRate(next); }}>
+            <Text style={styles.speedText}>{rate}×</Text>
+        </Pressable>}
+        {!!error && <View style={styles.error}>
+            <Text accessibilityRole="alert" style={styles.label}>{error}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="Retry video" style={styles.retry} onPress={() => void retry()}>
+                <RotateCcw color="#FFFFFF" size={18} /><Text style={styles.speedText}>Retry</Text>
+            </Pressable>
+        </View>}
+    </View>;
 }
-
 export default React.memo(VideoPlayer);
-
-const s = StyleSheet.create({
-    container: {
-        backgroundColor: '#000',
-        justifyContent: 'center',
-        alignItems: 'center',
-        overflow: 'hidden',
-    },
-    overlay: {
-        ...StyleSheet.absoluteFillObject,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: 'rgba(0,0,0,0.55)',
-        gap: 12,
-    },
-    loadingText: {
-        color: 'rgba(255,255,255,0.8)',
-        fontSize: 13,
-        fontWeight: '600',
-        textAlign: 'center',
-        marginTop: 4,
-    },
-    progressText: {
-        color: 'rgba(255,255,255,0.5)',
-        fontSize: 11,
-        fontWeight: '500',
-    },
-    errorOverlay: {
-        ...StyleSheet.absoluteFillObject,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: 'rgba(0,0,0,0.65)',
-        paddingHorizontal: 24,
-        gap: 16,
-    },
-    errorText: {
-        color: '#fff',
-        fontSize: 13,
-        textAlign: 'center',
-    },
-    retryBtn: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        backgroundColor: '#4B6EF5',
-        paddingHorizontal: 20,
-        paddingVertical: 10,
-        borderRadius: 12,
-    },
-    retryText: {
-        color: '#fff',
-        fontSize: 14,
-        fontWeight: '700',
-    },
-    controlsOverlay: {
-        ...StyleSheet.absoluteFillObject,
-        justifyContent: 'space-between',
-        padding: 16,
-    },
-    topRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    centerRow: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    bottomRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    playBtn: {
-        width: 64,
-        height: 64,
-        borderRadius: 32,
-        backgroundColor: 'rgba(255,255,255,0.2)',
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    iconBtn: {
-        width: 36,
-        height: 36,
-        borderRadius: 18,
-        backgroundColor: 'rgba(0,0,0,0.4)',
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-
-    // ── Stream badge ─────────────────────────────────────────────────────
-    streamBadge: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 5,
-        paddingHorizontal: 10,
-        paddingVertical: 5,
-        borderRadius: 12,
-    },
-    streamingBadge: {
-        backgroundColor: 'rgba(245, 158, 11, 0.8)', // amber
-    },
-    downloadedBadge: {
-        backgroundColor: 'rgba(16, 185, 129, 0.8)', // green
-    },
-    badgeText: {
-        color: '#fff',
-        fontSize: 11,
-        fontWeight: '700',
-        letterSpacing: 0.2,
-    },
+const styles = StyleSheet.create({
+    root: { backgroundColor: '#090E1A', overflow: 'hidden' },
+    loading: { position: 'absolute', top: 12, left: 12, right: 12, padding: 12, gap: 8, alignItems: 'center', borderRadius: 16, backgroundColor: 'rgba(9,14,26,0.8)' },
+    label: { color: '#FFFFFF', fontSize: 13, lineHeight: 20, textAlign: 'center' },
+    speed: { position: 'absolute', top: 12, right: 12, paddingHorizontal: 14, minHeight: 44, justifyContent: 'center', borderRadius: 22, backgroundColor: 'rgba(9,14,26,0.75)' },
+    speedText: { color: '#FFFFFF', fontWeight: '600' },
+    error: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', padding: 20, gap: 16, backgroundColor: 'rgba(9,14,26,0.92)' },
+    retry: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#3174FF', paddingHorizontal: 22, minHeight: 44, borderRadius: 22 },
 });

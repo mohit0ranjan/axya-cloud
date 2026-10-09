@@ -1,0 +1,2 @@
+const test=require('node:test'),assert=require('node:assert/strict'),{safeInlineMime,isAllowedUploadMime}=require('../../dist/utils/uploadMime');
+test('arbitrary files can be stored but active HTML and SVG cannot execute through media endpoints',()=>{for(const mime of ['text/html','image/svg+xml','application/javascript','application/octet-stream']){assert.equal(isAllowedUploadMime(mime),true);assert.equal(safeInlineMime(mime),'application/octet-stream');}for(const mime of ['image/jpeg','video/mp4','audio/mpeg','application/pdf'])assert.equal(safeInlineMime(mime),mime);});

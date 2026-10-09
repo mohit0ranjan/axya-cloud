@@ -1,390 +1,516 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import {
-    View, Text, StyleSheet,
-    StatusBar, Animated, Easing, KeyboardAvoidingView, Platform,
-    TouchableOpacity, Keyboard, TouchableWithoutFeedback
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft } from 'lucide-react-native';
+  View,
+  Text,
+  TextInput,
+  StyleSheet,
+  StatusBar,
+  Animated,
+  Easing,
+  KeyboardAvoidingView,
+  Platform,
+  TouchableOpacity,
+  Keyboard,
+  TouchableWithoutFeedback,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { ArrowLeft } from "lucide-react-native";
 
-import { useTheme } from '../context/ThemeContext';
-import { useAuth } from '../context/AuthContext';
-import { sendOtp, verifyOtp } from '../services/authService';
+import { useTheme } from "../context/ThemeContext";
+import { useAuth } from "../context/AuthContext";
+import { sendOtp, verifyOtp } from "../services/authService";
 
-import HeroSection from '../components/HeroSection';
-import LoginCard from '../components/LoginCard';
-import PhoneInputField from '../components/PhoneInputField';
-import OTPInput from '../components/OTPInput';
-import PrimaryButton from '../components/PrimaryButton';
+import HeroSection from "../components/HeroSection";
+import LoginCard from "../components/LoginCard";
+import PhoneInputField from "../components/PhoneInputField";
+import OTPInput from "../components/OTPInput";
+import PrimaryButton from "../components/PrimaryButton";
 
 export default function AuthScreen({ navigation }: any) {
-    const { login } = useAuth();
-    const { theme, isDark } = useTheme();
-    const C = theme.colors;
-    const styles = useMemo(() => createStyles(C, isDark), [C, isDark]);
+  const { login } = useAuth();
+  const { theme, isDark } = useTheme();
+  const C = theme.colors;
+  const styles = useMemo(() => createStyles(C, isDark), [C, isDark]);
 
-    const [step, setStep] = useState<'phone' | 'otp'>('phone');
-    const [isLoading, setIsLoading] = useState(false);
-    const [phone, setPhone] = useState('');
-    const [otp, setOtp] = useState('');
-    const [error, setError] = useState<string | undefined>();
+  const [step, setStep] = useState<"phone" | "otp">("phone");
+  const [isLoading, setIsLoading] = useState(false);
+  const [phone, setPhone] = useState("+91");
+  const [password, setPassword] = useState("");
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [otp, setOtp] = useState("");
+  const [error, setError] = useState<string | undefined>();
 
-    const [tempSession, setTempSession] = useState('');
-    const [phoneCodeHash, setPhoneCodeHash] = useState('');
-    const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [tempSession, setTempSession] = useState("");
+  const [phoneCodeHash, setPhoneCodeHash] = useState("");
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
 
-    // Fix #1: Guard against double-submit race condition
-    const isVerifying = useRef(false);
-    // Fix #5: Only auto-focus on initial mount
-    const hasAutoFocused = useRef(false);
+  // Fix #1: Guard against double-submit race condition
+  const isVerifying = useRef(false);
+  // Fix #5: Only auto-focus on initial mount
+  const hasAutoFocused = useRef(false);
 
-    // Hero Animations
-    const heroOpacity = useRef(new Animated.Value(0)).current;
-    const heroScale = useRef(new Animated.Value(0.85)).current;
-    const heroShrink = useRef(new Animated.Value(1)).current;
-    const heroFadeOut = useRef(new Animated.Value(1)).current;
+  // Hero Animations
+  const heroOpacity = useRef(new Animated.Value(0)).current;
+  const heroScale = useRef(new Animated.Value(0.85)).current;
+  const heroShrink = useRef(new Animated.Value(1)).current;
+  const heroFadeOut = useRef(new Animated.Value(1)).current;
 
-    // Step Transition Animation
-    const stepAnim = useRef(new Animated.Value(0)).current;
+  // Step Transition Animation
+  const stepAnim = useRef(new Animated.Value(0)).current;
 
-    // Fix #8: Animated step dot values
-    const dot1Width = useRef(new Animated.Value(24)).current;
-    const dot2Width = useRef(new Animated.Value(8)).current;
-    const dot1Color = useRef(new Animated.Value(1)).current;  // 1 = active, 0 = inactive
-    const dot2Color = useRef(new Animated.Value(0)).current;
+  // Fix #8: Animated step dot values
+  const dot1Width = useRef(new Animated.Value(24)).current;
+  const dot2Width = useRef(new Animated.Value(8)).current;
+  const dot1Color = useRef(new Animated.Value(1)).current; // 1 = active, 0 = inactive
+  const dot2Color = useRef(new Animated.Value(0)).current;
 
-    useEffect(() => {
-        Animated.parallel([
-            Animated.spring(heroScale, { toValue: 1, tension: 52, friction: 8, useNativeDriver: true }),
-            Animated.timing(heroOpacity, { toValue: 1, duration: 600, useNativeDriver: true }),
-        ]).start();
-    }, []);
+  useEffect(() => {
+    Animated.parallel([
+      Animated.spring(heroScale, {
+        toValue: 1,
+        tension: 52,
+        friction: 8,
+        useNativeDriver: true,
+      }),
+      Animated.timing(heroOpacity, {
+        toValue: 1,
+        duration: 600,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, []);
 
-    useEffect(() => {
-        const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-        const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+  useEffect(() => {
+    const showEvent =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
 
-        const onShow = () => {
-            setIsKeyboardVisible(true);
-            Animated.parallel([
-                Animated.timing(heroShrink, { toValue: 0.65, duration: 250, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-                Animated.timing(heroFadeOut, { toValue: 0.0, duration: 200, useNativeDriver: true }),
-            ]).start();
-        };
-        const onHide = () => {
-            setIsKeyboardVisible(false);
-            Animated.parallel([
-                Animated.timing(heroShrink, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-                Animated.timing(heroFadeOut, { toValue: 1, duration: 280, useNativeDriver: true }),
-            ]).start();
-        };
-
-        const sub1 = Keyboard.addListener(showEvent, onShow);
-        const sub2 = Keyboard.addListener(hideEvent, onHide);
-        return () => { sub1.remove(); sub2.remove(); };
-    }, []);
-
-    // Fix #8: Animate step dots when step changes
-    useEffect(() => {
-        const isOtp = step === 'otp';
-        Animated.parallel([
-            Animated.timing(dot1Width, { toValue: isOtp ? 8 : 24, duration: 300, useNativeDriver: false }),
-            Animated.timing(dot2Width, { toValue: isOtp ? 24 : 8, duration: 300, useNativeDriver: false }),
-            Animated.timing(dot1Color, { toValue: isOtp ? 0 : 1, duration: 300, useNativeDriver: false }),
-            Animated.timing(dot2Color, { toValue: isOtp ? 1 : 0, duration: 300, useNativeDriver: false }),
-        ]).start();
-    }, [step]);
-
-    const animateStep = useCallback(() => {
-        stepAnim.setValue(0);
-        Animated.timing(stepAnim, {
-            toValue: 1,
-            duration: 400,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true
-        }).start();
-    }, []);
-
-    const handleSendCode = async () => {
-        if (!phone || phone.length !== 10) {
-            setError('Please enter a valid 10-digit number');
-            return;
-        }
-
-        setError(undefined);
-        setIsLoading(true);
-
-        try {
-            const fullPhone = `+91${phone}`;
-            const result = await sendOtp(fullPhone);
-            setTempSession(result.tempSession);
-            setPhoneCodeHash(result.phoneCodeHash);
-            animateStep();
-            setStep('otp');
-        } catch (e: any) {
-            setError(e?.message || 'Network error. Please try again.');
-        } finally {
-            setIsLoading(false);
-        }
+    const onShow = () => {
+      setIsKeyboardVisible(true);
+      Animated.parallel([
+        Animated.timing(heroShrink, {
+          toValue: 0.65,
+          duration: 250,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(heroFadeOut, {
+          toValue: 0.0,
+          duration: 200,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    };
+    const onHide = () => {
+      setIsKeyboardVisible(false);
+      Animated.parallel([
+        Animated.timing(heroShrink, {
+          toValue: 1,
+          duration: 300,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(heroFadeOut, {
+          toValue: 1,
+          duration: 280,
+          useNativeDriver: true,
+        }),
+      ]).start();
     };
 
-    // Fix #1: Race-condition-safe OTP verification
-    const handleVerifyOtp = async (inputOtp?: string) => {
-        const otpToVerify = inputOtp || otp;
-        if (!otpToVerify || otpToVerify.length < 5) return;
-
-        // Prevent double-submit
-        if (isVerifying.current) return;
-        isVerifying.current = true;
-
-        setError(undefined);
-        setIsLoading(true);
-        try {
-            const fullPhone = `+91${phone}`;
-            const result = await verifyOtp({
-                phoneNumber: fullPhone,
-                phoneCodeHash,
-                phoneCode: otpToVerify,
-                tempSession,
-            });
-            await login(result.token, result.user);
-        } catch (e: any) {
-            setError(e?.message || 'Verification failed');
-        } finally {
-            setIsLoading(false);
-            isVerifying.current = false;
-        }
+    const sub1 = Keyboard.addListener(showEvent, onShow);
+    const sub2 = Keyboard.addListener(hideEvent, onHide);
+    return () => {
+      sub1.remove();
+      sub2.remove();
     };
+  }, []);
 
-    const stepFadeIn = stepAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
-    const stepSlide = stepAnim.interpolate({ inputRange: [0, 1], outputRange: [24, 0] });
-    const keyboardOffset = Platform.OS === 'ios' ? 0 : 20;
+  // Fix #8: Animate step dots when step changes
+  useEffect(() => {
+    const isOtp = step === "otp";
+    Animated.parallel([
+      Animated.timing(dot1Width, {
+        toValue: isOtp ? 8 : 24,
+        duration: 300,
+        useNativeDriver: false,
+      }),
+      Animated.timing(dot2Width, {
+        toValue: isOtp ? 24 : 8,
+        duration: 300,
+        useNativeDriver: false,
+      }),
+      Animated.timing(dot1Color, {
+        toValue: isOtp ? 0 : 1,
+        duration: 300,
+        useNativeDriver: false,
+      }),
+      Animated.timing(dot2Color, {
+        toValue: isOtp ? 1 : 0,
+        duration: 300,
+        useNativeDriver: false,
+      }),
+    ]).start();
+  }, [step]);
 
-    // Fix #8: Interpolate dot colors
-    const dot1BgColor = dot1Color.interpolate({
-        inputRange: [0, 1],
-        outputRange: [isDark ? '#334155' : '#E2E8F0', C.primary],
-    });
-    const dot2BgColor = dot2Color.interpolate({
-        inputRange: [0, 1],
-        outputRange: [isDark ? '#334155' : '#E2E8F0', C.primary],
-    });
+  const animateStep = useCallback(() => {
+    stepAnim.setValue(0);
+    Animated.timing(stepAnim, {
+      toValue: 1,
+      duration: 400,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, []);
 
-    // Fix #5: Compute autoFocus only once on mount
-    const shouldAutoFocus = !hasAutoFocused.current && step === 'phone';
-    if (shouldAutoFocus) hasAutoFocused.current = true;
+  const handleSendCode = async () => {
+    if (!/^\+[1-9]\d{6,14}$/.test(phone)) {
+      setError("Enter your phone number including its country code");
+      return;
+    }
 
-    return (
-        <SafeAreaView style={styles.root} edges={['top', 'left', 'right']}>
-            <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor={C.background} />
+    setError(undefined);
+    setIsLoading(true);
 
-            {/* Back Button */}
-            <TouchableOpacity style={styles.backBtn} onPress={() => navigation?.goBack()}>
-                <View style={styles.backIconCircle}>
-                    <ArrowLeft color={C.textHeading} size={22} strokeWidth={2.5} />
-                </View>
-            </TouchableOpacity>
+    try {
+      const fullPhone = phone;
+      const result = await sendOtp(fullPhone);
+      setTempSession(result.tempSession);
+      setPhoneCodeHash(result.phoneCodeHash);
+      animateStep();
+      setStep("otp");
+    } catch (e: any) {
+      setError(e?.message || "Network error. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-            <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-                keyboardVerticalOffset={keyboardOffset}
-                style={styles.keyboardContainer}
+  // Fix #1: Race-condition-safe OTP verification
+  const handleVerifyOtp = async (inputOtp?: string) => {
+    const otpToVerify = inputOtp || otp;
+    if (!otpToVerify || otpToVerify.length < 5) return;
+
+    // Prevent double-submit
+    if (isVerifying.current) return;
+    isVerifying.current = true;
+
+    setError(undefined);
+    setIsLoading(true);
+    try {
+      const fullPhone = phone;
+      const result = await verifyOtp({
+        phoneNumber: fullPhone,
+        phoneCodeHash,
+        phoneCode: otpToVerify,
+        tempSession,
+        password: needsPassword ? password : undefined,
+      });
+      await login(result.token, result.user);
+    } catch (e: any) {
+      if (e?.code === "TELEGRAM_2FA_REQUIRED") setNeedsPassword(true);
+      setError(e?.message || "Verification failed");
+    } finally {
+      setIsLoading(false);
+      isVerifying.current = false;
+    }
+  };
+
+  const stepFadeIn = stepAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
+  const stepSlide = stepAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [24, 0],
+  });
+  const keyboardOffset = Platform.OS === "ios" ? 0 : 20;
+
+  // Fix #8: Interpolate dot colors
+  const dot1BgColor = dot1Color.interpolate({
+    inputRange: [0, 1],
+    outputRange: [isDark ? "#334155" : "#E2E8F0", C.primary],
+  });
+  const dot2BgColor = dot2Color.interpolate({
+    inputRange: [0, 1],
+    outputRange: [isDark ? "#334155" : "#E2E8F0", C.primary],
+  });
+
+  // Fix #5: Compute autoFocus only once on mount
+  const shouldAutoFocus = !hasAutoFocused.current && step === "phone";
+  if (shouldAutoFocus) hasAutoFocused.current = true;
+
+  return (
+    <SafeAreaView style={styles.root} edges={["top", "left", "right"]}>
+      <StatusBar
+        barStyle={isDark ? "light-content" : "dark-content"}
+        backgroundColor={C.background}
+      />
+
+      {/* Back Button */}
+      <TouchableOpacity
+        style={styles.backBtn}
+        onPress={() => navigation?.goBack()}
+      >
+        <View style={styles.backIconCircle}>
+          <ArrowLeft color={C.textHeading} size={22} strokeWidth={2.5} />
+        </View>
+      </TouchableOpacity>
+
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={keyboardOffset}
+        style={styles.keyboardContainer}
+      >
+        <View style={styles.contentContainer}>
+          <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+            <View
+              style={styles.heroWrapper}
+              pointerEvents={isKeyboardVisible ? "none" : "auto"}
             >
-                <View style={styles.contentContainer}>
-                    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-                        <View style={styles.heroWrapper} pointerEvents={isKeyboardVisible ? 'none' : 'auto'}>
-                            <HeroSection
-                                keyboardVisible={isKeyboardVisible}
-                                heroOpacity={heroOpacity}
-                                heroScale={heroScale}
-                                heroShrink={heroShrink}
-                                heroFadeOut={heroFadeOut}
-                            />
-                        </View>
-                    </TouchableWithoutFeedback>
+              <HeroSection
+                keyboardVisible={isKeyboardVisible}
+                heroOpacity={heroOpacity}
+                heroScale={heroScale}
+                heroShrink={heroShrink}
+                heroFadeOut={heroFadeOut}
+              />
+            </View>
+          </TouchableWithoutFeedback>
 
-                    <LoginCard keyboardVisible={isKeyboardVisible}>
-                        <View style={styles.sheetHeader}>
-                            <Text style={styles.sheetTitle}>
-                                {step === 'phone' ? 'Welcome Back' : 'Verification'}
-                            </Text>
-                            <Text style={styles.sheetSubtitle}>
-                                {step === 'phone'
-                                    ? 'Enter your phone number to continue'
-                                    : `Code sent to +91 ${phone.substring(0, 5)} ${phone.substring(5)}`
-                                }
-                            </Text>
-                        </View>
+          <LoginCard keyboardVisible={isKeyboardVisible}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>
+                {step === "phone" ? "Sign in to Axya" : "Check your Telegram"}
+              </Text>
+              <Text style={styles.sheetSubtitle}>
+                {step === "phone"
+                  ? "Enter your phone number to continue"
+                  : `Code sent to ${phone}`}
+              </Text>
+            </View>
 
-                        {/* Fix #8: Animated step dots */}
-                        <View style={styles.stepDots}>
-                            <Animated.View style={[styles.stepDot, {
-                                backgroundColor: dot1BgColor as any,
-                                width: dot1Width,
-                            }]} />
-                            <Animated.View style={[styles.stepDot, {
-                                backgroundColor: dot2BgColor as any,
-                                width: dot2Width,
-                            }]} />
-                        </View>
+            {/* Fix #8: Animated step dots */}
+            <View style={styles.stepDots}>
+              <Animated.View
+                style={[
+                  styles.stepDot,
+                  {
+                    backgroundColor: dot1BgColor as any,
+                    width: dot1Width,
+                  },
+                ]}
+              />
+              <Animated.View
+                style={[
+                  styles.stepDot,
+                  {
+                    backgroundColor: dot2BgColor as any,
+                    width: dot2Width,
+                  },
+                ]}
+              />
+            </View>
 
-                        {step === 'phone' ? (
-                            <View style={styles.formArea}>
-                                <PhoneInputField
-                                    value={phone}
-                                    onChangeText={(text) => {
-                                        setPhone(text);
-                                        setError(undefined);
-                                    }}
-                                    error={error}
-                                    editable={!isLoading}
-                                    autoFocus={shouldAutoFocus}
-                                    onSubmitEditing={handleSendCode}
-                                />
+            {step === "phone" ? (
+              <View style={styles.formArea}>
+                <PhoneInputField
+                  value={phone}
+                  onChangeText={(text) => {
+                    setPhone(text);
+                    setError(undefined);
+                  }}
+                  error={error}
+                  editable={!isLoading}
+                  autoFocus={false}
+                  onSubmitEditing={handleSendCode}
+                />
 
-                                {/* Fix #10: Use StyleSheet spacer instead of inline */}
-                                <View style={styles.spacerSm} />
+                {/* Fix #10: Use StyleSheet spacer instead of inline */}
+                <View style={styles.spacerSm} />
 
-                                <PrimaryButton
-                                    onPress={handleSendCode}
-                                    disabled={phone.length !== 10}
-                                    loading={isLoading}
-                                    label="Continue"
-                                />
-                            </View>
-                        ) : (
-                            <Animated.View style={[styles.formArea, {
-                                opacity: stepFadeIn,
-                                transform: [{ translateY: stepSlide }]
-                            }]}>
-                                <OTPInput
-                                    value={otp}
-                                    onChange={(val) => {
-                                        setOtp(val);
-                                        setError(undefined);
-                                        if (val.length === 5) handleVerifyOtp(val);
-                                    }}
-                                    length={5}
-                                    onResend={handleSendCode}
-                                    loading={isLoading}
-                                    error={error}
-                                />
+                <PrimaryButton
+                  onPress={handleSendCode}
+                  disabled={!/^\+[1-9]\d{6,14}$/.test(phone)}
+                  loading={isLoading}
+                  label="Continue"
+                />
+              </View>
+            ) : (
+              <Animated.View
+                style={[
+                  styles.formArea,
+                  {
+                    opacity: stepFadeIn,
+                    transform: [{ translateY: stepSlide }],
+                  },
+                ]}
+              >
+                <OTPInput
+                  value={otp}
+                  onChange={(val) => {
+                    setOtp(val);
+                    setError(undefined);
+                    if (val.length === 5 && !needsPassword)
+                      handleVerifyOtp(val);
+                  }}
+                  length={5}
+                  onResend={handleSendCode}
+                  loading={isLoading}
+                  error={error}
+                />
 
-                                <View style={styles.spacerSm} />
+                {needsPassword && (
+                  <View style={{ marginTop: 16 }}>
+                    <Text style={{ color: C.textBody, marginBottom: 8 }}>
+                      Telegram two-step verification password
+                    </Text>
+                    <TextInput
+                      accessibilityLabel="Telegram two-step verification password"
+                      secureTextEntry
+                      autoComplete="current-password"
+                      value={password}
+                      onChangeText={setPassword}
+                      editable={!isLoading}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: C.border,
+                        borderRadius: 12,
+                        padding: 14,
+                        color: C.textBody,
+                      }}
+                    />
+                  </View>
+                )}
+                <View style={styles.spacerSm} />
 
-                                <PrimaryButton
-                                    onPress={() => handleVerifyOtp()}
-                                    disabled={otp.length < 5}
-                                    loading={isLoading}
-                                    label="Verify & Sign In"
-                                />
+                <PrimaryButton
+                  onPress={() => handleVerifyOtp()}
+                  disabled={otp.length < 5 || (needsPassword && !password)}
+                  loading={isLoading}
+                  label="Verify & Sign In"
+                />
 
-                                <TouchableOpacity
-                                    onPress={() => {
-                                        setStep('phone');
-                                        setOtp('');
-                                        setError(undefined);
-                                    }}
-                                    style={styles.backLink}
-                                    disabled={isLoading}
-                                >
-                                    <Text style={styles.backLinkText}>Wrong number? Edit</Text>
-                                </TouchableOpacity>
-                            </Animated.View>
-                        )}
+                <TouchableOpacity
+                  onPress={() => {
+                    setStep("phone");
+                    setOtp("");
+                    setNeedsPassword(false);
+                    setPassword("");
+                    setError(undefined);
+                  }}
+                  style={styles.backLink}
+                  disabled={isLoading}
+                >
+                  <Text style={styles.backLinkText}>Wrong number? Edit</Text>
+                </TouchableOpacity>
+              </Animated.View>
+            )}
 
-                        <Text style={styles.finePrint}>
-                            Protected by MTProto · End-to-End Encrypted
-                        </Text>
-                    </LoginCard>
-
-                </View>
-            </KeyboardAvoidingView>
-        </SafeAreaView>
-    );
+            <Text style={styles.finePrint}>
+              Stored in your Telegram account · Encrypted in transit
+            </Text>
+          </LoginCard>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
 }
 
-const createStyles = (C: any, isDark: boolean) => StyleSheet.create({
+const createStyles = (C: any, isDark: boolean) =>
+  StyleSheet.create({
     root: {
-        flex: 1,
-        backgroundColor: C.background
+      flex: 1,
+      backgroundColor: C.background,
     },
     keyboardContainer: {
-        flex: 1
+      flex: 1,
     },
     contentContainer: {
-        flex: 1,
-        justifyContent: 'space-between'
+      flex: 1,
+      justifyContent: "space-between",
+      paddingHorizontal: 20,
+      paddingBottom: 24,
     },
     heroWrapper: {
-        flex: 1,
-        width: '100%'
+      flex: 1,
+      width: "100%",
     },
-    backBtn: {
-        position: 'absolute',
-        top: Platform.OS === 'ios' ? 60 : 24,
-        left: 20,
-        zIndex: 20,
-    },
+    backBtn: { position: "absolute", left: 20, zIndex: 20, top: 16 },
     backIconCircle: {
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        backgroundColor: isDark ? 'rgba(0, 0, 0, 0.4)' : 'rgba(255, 255, 255, 0.6)',
-        justifyContent: 'center',
-        alignItems: 'center',
+      width: 44,
+      height: 44,
+      backgroundColor: isDark
+        ? "rgba(0, 0, 0, 0.4)"
+        : "rgba(255, 255, 255, 0.6)",
+      justifyContent: "center",
+      alignItems: "center",
+      borderRadius: 14,
     },
     sheetHeader: {
-        alignItems: 'center',
-        gap: 6,
-        marginTop: 4,
+      gap: 6,
+      marginTop: 4,
+      alignItems: "flex-start",
+      width: "100%",
     },
     sheetTitle: {
-        fontSize: 26,
-        fontWeight: '600',
-        color: C.textHeading,
-        letterSpacing: -0.3,
-        textAlign: 'center',
+      fontWeight: "600",
+      color: C.textHeading,
+      fontSize: 28,
+      lineHeight: 36,
+      textAlign: "left",
+      letterSpacing: -0.7,
+      fontFamily: "Inter_600SemiBold",
     },
     sheetSubtitle: {
-        fontSize: 15,
-        color: C.textBody,
-        textAlign: 'center',
-        lineHeight: 22,
-        fontWeight: '400',
+      color: C.textBody,
+      lineHeight: 22,
+      fontWeight: "400",
+      fontSize: 14,
+      textAlign: "left",
+      fontFamily: "Inter_400Regular",
     },
     stepDots: {
-        flexDirection: 'row',
-        gap: 6,
-        alignItems: 'center'
+      flexDirection: "row",
+      gap: 6,
+      alignItems: "center",
     },
     stepDot: {
-        height: 6,
-        borderRadius: 3
+      height: 6,
+      borderRadius: 3,
     },
-    formArea: {
-        width: '100%',
-        gap: 16
-    },
+    formArea: { width: "100%", gap: 12 },
     spacerSm: {
-        height: 8,
+      height: 8,
     },
     backLink: {
-        alignItems: 'center',
-        marginTop: 8,
-        paddingVertical: 4,
+      alignItems: "center",
+      marginTop: 8,
+      paddingVertical: 4,
+      minHeight: 44,
+      justifyContent: "center",
     },
     backLinkText: {
-        fontSize: 15,
-        color: C.textBody,
-        fontWeight: '600'
+      fontSize: 15,
+      color: C.textBody,
+      fontWeight: "600",
+      fontFamily: "Inter_600SemiBold",
     },
     finePrint: {
-        fontSize: 12,
-        color: C.muted || '#94A3B8',
-        textAlign: 'center',
-        marginTop: 8,
-        fontWeight: '600',
-        letterSpacing: 0.2,
+      fontSize: 12,
+      color: C.muted || "#94A3B8",
+      textAlign: "center",
+      marginTop: 8,
+      fontWeight: "600",
+      letterSpacing: 0.2,
+      lineHeight: 19,
+      fontFamily: "Inter_600SemiBold",
     },
-});
+  });

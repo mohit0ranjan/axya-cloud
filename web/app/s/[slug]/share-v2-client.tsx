@@ -221,7 +221,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
   const [previewUrlMap, setPreviewUrlMap] = useState<Record<string, string>>({});
   const [previewUrlExpiryMap, setPreviewUrlExpiryMap] = useState<Record<string, number>>({});
   const [ticketLoadingMap, setTicketLoadingMap] = useState<Record<string, boolean>>({});
-  const [zipState, setZipState] = useState<{ loading: boolean; message: string }>({ loading: false, message: '' });
+  const [zipState, setZipState] = useState<{ loading: boolean; message: string; downloadUrl?: string }>({ loading: false, message: '' });
 
   const [imageModal, setImageModal] = useState<ImageModalState>({ open: false, items: [], index: 0 });
   const [previewErrorMap, setPreviewErrorMap] = useState<Record<string, string>>({});
@@ -711,13 +711,7 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       if (!job) throw new Error('Invalid ZIP job response.');
       if (job.status === 'failed') throw new Error(job.error_message || 'ZIP generation failed.');
       if (job.status === 'completed' && job.download_url) {
-        const a = document.createElement('a');
-        a.href = `${API_BASE}${job.download_url}`;
-        a.download = `${slug}.zip`;
-        document.body.appendChild(a);
-        a.click();
-        window.setTimeout(() => a.remove(), 1000);
-        return;
+        return `${API_BASE}${job.download_url}`;
       }
       await sleepWithAbort(2000, signal);
     }
@@ -744,8 +738,8 @@ export default function ShareV2Client({ slug }: { slug: string }) {
       if (!pollingUrl) throw new Error('Missing ZIP polling URL.');
       
       setZipState({ loading: true, message: 'Generating ZIP...' });
-      await pollZipJob(pollingUrl, abortController.signal);
-      setZipState({ loading: false, message: '' });
+      const downloadUrl = await pollZipJob(pollingUrl, abortController.signal);
+      setZipState({ loading: false, message: 'ZIP is ready. Tap Download ZIP to save it.', downloadUrl });
     } catch (err: any) {
       if (err?.name === 'AbortError') {
         setZipState({ loading: false, message: '' });
@@ -950,6 +944,12 @@ export default function ShareV2Client({ slug }: { slug: string }) {
         {zipState.loading && zipState.message && !requiresPassword && (
           <div className="p-3 mb-6 rounded-xl bg-sky-50 text-sky-700 border border-sky-100 max-w-3xl mx-auto text-center text-sm">
             {zipState.message}
+          </div>
+        )}
+        {zipState.downloadUrl && !requiresPassword && (
+          <div className="p-3 mb-6 rounded-xl bg-sky-50 text-sky-800 border border-sky-100 max-w-3xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-sm">
+            <span>{zipState.message}</span>
+            <a href={zipState.downloadUrl} download={`${slug}.zip`} className="shrink-0 rounded-lg bg-brand-start px-4 py-2 font-semibold text-white hover:opacity-90">Download ZIP</a>
           </div>
         )}
 

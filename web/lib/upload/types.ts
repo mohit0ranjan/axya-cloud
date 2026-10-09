@@ -1,6 +1,7 @@
 export type UploadStatus =
   | 'queued'
   | 'uploading'
+  | 'processing'
   | 'paused'
   | 'completed'
   | 'failed'
@@ -26,6 +27,8 @@ export type UploadTask = {
   uploadedChunks?: number[];
   totalChunks?: number;
   chunkSizeBytes?: number;
+  folderId?: string;
+  telegramChatId?: string;
 };
 
 export type UploadStats = {

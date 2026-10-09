@@ -134,7 +134,7 @@ export const classifyUploadFailure = (err: unknown) => {
             retryable: false,
         };
     }
-    if (/FLOOD_WAIT|NETWORK|TIMEOUT|ECONNRESET|ETIMEDOUT/i.test(raw)) {
+    if (/FLOOD_WAIT|NETWORK|TIMEOUT|ECONNRESET|ETIMEDOUT|LEASE_LOST|Connection terminated|connection closed/i.test(raw) || ['08000', '08003', '08006', '57P01', '53300'].includes(String((err as any)?.code || ''))) {
         return {
             code: 'telegram_transient',
             message: 'Telegram is temporarily unavailable. Please retry.',

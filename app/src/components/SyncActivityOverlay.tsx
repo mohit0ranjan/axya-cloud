@@ -1,449 +1,112 @@
-import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react';
-import {
-    View, Text, StyleSheet, TouchableOpacity,
-    Animated, Dimensions, FlatList, Alert, Platform,
-} from 'react-native';
-import {
-    ChevronUp, ChevronDown, Check, AlertCircle, X,
-    UploadCloud, Play, Pause, RefreshCcw
-} from 'lucide-react-native';
+import React, { useMemo, useRef, useState, useEffect } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Animated, useWindowDimensions, FlatList } from 'react-native';
+import { ChevronUp, ChevronDown, Check, AlertCircle, X, UploadCloud, Download, Play, Pause, RefreshCcw } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUpload } from '../context/UploadContext';
 import { useDownload } from '../context/DownloadContext';
 import { useTheme } from '../context/ThemeContext';
-import * as Progress from 'react-native-progress';
+import { useReducedMotion } from '../hooks/useReducedMotion';
 
-const { height } = Dimensions.get('window');
+const activeStates = new Set(['pending', 'preparing', 'uploading', 'downloading', 'processing', 'queued', 'retrying', 'waiting_retry']);
+const pausableStates = new Set(['pending', 'preparing', 'uploading', 'queued', 'retrying', 'waiting_retry']);
+const bytes = (n: number) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(0, n / 1024).toFixed(0)} KB`;
+const percent = (task: any) => Math.max(0, Math.min(100, Number(task.progress) || 0));
 
-// ── Google Drive Style Compact Row ────────────────────────────────────────────
 const TaskRow = React.memo(({ task, onCancel, onPause, onResume }: any) => {
-    const { theme } = useTheme();
-    const isActive = task.status === 'uploading' || task.status === 'queued' || task.status === 'preparing' || task.status === 'processing' || task.status === 'retrying' || task.status === 'waiting_retry';
-    const isPaused = task.status === 'paused';
-    const isFailed = task.status === 'failed';
-    const isDone = task.status === 'completed';
-
-    const color = isDone ? theme.colors.success : isFailed ? theme.colors.danger : theme.colors.primary;
-    // Smooth translation of percent to decimal without jumping "0%" text
-    const safeProgress = Number.isFinite(task.progress) ? Math.max(0, Math.min(task.progress / 100, 1)) : 0;
-    const name = task.file?.name || task.fileName || 'Unknown file';
-
-    // State String Fallbacks
-    let label = 'Pending';
-    if (isDone) label = 'Uploaded';
-    else if (isFailed) label = 'Failed';
-    else if (isPaused) label = 'Paused';
-    else if (task.status === 'queued') label = 'Queued...';
-    else if (task.status === 'processing') label = 'Finalizing...';
-    else if (task.status === 'preparing') label = 'Starting...';
-    else if (task.status === 'retrying' || task.status === 'waiting_retry') label = 'Network paused...';
-    else if (task.status === 'uploading') {
-        // Fallback: don't flash 0% string explicitly to user, keep it clean
-        if (safeProgress === 0) label = 'Uploading...';
-        else label = `Uploading...`;
-    }
-
-    return (
-        <View style={s.row}>
-            {/* Left standard file/status icon */}
-            <View style={[s.rowIcon, { backgroundColor: isFailed ? `${theme.colors.danger}15` : isDone ? `${theme.colors.success}15` : theme.colors.background }]}>
-                {isFailed ? <AlertCircle color={theme.colors.danger} size={18} /> : 
-                 isDone ? <Check color={theme.colors.success} size={18} /> :
-                 <UploadCloud color={theme.colors.muted} size={18} />}
-            </View>
-            
-            <View style={s.rowInfo}>
-                <Text style={[s.rowName, { color: theme.colors.textHeading }]} numberOfLines={1}>{name}</Text>
-                <Text style={[s.rowStatus, { color: isFailed || isDone ? color : theme.colors.textBody }]} numberOfLines={1}>{label}</Text>
-            </View>
-            
-            {/* Right Drive-style Actions */}
-            <View style={s.rowActions}>
-                {isActive && (
-                    <View style={s.ringContainer}>
-                         {/* Circle doubles as a visual and an action button */}
-                        <Progress.Circle
-                            size={28}
-                            progress={task.status === 'queued' || task.status === 'preparing' ? undefined : safeProgress}
-                            indeterminate={task.status === 'queued' || task.status === 'preparing' || task.status === 'processing'}
-                            color={theme.colors.primary}
-                            unfilledColor={theme.colors.border}
-                            borderWidth={0}
-                            thickness={3}
-                            strokeCap="round"
-                        />
-                        <TouchableOpacity style={s.ringCancelBtn} onPress={() => onCancel(task.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                            <X color={theme.colors.muted} size={12} strokeWidth={3} />
-                        </TouchableOpacity>
-                    </View>
-                )}
-                {isPaused && (
-                    <>
-                        <TouchableOpacity style={s.iconBtn} onPress={() => onResume(task.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                            <Play fill={theme.colors.success} color={theme.colors.success} size={18} />
-                        </TouchableOpacity>
-                        <TouchableOpacity style={[s.iconBtn, { marginLeft: 12 }]} onPress={() => onCancel(task.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                            <X color={theme.colors.muted} size={20} />
-                        </TouchableOpacity>
-                    </>
-                )}
-                {(isFailed || isDone) && (
-                    <TouchableOpacity style={s.iconBtn} onPress={() => onCancel(task.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                        <X color={theme.colors.muted} size={20} />
-                    </TouchableOpacity>
-                )}
-            </View>
-        </View>
-    );
+  const { theme } = useTheme();
+  const c = theme.colors;
+  const done = task.status === 'completed', failed = task.status === 'failed';
+  const paused = task.status === 'paused', upload = task._type === 'upload';
+  let label = task.status === 'processing' ? 'Saving to Telegram' : task.status === 'preparing' ? 'Preparing file' : task.status === 'queued' || task.status === 'pending' ? 'Waiting in queue' : paused ? 'Paused · ready to resume' : failed ? task.error || 'Transfer failed' : done ? upload ? 'Uploaded' : task.browserHandoff ? 'Opened in browser downloads' : 'Downloaded' : task.status === 'waiting_retry' || task.status === 'retrying' ? 'Connection interrupted · retrying' : `${Math.round(percent(task))}% · ${bytes(task.bytesUploaded || task.bytesDownloaded || 0)}${task.file?.size ? ` of ${bytes(task.file.size)}` : ''}`;
+  if (task.status === 'uploading' && task.currentSpeedBps > 0) label += ` · ${bytes(task.currentSpeedBps)}/s`;
+  return <View style={[s.row, { borderBottomColor: c.border }]}>
+    <View style={[s.rowIcon, { backgroundColor: done ? `${c.success}15` : failed ? `${c.danger}15` : `${c.primary}12` }]}>
+      {done ? <Check color={c.success} size={20} /> : failed ? <AlertCircle color={c.danger} size={20} /> : upload ? <UploadCloud color={c.primary} size={20} /> : <Download color={c.primary} size={20} />}
+    </View>
+    <View style={s.rowInfo}>
+      <Text style={[s.rowName, { color: c.textHeading }]} numberOfLines={1}>{task.file?.name || task.fileName || 'File'}</Text>
+      <Text style={[s.rowStatus, { color: failed ? c.danger : done ? c.success : c.muted }]} numberOfLines={2}>{label}</Text>
+      {activeStates.has(task.status) && <View style={[s.track, { backgroundColor: c.border }]}><View style={{ height: 3, width: `${percent(task)}%`, backgroundColor: c.primary }} /></View>}
+    </View>
+    {upload && (paused || failed || pausableStates.has(task.status)) && <TouchableOpacity accessibilityRole="button" accessibilityLabel={`${paused || failed ? 'Resume' : 'Pause'} ${task.file?.name || 'upload'}`} style={s.iconBtn} onPress={() => paused || failed ? onResume(task.id) : onPause(task.id)}>
+      {failed ? <RefreshCcw color={c.primary} size={18} /> : paused ? <Play color={c.primary} size={18} /> : <Pause color={c.muted} size={18} />}
+    </TouchableOpacity>}
+    {!done && <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Cancel ${task.file?.name || 'transfer'}`} style={s.iconBtn} onPress={() => onCancel(task.id)}><X color={c.muted} size={18} /></TouchableOpacity>}
+  </View>;
 });
 
-// ── Main UI Component ────────────────────────────────────────────────────────────
 export default function SyncActivityOverlay() {
-    const insets = useSafeAreaInsets();
-    const { theme, isDark } = useTheme();
-
-    const {
-        tasks: upTasks, cancelUpload, pauseUpload, resumeUpload, cancelAll: cancelAllUploads, clearCompleted: clearUpFinished,
-        activeCount: upActive, failedCount: upFailed, uploadedCount: upDone, queuedCount: upQueued
-    } = useUpload();
-
-    const {
-        tasks: downTasks, cancelDownload, cancelAll: cancelAllDownloads, clearCompleted: clearDownFinished,
-        activeCount: downActive
-    } = useDownload();
-
-    const [isExpanded, setIsExpanded] = useState(false);
-    const [isDismissed, setIsDismissed] = useState(false);
-    const animExpand = useRef(new Animated.Value(0)).current;
-
-    const downFailed = useMemo(() => downTasks.filter(t => t.status === 'failed').length, [downTasks]);
-    const downDone = useMemo(() => downTasks.filter(t => t.status === 'completed').length, [downTasks]);
-    
-    const totalActive = upActive + downActive + upQueued;
-    const totalFailed = upFailed + downFailed;
-    const totalDone = upDone + downDone;
-    
-    // Sort logic places active/uploading -> preparing -> queued -> paused -> failed -> completed
-    const allTasks = useMemo(() => {
-        const arr: any[] = [];
-        upTasks.forEach(t => { if (t.status !== 'cancelled') arr.push({ ...t, _type: 'upload' }) });
-        downTasks.forEach(t => { if (t.status !== 'cancelled') arr.push({ ...t, _type: 'download' }) });
-        return arr.sort((a, b) => {
-            const getScore = (status: string) => {
-                if (status === 'uploading' || status === 'processing' || status === 'downloading') return 5;
-                if (status === 'preparing') return 4;
-                if (status === 'queued') return 3;
-                if (status === 'retrying' || status === 'waiting_retry' || status === 'paused') return 2;
-                if (status === 'failed') return 1;
-                return 0; // completed
-            };
-            return getScore(b.status) - getScore(a.status);
-        });
-    }, [upTasks, downTasks]);
-
-    const hasTasks = allTasks.length > 0;
-    const isIdle = totalActive === 0;
-    const hasFailed = totalFailed > 0;
-    const isAllComplete = isIdle && totalDone > 0 && !hasFailed;
-
-    const prevActive = useRef(totalActive);
-    useEffect(() => {
-        if (totalActive > prevActive.current) {
-            setIsDismissed(false);
-            if (isExpanded) toggleExpand();
-        }
-        prevActive.current = totalActive;
-    }, [totalActive]);
-
-    // Google Drive auto-dismiss behavior on success
-    useEffect(() => {
-        let timer: any;
-        if (isAllComplete && hasTasks) {
-            timer = setTimeout(() => {
-                setIsDismissed(true);
-            }, 5000);
-        }
-        return () => clearTimeout(timer);
-    }, [isAllComplete, hasTasks]);
-
-    const toggleExpand = useCallback(() => {
-        const next = !isExpanded;
-        setIsExpanded(next);
-        Animated.spring(animExpand, {
-            toValue: next ? 1 : 0,
-            tension: 50,
-            friction: 8,
-            useNativeDriver: false, // Animating Layout Dimensions
-        }).start();
-    }, [isExpanded, animExpand]);
-
-    const handleDismiss = useCallback(() => {
-        if (totalActive > 0) {
-            const msg = 'Cancel all incoming and outgoing transfers?';
-            if (Platform.OS === 'web') {
-                if (window.confirm(msg)) {
-                    cancelAllUploads();
-                    cancelAllDownloads();
-                    setIsDismissed(true);
-                }
-            } else {
-                Alert.alert('Cancel Transfers', msg, [
-                    { text: 'Keep running', style: 'cancel' },
-                    { text: 'Cancel All', style: 'destructive', onPress: () => {
-                        cancelAllUploads();
-                        cancelAllDownloads();
-                        setIsDismissed(true);
-                    }}
-                ]);
-            }
-        } else {
-            setIsDismissed(true);
-            clearUpFinished();
-            clearDownFinished();
-        }
-    }, [totalActive, cancelAllUploads, cancelAllDownloads, clearUpFinished, clearDownFinished]);
-
-    const handlePauseAll = useCallback(() => {
-        upTasks.forEach(t => {
-            if (t.status === 'uploading' || t.status === 'queued' || t.status === 'preparing') pauseUpload(t.id);
-        });
-    }, [upTasks, pauseUpload]);
-
-    const handleResumeAll = useCallback(() => {
-        upTasks.forEach(t => {
-            if (t.status === 'paused') resumeUpload(t.id);
-        });
-    }, [upTasks, resumeUpload]);
-
-    if (!hasTasks || isDismissed) return null;
-
-    let headerText = '';
-    const itemsCount = allTasks.length;
-    if (hasFailed) {
-        headerText = `${totalFailed} upload${totalFailed > 1 ? 's' : ''} failed`;
-    } else if (isAllComplete) {
-        headerText = `Uploaded ${totalDone} file${totalDone > 1 ? 's' : ''}`;
-    } else {
-        headerText = `Uploading ${itemsCount} file${itemsCount > 1 ? 's' : ''}`;
-    }
-
-    // Determine circular animation for header progress indicator
-    // Wait for all to finish, or show indeterminate spinner when computing queue
-    const loadingTasks = [upActive, downActive, upQueued].reduce((acc, v) => acc + v, 0);
-
-    const expandedHeight = animExpand.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0, Math.min(allTasks.length * 64 + 40, height * 0.5)],
-    });
-
-    const expandedOpacity = animExpand.interpolate({
-        inputRange: [0, 0.7, 1],
-        outputRange: [0, 0, 1],
-    });
-
-    return (
-        <View style={[
-            s.container, 
-            { backgroundColor: theme.colors.card, bottom: Math.max(insets.bottom, 16) + 80 },
-            isDark && { shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 20 }
-        ]}>
-            {/* Google Drive Minimized Persistent Header */}
-            <TouchableOpacity 
-                activeOpacity={0.9} 
-                onPress={toggleExpand} 
-                style={s.header}
-            >
-                <View style={s.headerLeft}>
-                    {/* Ring indicator immediately shows context */}
-                    {hasFailed ? (
-                        <AlertCircle color={theme.colors.danger} size={22} />
-                    ) : isAllComplete ? (
-                        <View style={[s.iconRound, { backgroundColor: theme.colors.success }]}>
-                            <Check color={'#FFF'} size={14} strokeWidth={3} />
-                        </View>
-                    ) : (
-                        <Progress.CircleSnail
-                            color={theme.colors.primary}
-                            size={22}
-                            spinDuration={1200}
-                            thickness={2}
-                            direction="clockwise"
-                        />
-                    )}
-                    <Text style={[s.headerTitle, { color: theme.colors.textHeading }]} numberOfLines={1}>
-                        {headerText}
-                    </Text>
-                </View>
-                <View style={s.headerRight}>
-                    {isExpanded ? <ChevronDown color={theme.colors.muted} size={22} /> : <ChevronUp color={theme.colors.muted} size={22} />}
-                    {loadingTasks > 0 && !isExpanded && (
-                        <TouchableOpacity style={s.dismissBtn} onPress={handlePauseAll} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                            <Pause color={theme.colors.muted} size={20} />
-                        </TouchableOpacity>
-                    )}
-                    <TouchableOpacity style={s.dismissBtn} onPress={handleDismiss} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                        <X color={theme.colors.muted} size={20} />
-                    </TouchableOpacity>
-                </View>
-            </TouchableOpacity>
-
-            {/* List Drawer */}
-            <Animated.View style={[s.listContainer, { height: expandedHeight, opacity: expandedOpacity }]}>
-                {isExpanded && (
-                    <View style={s.listHeaderControls}>
-                        {loadingTasks > 0 && (
-                            <TouchableOpacity style={s.bulkBtn} onPress={handlePauseAll}>
-                                <Pause color={theme.colors.muted} size={14} style={{ marginRight: 6 }}/>
-                                <Text style={[s.bulkText, { color: theme.colors.muted }]}>Pause All</Text>
-                            </TouchableOpacity>
-                        )}
-                        {upTasks.some((t: any) => t.status === 'paused') && (
-                            <TouchableOpacity style={s.bulkBtn} onPress={handleResumeAll}>
-                                <Play color={theme.colors.success} size={14} style={{ marginRight: 6 }}/>
-                                <Text style={[s.bulkText, { color: theme.colors.success }]}>Resume All</Text>
-                            </TouchableOpacity>
-                        )}
-                    </View>
-                )}
-                <FlatList
-                    data={allTasks}
-                    keyExtractor={t => t.id}
-                    contentContainerStyle={{ paddingBottom: 16 }}
-                    showsVerticalScrollIndicator={true}
-                    renderItem={({ item }) => {
-                        return <TaskRow 
-                                  task={item} 
-                                  onCancel={item._type === 'upload' ? cancelUpload : cancelDownload}
-                                  onPause={pauseUpload} 
-                                  onResume={resumeUpload} 
-                               />;
-                    }}
-                />
-            </Animated.View>
+  const insets = useSafeAreaInsets();
+  const { width, height } = useWindowDimensions();
+  const { theme } = useTheme();
+  const c = theme.colors;
+  const uploads = useUpload(), downloads = useDownload();
+  const reducedMotion = useReducedMotion();
+  const [expanded, setExpanded] = useState(false), [dismissed, setDismissed] = useState(false);
+  const animation = useRef(new Animated.Value(0)).current;
+  const tasks = useMemo(() => [
+    ...uploads.tasks.filter(t => t.status !== 'cancelled').map(t => ({ ...t, _type: 'upload' })),
+    ...downloads.tasks.filter(t => t.status !== 'cancelled').map(t => ({ ...t, _type: 'download' }))
+  ].sort((a, b) => Number(activeStates.has(b.status)) - Number(activeStates.has(a.status))), [uploads.tasks, downloads.tasks]);
+  const running = tasks.filter(t => activeStates.has(t.status)).length;
+  const paused = tasks.filter(t => t.status === 'paused').length;
+  const failed = tasks.filter(t => t.status === 'failed').length;
+  const done = tasks.filter(t => t.status === 'completed').length;
+  const allDone = tasks.length > 0 && done === tasks.length;
+  const activeTasks = tasks.filter(t => activeStates.has(t.status) || t.status === 'paused');
+  const transferProgress = activeTasks.length
+    ? activeTasks.reduce((sum, task) => sum + percent(task), 0) / activeTasks.length : allDone ? 100 : 0;
+  const previousIds = useRef(new Set<string>());
+  useEffect(() => {
+    if (tasks.some(t => !previousIds.current.has(t.id))) setDismissed(false);
+    previousIds.current = new Set(tasks.map(t => t.id));
+  }, [tasks]);
+  useEffect(() => {
+    Animated.timing(animation, { toValue: expanded ? 1 : 0, duration: reducedMotion ? 0 : 200, useNativeDriver: false }).start();
+  }, [expanded, reducedMotion]);
+  useEffect(() => {
+    if (!allDone || expanded) return;
+    const timer = setTimeout(() => setDismissed(true), 7000);
+    return () => clearTimeout(timer);
+  }, [allDone, expanded]);
+  const pauseAll = () => uploads.tasks.filter(t => pausableStates.has(t.status)).forEach(t => uploads.pauseUpload(t.id));
+  const resumeAll = () => uploads.tasks.filter(t => t.status === 'paused' || t.status === 'failed').forEach(t => uploads.resumeUpload(t.id));
+  const title = allDone ? `${done} ${done === 1 ? 'file' : 'files'} ready` : 'Transfers';
+  const summary = [running ? `${running} in progress` : '', paused ? `${paused} paused` : '', failed ? `${failed} need attention` : '', done && !allDone ? `${done} complete` : ''].filter(Boolean).join(' · ') || 'Saved to your storage';
+  if (!tasks.length || dismissed) return null;
+  return <View style={[s.container, { width: Math.min(width - 24, 460), right: 12, bottom: Math.max(insets.bottom, 12) + 80, backgroundColor: c.card, borderColor: c.border }]}>
+    <View style={s.header}>
+      <TouchableOpacity accessibilityRole="button" accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} transfers`} accessibilityState={{ expanded }} onPress={() => setExpanded(!expanded)} style={s.headerMain}>
+        <View style={[s.headerIcon, { backgroundColor: `${c.primary}12` }]}>{allDone ? <Check color={c.success} size={20} /> : failed ? <AlertCircle color={c.danger} size={20} /> : <UploadCloud color={c.primary} size={20} />}</View>
+        <View style={{ flex: 1 }}><Text style={[s.title, { color: c.textHeading }]}>{title}</Text><Text style={[s.subtitle, { color: c.muted }]} numberOfLines={1}>{summary}</Text></View>
+        {expanded ? <ChevronDown color={c.muted} size={19} /> : <ChevronUp color={c.muted} size={19} />}
+      </TouchableOpacity>
+      <TouchableOpacity accessibilityRole="button" accessibilityLabel="Hide transfer panel; transfers continue" onPress={() => setDismissed(true)} style={s.iconBtn}><X color={c.muted} size={19} /></TouchableOpacity>
+    </View>
+    {!allDone && <View style={[s.track, { marginHorizontal: 16, marginBottom: 10, backgroundColor: c.border }]}><View style={{ height: 3, width: `${transferProgress}%`, backgroundColor: c.primary }} /></View>}
+    <Animated.View style={{ height: animation.interpolate({ inputRange: [0, 1], outputRange: [0, Math.min(tasks.length * 88 + 48, height * 0.45, 380)] }), overflow: 'hidden' }} pointerEvents={expanded ? 'auto' : 'none'}>
+      {expanded && <>
+        <View style={[s.controls, { borderTopColor: c.border }]}>
+          <Text style={[s.subtitle, { flex: 1, color: c.muted }]}>{tasks.length} files</Text>
+          {uploads.tasks.some(t => pausableStates.has(t.status)) && <TouchableOpacity accessibilityRole="button" onPress={pauseAll} style={s.bulk}><Pause size={14} color={c.primary} /><Text style={[s.bulkText, { color: c.primary }]}>Pause all</Text></TouchableOpacity>}
+          {paused > 0 || failed > 0 ? <TouchableOpacity accessibilityRole="button" onPress={resumeAll} style={s.bulk}><Play size={14} color={c.primary} /><Text style={[s.bulkText, { color: c.primary }]}>Resume all</Text></TouchableOpacity> : null}
         </View>
-    );
+        <FlatList data={tasks} keyExtractor={t => `${t._type}:${t.id}`} initialNumToRender={5} maxToRenderPerBatch={6} style={{ flex: 1 }} renderItem={({ item }) => <TaskRow task={item} onCancel={item._type === 'upload' ? uploads.cancelUpload : downloads.cancelDownload} onPause={uploads.pauseUpload} onResume={uploads.resumeUpload} />} />
+      </>}
+    </Animated.View>
+  </View>;
 }
-
 const s = StyleSheet.create({
-    container: {
-        position: 'absolute',
-        left: 16,
-        right: 16,
-        borderRadius: 12,
-        overflow: 'hidden',
-        elevation: 8,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.15,
-        shadowRadius: 12,
-        zIndex: 999,
-        borderWidth: 1,
-        borderColor: 'rgba(150,150,150,0.1)',
-    },
-    header: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: 16,
-        paddingVertical: 14,
-    },
-    headerLeft: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        flex: 1,
-    },
-    iconRound: {
-        width: 22,
-        height: 22,
-        borderRadius: 11,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    headerTitle: {
-        fontSize: 16,
-        fontWeight: '600',
-        marginLeft: 12,
-        flexShrink: 1,
-    },
-    headerRight: {
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    dismissBtn: {
-        marginLeft: 12,
-        padding: 4,
-    },
-    listContainer: {
-        width: '100%',
-        backgroundColor: 'rgba(0,0,0,0.02)',
-        borderTopWidth: 1,
-        borderTopColor: 'rgba(150,150,150,0.08)',
-    },
-    listHeaderControls: {
-        flexDirection: 'row',
-        justifyContent: 'flex-end',
-        paddingHorizontal: 16,
-        paddingVertical: 8,
-    },
-    bulkBtn: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 6,
-        backgroundColor: 'rgba(150,150,150,0.1)',
-        marginLeft: 8,
-    },
-    bulkText: {
-        fontSize: 12,
-        fontWeight: '500',
-    },
-    row: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: 16,
-        paddingVertical: 10,
-    },
-    rowIcon: {
-        width: 32,
-        height: 32,
-        borderRadius: 8,
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginRight: 12,
-    },
-    rowInfo: {
-        flex: 1,
-        justifyContent: 'center',
-    },
-    rowName: {
-        fontSize: 14,
-        fontWeight: '500',
-        marginBottom: 2,
-    },
-    rowStatus: {
-        fontSize: 12,
-    },
-    rowActions: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginLeft: 12,
-    },
-    iconBtn: {
-        padding: 6,
-    },
-    ringContainer: {
-        position: 'relative',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: 28,
-        height: 28,
-    },
-    ringCancelBtn: {
-        position: 'absolute',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: 28,
-        height: 28,
-    },
+  container: { position: 'absolute', borderRadius: 20, overflow: 'hidden', borderWidth: 1, elevation: 6, shadowColor: '#18223A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 14, zIndex: 999 },
+  header: { flexDirection: 'row', alignItems: 'center', paddingLeft: 14, paddingRight: 4, minHeight: 68 },
+  headerMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12 },
+  headerIcon: { width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  title: { fontSize: 14, fontFamily: 'Inter_600SemiBold' }, subtitle: { fontSize: 11, fontFamily: 'Inter_400Regular', marginTop: 3 },
+  iconBtn: { width: 40, height: 44, alignItems: 'center', justifyContent: 'center' },
+  controls: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, borderTopWidth: 1, minHeight: 44 },
+  bulk: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, minHeight: 44 }, bulkText: { fontSize: 11, fontFamily: 'Inter_600SemiBold' },
+  row: { flexDirection: 'row', alignItems: 'center', paddingLeft: 14, paddingRight: 4, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, minHeight: 80 },
+  rowIcon: { width: 36, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
+  rowInfo: { flex: 1, minWidth: 0 }, rowName: { fontSize: 12, fontFamily: 'Inter_600SemiBold' }, rowStatus: { fontSize: 10, lineHeight: 15, marginTop: 4, fontFamily: 'Inter_400Regular' },
+  track: { height: 3, borderRadius: 3, overflow: 'hidden', marginTop: 8 }
 });

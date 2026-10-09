@@ -8,6 +8,8 @@ export type UploadMode = 'simple' | 'chunk';
 export type UploadTaskStatus =
   | 'queued'        // Waiting in queue
   | 'uploading'     // Currently uploading
+  | 'processing'
+  | 'waiting_connection'
   | 'paused'        // User paused
   | 'completed'     // Successfully completed
   | 'failed'        // Failed with error
@@ -45,7 +47,7 @@ export interface UploadTask {
   abortController: AbortController;
   
   // Metadata
-  folderId?: number;
+  folderId?: string | number;
   telegramChatId?: string;
 }
 

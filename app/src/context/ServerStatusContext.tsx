@@ -14,7 +14,7 @@ interface ServerStatusContextType {
     retryWake: () => void;
 }
 
-const ServerStatusContext = createContext<ServerStatusContextType | undefined>(undefined);
+export const ServerStatusContext = createContext<ServerStatusContextType | undefined>(undefined);
 
 // Bridge for singleton -> React state
 export const serverStatusManager = {

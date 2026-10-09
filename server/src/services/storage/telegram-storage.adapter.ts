@@ -1,4 +1,7 @@
 import { CustomFile } from 'telegram/client/uploads';
+import { Api } from 'telegram';
+import crypto from 'crypto';
+import bigInt from 'big-integer';
 import { extractTelegramNativeMeta } from '../../utils/formatters';
 import { getDynamicClient } from '../telegram.service';
 import { StorageAdapter, StorageUploadRequest, StorageUploadResult } from './storage.adapter';
@@ -27,24 +30,12 @@ const normalizeTelegramChatTarget = (value: unknown): string => {
 
 const getUploadSessionCandidates = (ownerSessionString: string, requestedChatId: unknown) => {
     const requested = normalizeTelegramChatTarget(requestedChatId);
-    const storageChat = String(process.env.TELEGRAM_STORAGE_CHAT_ID || '').trim();
-
-    const sessionCandidates = [
-        String(process.env.TELEGRAM_STORAGE_SESSION || '').trim(),
-        String(process.env.TELEGRAM_SESSION || '').trim(),
-        String(ownerSessionString || '').trim(),
-    ].filter(Boolean);
+    // New uploads always use the owner's account. Legacy shared sessions are read-only fallbacks.
+    const sessionCandidates = [String(ownerSessionString || '').trim()].filter(Boolean);
 
     const uniqueSessions = Array.from(new Set(sessionCandidates));
     return uniqueSessions.map((session) => {
-        const isStorageSession =
-            session === String(process.env.TELEGRAM_STORAGE_SESSION || '').trim()
-            || session === String(process.env.TELEGRAM_SESSION || '').trim();
-
-        let targetChatId = requested || 'me';
-        if (targetChatId === 'me' && isStorageSession && storageChat) {
-            targetChatId = storageChat;
-        }
+        const targetChatId = requested || 'me';
 
         return {
             session,
@@ -59,7 +50,12 @@ export const resolveTelegramUploadTransport = async (ownerSessionString: string,
 
     for (const candidate of candidates) {
         try {
-            await getDynamicClient(candidate.session);
+            const client = await getDynamicClient(candidate.session);
+            if (candidate.chatId !== 'me') {
+                const entity = await client.getEntity(candidate.chatId);
+                if (entity instanceof Api.Channel && entity.broadcast && !entity.creator && !entity.adminRights?.postMessages) throw new Error('Your Telegram account needs permission to post files in this channel.');
+                if (entity instanceof Api.Channel && (entity.left || entity.restricted)) throw new Error('This Telegram channel is unavailable to your account.');
+            }
             return candidate;
         } catch (err: any) {
             lastErr = err;
@@ -72,21 +68,21 @@ export const resolveTelegramUploadTransport = async (ownerSessionString: string,
 const uploadToTelegramWithRetry = async (
     client: any,
     chatId: string,
-    params: any,
+    operation: () => Promise<any>,
     maxRetries = 3
 ): Promise<any> => {
     for (let attempt = 0; attempt < maxRetries; attempt += 1) {
         try {
-            return await client.sendFile(chatId, params);
+            return await operation();
         } catch (error: any) {
             const raw = String(error?.message || '');
 
             if (/AUTH_KEY|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED|PHONE_MIGRATE/i.test(raw)) {
-                throw new Error('Telegram session expired or revoked. Please log in again.');
+                throw new Error('SESSION_EXPIRED: Please log in to Telegram again.');
             }
 
             if (raw.includes('FLOOD_WAIT') || raw.includes('FLOOD')) {
-                const waitSec = parseInt(raw.match(/\d+/)?.[0] || '15', 10);
+                const waitSec = Number(error?.seconds) || Number(raw.match(/FLOOD(?:_PREMIUM)?_WAIT_?(\d+)/i)?.[1]) || 15;
                 await sleep((waitSec + 1) * 1000);
                 continue;
             }
@@ -117,31 +113,46 @@ export class TelegramStorageAdapter implements StorageAdapter {
             request.filePath
         );
 
-        const timeoutMs = Math.max(30 * 60_000, (request.fileSize / (256 * 1024)) * 1000); // min 30min or ~256KB/s
-        let timeoutId: NodeJS.Timeout | undefined;
-        let uploadedMessage;
-        try {
-            uploadedMessage = await Promise.race([
-                uploadToTelegramWithRetry(
-                    client,
-                    target.chatId,
-                    {
-                        file: customFile,
-                        caption: request.caption || `[Axya] ${request.fileName}`,
-                        workers: request.fileSize > 500 * 1024 * 1024 ? 2 : 4,
-                        progressCallback: (progress: number) => {
-                            if (!request.onProgress) return;
-                            request.onProgress(Math.max(0, Math.min(1, Number(progress || 0))));
-                        },
-                    },
-                    3
-                ),
-                new Promise<any>((_, reject) => {
-                    timeoutId = setTimeout(() => reject(new Error('TELEGRAM_UPLOAD_TIMEOUT')), timeoutMs);
-                }),
-            ]);
-        } finally {
-            if (timeoutId) clearTimeout(timeoutId);
+        const operationId = request.idempotencyKey || crypto.randomUUID();
+        const marker = '#axya_' + operationId.replace(/[^a-zA-Z0-9]/g, '');
+        const peer = await client.getInputEntity(target.chatId);
+        const lookup = async () => {
+            const messages = await client.getMessages(peer, { search: marker, limit: 10 });
+            return messages.find((message: any) => message.document && String(message.message || '').includes(marker));
+        };
+        // Reconcile delivery after a crash between Telegram acknowledgement and
+        // the database checkpoint. The lookup is scoped to the owner's target.
+        let uploadedMessage: any = request.idempotencyKey ? await lookup() : undefined;
+        if (!uploadedMessage) {
+            const deadlineMs = Math.max(30 * 60_000, (request.fileSize / (256 * 1024)) * 1000);
+            const deadline = Date.now() + deadlineMs;
+            const progress = (fraction: number) => {
+                if (Date.now() >= deadline) throw new Error('TELEGRAM_UPLOAD_TIMEOUT');
+                request.onProgress?.(Math.max(0, Math.min(1, Number(fraction || 0))));
+            };
+            // A stable MTProto random_id prevents retries from sending a second
+            // message if the original send succeeded but its response was lost.
+            const randomId = bigInt(crypto.createHash('sha256').update(operationId).digest().readBigInt64LE(0).toString());
+            uploadedMessage = await uploadToTelegramWithRetry(client, target.chatId, async () => {
+                const recovered = request.idempotencyKey ? await lookup() : undefined;
+                if (recovered) return recovered;
+                const file = await client.uploadFile({ file: customFile,
+                    workers: request.fileSize > 500 * 1024 * 1024 ? 2 : 4, onProgress: progress });
+                const media = new Api.InputMediaUploadedDocument({ file, mimeType: request.mimeType,
+                    attributes: [new Api.DocumentAttributeFilename({ fileName: request.fileName })] });
+                const send = new Api.messages.SendMedia({ peer, media,
+                    message: (request.caption || '[Axya] ' + request.fileName) + '\n' + marker, randomId });
+                try {
+                    const result = await client.invoke(send);
+                    return (client as any)._getResponseMessage(send, result, peer) || await lookup();
+                } catch (error: any) {
+                    if (/RANDOM_ID_DUPLICATE/.test(String(error?.message || ''))) {
+                        const existing = await lookup();
+                        if (existing) return existing;
+                    }
+                    throw error;
+                }
+            }, 3);
         }
 
         if (!uploadedMessage) {

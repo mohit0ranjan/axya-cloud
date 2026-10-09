@@ -1,11 +1,23 @@
-import React, { memo } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
-import { useTheme } from '../context/ThemeContext';
-import { layout } from '../ui/layout';
+import React, { memo } from "react";
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from "react-native-reanimated";
+import { useTheme } from "../context/ThemeContext";
+import { layout } from "../ui/layout";
 
-type Variant = 'primary' | 'secondary' | 'danger';
-type Size = 'sm' | 'md' | 'lg';
+type Variant = "primary" | "secondary" | "danger";
+type Size = "sm" | "md" | "lg";
 
 type Props = {
   label: string;
@@ -28,8 +40,8 @@ const HEIGHT_BY_SIZE: Record<Size, number> = {
 function AppButtonComponent({
   label,
   onPress,
-  variant = 'primary',
-  size = 'md',
+  variant = "primary",
+  size = "md",
   loading = false,
   disabled = false,
   fullWidth = false,
@@ -46,23 +58,30 @@ function AppButtonComponent({
   }));
 
   const handlePressIn = () => {
-    if (!isDisabled) scale.value = withSpring(0.97, layout.animation.springSmooth);
+    if (!isDisabled)
+      scale.value = withSpring(0.97, layout.animation.springSmooth);
   };
   const handlePressOut = () => {
     scale.value = withSpring(1, layout.animation.springSmooth);
   };
 
   const variantStyle =
-    variant === 'secondary'
-      ? { backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border }
-      : variant === 'danger'
+    variant === "secondary"
+      ? {
+          backgroundColor: theme.colors.background,
+          borderWidth: 1,
+          borderColor: theme.colors.border,
+        }
+      : variant === "danger"
         ? { backgroundColor: theme.colors.danger }
         : { backgroundColor: theme.colors.primary };
 
-  const textColor = variant === 'secondary' ? theme.colors.textHeading : '#fff';
+  const textColor = variant === "secondary" ? theme.colors.textHeading : "#fff";
 
   return (
-    <Animated.View style={[animatedStyle, fullWidth && styles.fullWidth, style]}>
+    <Animated.View
+      style={[animatedStyle, fullWidth && styles.fullWidth, style]}
+    >
       <Pressable
         accessibilityRole="button"
         disabled={isDisabled}
@@ -82,7 +101,7 @@ function AppButtonComponent({
         ) : (
           <View style={styles.content}>
             {icon}
-            <Text style={[styles.text, { color: textColor }]}>{label}</Text>      
+            <Text style={[styles.text, { color: textColor }]}>{label}</Text>
           </View>
         )}
       </Pressable>
@@ -96,22 +115,19 @@ const styles = StyleSheet.create({
   base: {
     borderRadius: layout.radiusMap.button,
     paddingHorizontal: layout.spacing.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
   },
   fullWidth: {
-    width: '100%',
+    width: "100%",
   },
   disabled: {
     opacity: 0.6,
   },
   content: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: layout.spacing.sm,
   },
-  text: {
-    fontSize: 15,
-    fontWeight: '600',
-  },
+  text: { fontSize: 15, fontWeight: "600", fontFamily: "Inter_600SemiBold" },
 });

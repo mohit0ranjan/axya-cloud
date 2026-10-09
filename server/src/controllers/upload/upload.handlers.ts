@@ -19,10 +19,11 @@ import {
     saveChunkMetricsToSession,
     updateSessionFailure,
     toUploadStatusPayload,
+    reconcileStoredChunks,
 } from './upload.session';
 import { promoteQueuedSessionsIfCapacity, getQueuePosition } from './upload.queue';
 import { signUploadResumeToken, verifyUploadResumeToken, getResumeTokenFromRequest } from './upload.resume';
-import { ensureTempUploadFile, cleanupSessionTempFile } from './upload.temp';
+import { ensureTempUploadFile, cleanupSessionTempFile, getUploadStagingReadiness } from './upload.temp';
 import { startUploadFinalizer, clearFinalizerRetryState } from './upload.finalizer';
 import {
     UploadLifecycleStatus,
@@ -87,6 +88,8 @@ export const listUploadSessions = async (req: AuthRequest, res: Response) => {
 
 export const initUpload = async (req: AuthRequest, res: Response) => {
     if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized');
+    const staging = getUploadStagingReadiness();
+    if (!staging.ready) return sendApiError(res, 503, 'upload_storage_unavailable', staging.reason, { retryable: true });
 
     const { originalname, size, mimetype, folder_id, telegram_chat_id, hash, partial_hash, source_tag, chunk_size_bytes } = req.body;
 
@@ -123,19 +126,25 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
 
     if (chunk_size_bytes !== undefined && chunk_size_bytes !== null) {
         const requestedChunkSize = toInt(chunk_size_bytes);
-        if (requestedChunkSize > 0 && requestedChunkSize !== FIXED_CHUNK_SIZE_BYTES) {
+        if (![256*1024,512*1024,1024*1024,2*1024*1024,FIXED_CHUNK_SIZE_BYTES].includes(requestedChunkSize)) {
             return sendApiError(
                 res,
                 400,
-                'chunk_size_fixed',
-                `Chunk size must be exactly ${FIXED_CHUNK_SIZE_BYTES} bytes.`,
+                'invalid_chunk_size',
+                'Chunk size must be 256 KB, 512 KB, 1 MB, 2 MB or 5 MB.',
                 { retryable: false }
             );
         }
     }
 
-    const chunkSize = FIXED_CHUNK_SIZE_BYTES;
+    const chunkSize = chunk_size_bytes ? toInt(chunk_size_bytes) : FIXED_CHUNK_SIZE_BYTES;
     const totalChunks = Math.max(1, Math.ceil(fileSize / chunkSize));
+
+    if (folder_id !== undefined && folder_id !== null) {
+        if (typeof folder_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(folder_id)) return sendApiError(res, 400, 'invalid_request', 'Invalid upload folder', { retryable: false });
+        const folder = await pool.query('SELECT id FROM folders WHERE id = $1 AND user_id = $2 AND is_trashed = false', [folder_id, req.user.id]);
+        if (!folder.rows.length) return sendApiError(res, 404, 'not_found', 'Upload folder not found', { retryable: false });
+    }
 
     // Check storage quota BEFORE connecting to Telegram
     const quotaCheckEnabled = process.env.STORAGE_QUOTA_ENABLED === 'true';
@@ -178,81 +187,26 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
         );
     }
 
+    const clientUploadKey = String(req.body.client_upload_key || '').trim().slice(0, 160) || null;
+    const findClientSession = async () => {
+        if (!clientUploadKey) return null;
+        const found = await pool.query(
+            `SELECT * FROM upload_sessions WHERE user_id = $1 AND client_upload_key = $2 AND status NOT IN ('failed', 'cancelled') LIMIT 1`,
+            [req.user!.id, clientUploadKey]);
+        return found.rows[0] as UploadSessionRow | undefined;
+    };
+    const previous = await findClientSession();
+    if (previous) {
+        if (previous.file_name !== fileName || toInt(previous.total_bytes) !== fileSize
+            || previous.folder_id !== (folder_id || null) || previous.telegram_chat_id !== uploadTransport.chatId) {
+            return sendApiError(res,409,'upload_key_conflict','This upload key belongs to a different file.',{retryable:false});
+        }
+        return res.json({...await toUploadStatusPayload(previous), duplicate:previous.status === 'completed'});
+    }
+
     let dedupeHint: { strategy: 'partial-hash'; fileId: string; fileName: string } | null = null;
 
-    if (hash) {
-        try {
-            const hashValue = String(hash).trim();
-            let existing;
-            if (hashValue.length === 64) {
-                existing = await pool.query(
-                    `SELECT * FROM files WHERE sha256_hash = $1 AND user_id = $2 AND is_trashed = false LIMIT 1`,
-                    [hashValue, req.user.id]
-                );
-            } else if (hashValue.length === 32) {
-                existing = await pool.query(
-                    `SELECT * FROM files WHERE md5_hash = $1 AND user_id = $2 AND is_trashed = false LIMIT 1`,
-                    [hashValue, req.user.id]
-                );
-            } else {
-                existing = await pool.query(
-                    `SELECT * FROM files WHERE (sha256_hash = $1 OR md5_hash = $1) AND user_id = $2 AND is_trashed = false LIMIT 1`,
-                    [hashValue, req.user.id]
-                );
-            }
-
-            if (existing.rows.length > 0) {
-                const existingFile = existing.rows[0];
-                const effectiveFolderId = folder_id || null;
-                if (effectiveFolderId && effectiveFolderId !== existingFile.folder_id) {
-                    const newFileRes = await pool.query(
-                        `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash, partial_sha256, blurhash, tg_media_meta, tg_duration_sec, tg_width, tg_height, tg_caption, tg_source_tag)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18)
-                         RETURNING *`,
-                        [
-                            req.user.id,
-                            effectiveFolderId,
-                            existingFile.file_name,
-                            existingFile.file_size,
-                            existingFile.telegram_file_id,
-                            existingFile.telegram_message_id,
-                            existingFile.telegram_chat_id,
-                            existingFile.mime_type,
-                            existingFile.sha256_hash,
-                            existingFile.md5_hash,
-                            existingFile.partial_sha256 || null,
-                            existingFile.blurhash || null,
-                            JSON.stringify(existingFile.tg_media_meta || {}),
-                            existingFile.tg_duration_sec || null,
-                            existingFile.tg_width || null,
-                            existingFile.tg_height || null,
-                            existingFile.tg_caption || null,
-                            existingFile.tg_source_tag || null,
-                        ]
-                    );
-                    return res.json({
-                        success: true,
-                        duplicate: true,
-                        file: formatFileRow(newFileRes.rows[0]),
-                        message: 'File already exists — reused from library',
-                    });
-                }
-
-                return res.json({
-                    success: true,
-                    duplicate: true,
-                    file: formatFileRow(existingFile),
-                    message: 'File already exists — skipped upload',
-                });
-            }
-        } catch (hashCheckErr: any) {
-            logger.warn('backend.upload', 'dedupe_hash_check_failed', {
-                userId: req.user.id,
-                fileName,
-                message: hashCheckErr?.message,
-            });
-        }
-    }
+    // Client hashes are hints. Finalization verifies received bytes using SHA-256.
 
     const clientPartialHash = String(partial_hash || '').trim().toLowerCase();
     if (!hash && clientPartialHash && clientPartialHash.length === 64 && fileSize >= LARGE_FILE_PARTIAL_HASH_THRESHOLD_BYTES) {
@@ -290,7 +244,11 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
         const capacity = await getCapacitySnapshot(req.user.id);
         const limits = getAdaptiveConcurrencyLimits(capacity);
         const disk = getDiskUsageSnapshot();
-        const diskCannotFitNow = disk.availableBytes > 0 && (disk.availableBytes - RESERVED_DISK_BYTES) < fileSize;
+        // Chunk storage and assembly coexist until Telegram delivery finishes.
+        const diskCannotFitNow = (disk.availableBytes - RESERVED_DISK_BYTES) < fileSize * 2;
+        if (diskCannotFitNow) {
+            return sendApiError(res, 507, 'insufficient_upload_storage', 'The server does not have enough temporary storage for this file. Try again later.', { retryable: true });
+        }
         const shouldQueue = diskCannotFitNow
             || limits.diskPauseNewUploads
             || capacity.activeForUser >= Math.max(1, limits.perUserLimit)
@@ -298,16 +256,16 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
         const initialStatus: UploadLifecycleStatus = shouldQueue ? 'queued' : 'uploading';
 
         tempFilePath = ensureTempUploadFile(uploadId, fileName, fileSize, false);
-        await pool.query(
+        const insertedSession = await pool.query(
             `INSERT INTO upload_sessions (
                 upload_id, user_id, file_name, mime_type, folder_id, telegram_chat_id, source_tag, upload_protocol,
                 total_bytes, chunk_size_bytes, total_chunks, uploaded_chunks, received_bytes,
-                status, telegram_progress_percent, temp_file_path
+                status, telegram_progress_percent, temp_file_path, client_upload_key
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8,
                 $9, $10, $11, $12::jsonb, 0,
-                $13, 0, $14
-            )`,
+                $13, 0, $14, $15
+            ) ON CONFLICT (user_id, client_upload_key) WHERE client_upload_key IS NOT NULL AND status NOT IN ('failed', 'cancelled') DO NOTHING RETURNING upload_id`,
             [
                 uploadId,
                 req.user.id,
@@ -323,9 +281,16 @@ export const initUpload = async (req: AuthRequest, res: Response) => {
                 JSON.stringify([]),
                 initialStatus,
                 tempFilePath,
+                clientUploadKey,
             ]
         );
 
+        if (!insertedSession.rows.length) {
+            cleanupSessionTempFile(tempFilePath);
+            const recovered = await findClientSession();
+            if (!recovered) throw new Error('Could not recover the upload session.');
+            return res.json({...await toUploadStatusPayload(recovered), duplicate:recovered.status === 'completed'});
+        }
         const latestCapacity = await getCapacitySnapshot(req.user.id);
         const hints = buildBackpressureHints(initialStatus, latestCapacity);
         const queuePosition = initialStatus === 'queued'
@@ -393,6 +358,7 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
     if (!session) {
         return sendApiError(res, 404, 'upload_not_found', 'Upload session not found');
     }
+    await reconcileStoredChunks(session);
 
     if (session.status === 'completed') {
         const payload = await toUploadStatusPayload(session);
@@ -463,14 +429,9 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
         const capacityBeforeChunk = await getCapacitySnapshot(req.user.id);
         const hintsBeforeChunk = buildBackpressureHints(session.status, capacityBeforeChunk);
         const adaptiveLimits = getAdaptiveConcurrencyLimits(capacityBeforeChunk);
-        const shouldPauseForBackpressure = session.status === 'uploading'
-            && (
-                adaptiveLimits.diskCritical
-                || (
-                    hintsBeforeChunk.backpressure.level === 'high'
-                    && (capacityBeforeChunk.activeGlobal >= Math.max(1, adaptiveLimits.globalLimit) || capacityBeforeChunk.queuedGlobal > 0)
-                )
-            );
+        // Admitted transfers must finish and release capacity. Re-queuing at
+        // the concurrency limit makes a full queue oscillate indefinitely.
+        const shouldPauseForBackpressure = session.status === 'uploading' && adaptiveLimits.diskCritical;
         if (shouldPauseForBackpressure) {
             await pool.query(
                 `UPDATE upload_sessions
@@ -596,40 +557,39 @@ export const uploadChunk = async (req: AuthRequest, res: Response) => {
         }
 
         if (!(await pathExists(session.temp_file_path))) {
-            await removeFileBestEffort(multerTempPath);
-            await updateSessionFailure(uploadId, 'temp_file_missing', 'Upload temp file is missing. Restart required.', false);
-            return res.status(410).json({
-                success: false,
-                error: 'Upload partial data unavailable. Please restart upload.',
-                code: 'TEMP_FILE_MISSING',
-                retryable: false,
-            });
+            await fs.promises.mkdir(session.temp_file_path, { recursive: true });
         }
 
         try {
             await withUploadBandwidthBudget(req.user.id, actualChunkSize);
-            await fs.promises.mkdir(session.temp_file_path, { recursive: true });
-            const targetChunkPath = path.join(session.temp_file_path, `chunk_${chunkIndex}.tmp`);
-            if (multerTempPath) {
-                try {
-                    await fs.promises.rename(multerTempPath, targetChunkPath);
-                } catch (renameErr: any) {
-                    if (renameErr.code === 'EXDEV') {
-                        await fs.promises.copyFile(multerTempPath, targetChunkPath);
-                    } else {
-                        throw renameErr;
-                    }
+            const chunkDb = await pool.connect();
+            try {
+                await chunkDb.query('BEGIN');
+                // Serialize persistence across processes, including conflicting retries.
+                // Check the manifest BEFORE replacing an acknowledged chunk on disk.
+                const lockedSession = await chunkDb.query('SELECT status FROM upload_sessions WHERE upload_id = $1 FOR UPDATE', [uploadId]);
+                if (lockedSession.rows[0]?.status !== 'uploading') throw Object.assign(new Error('Upload is not accepting chunks'), { code: 'CHUNK_STATE_CHANGED' });
+                const lockedChunk = await chunkDb.query('SELECT chunk_hash_sha256, chunk_size_bytes FROM upload_session_chunks WHERE upload_id = $1 AND chunk_index = $2', [uploadId, chunkIndex]);
+                if (lockedChunk.rows.length) {
+                    const prior = lockedChunk.rows[0];
+                    if (prior.chunk_hash_sha256 !== serverChunkHash || toInt(prior.chunk_size_bytes) !== actualChunkSize) throw Object.assign(new Error('Conflicting chunk retry'), { code: 'CHUNK_CONFLICT' });
+                } else {
+                    await fs.promises.mkdir(session.temp_file_path, { recursive: true });
+                    const targetChunkPath = path.join(session.temp_file_path, 'chunk_' + chunkIndex + '.tmp');
+                    if (multerTempPath) {
+                        try { await fs.promises.rename(multerTempPath, targetChunkPath); }
+                        catch (renameErr: any) {
+                            if (renameErr.code === 'EXDEV') await fs.promises.copyFile(multerTempPath, targetChunkPath);
+                            else throw renameErr;
+                        }
+                    } else if (chunkBuffer) await fs.promises.writeFile(targetChunkPath, chunkBuffer);
+                    await chunkDb.query('INSERT INTO upload_session_chunks (upload_id, chunk_index, chunk_size_bytes, chunk_hash_sha256) VALUES ($1, $2, $3, $4)', [uploadId, chunkIndex, actualChunkSize, serverChunkHash]);
                 }
-            } else if (chunkBuffer) {
-                await fs.promises.writeFile(targetChunkPath, chunkBuffer);
-            }
-
-            await pool.query(
-                `INSERT INTO upload_session_chunks (upload_id, chunk_index, chunk_size_bytes, chunk_hash_sha256)
-                 VALUES ($1, $2, $3, $4)`,
-                [uploadId, chunkIndex, actualChunkSize, serverChunkHash]
-            );
+                await chunkDb.query('COMMIT');
+            } catch (chunkError) { await chunkDb.query('ROLLBACK'); throw chunkError; }
+            finally { chunkDb.release(); }
         } catch (err: any) {
+            if (err?.code === 'CHUNK_CONFLICT' || err?.code === 'CHUNK_STATE_CHANGED') return sendApiError(res, 409, err.code, err.message);
             if (err?.code === '23505') {
                 const retryChunkRes = await pool.query(
                     `SELECT chunk_hash_sha256, chunk_size_bytes
@@ -785,6 +745,7 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
     const totalChunks = toInt(session.total_chunks);
     const chunkSize = Math.max(1, toInt(session.chunk_size_bytes) || FIXED_CHUNK_SIZE_BYTES);
     const totalBytes = Math.max(0, toInt(session.total_bytes));
+    await reconcileStoredChunks(session);
     const manifestIntegrity = await validateChunkManifestIntegrity(uploadId, totalChunks, chunkSize, totalBytes);
     if (!manifestIntegrity.valid) {
         return res.status(409).json({
@@ -963,6 +924,10 @@ export const cancelUpload = async (req: AuthRequest, res: Response) => {
         return res.json({ success: true, message: 'Upload session not found or already cleaned up' });
     }
 
+    if (session.status === 'completed' || session.status === 'cancelled') {
+        return res.json(await toUploadStatusPayload(session));
+    }
+
     await pool.query(
         `UPDATE upload_sessions
          SET status = 'cancelled',
@@ -1003,6 +968,7 @@ export const checkUploadStatus = async (req: AuthRequest, res: Response) => {
     const uploadId = String(req.params.uploadId || '').trim();
     if (!uploadId) return sendApiError(res, 400, 'missing_upload_id', 'Missing uploadId');
 
+    await pool.query(`UPDATE upload_sessions SET client_seen_at = NOW() WHERE upload_id = $1 AND user_id = $2 AND status = 'queued'`, [uploadId, req.user.id]);
     await promoteQueuedSessionsIfCapacity();
 
     const session = await getOwnedUploadSession(uploadId, req.user.id);

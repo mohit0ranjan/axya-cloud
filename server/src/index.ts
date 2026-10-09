@@ -1,3 +1,4 @@
+import './config/production';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
@@ -16,27 +17,36 @@ import fileRoutes from './routes/file.routes';
 import uploadRoutes from './routes/upload.routes';
 import shareV2Routes from './routes/share-v2.routes';
 import streamRoutes from './routes/stream.routes';
+import fileRequestRoutes from './routes/file-request.routes';
 import { logger } from './utils/logger';
 import { getDynamicClient } from './services/telegram.service';
 import { sendApiError } from './utils/apiError';
 import { FRONTEND_BASE_URL, SERVER_BASE_URL } from './config/urls';
 import { startUploadMaintenanceLoop } from './controllers/upload';
+import { getUploadStagingReadiness } from './controllers/upload/upload.temp';
+import { encryptSession } from './utils/sessionEncryption';
 import { globalErrorHandler } from './middlewares/errorHandler';
+import type { Server } from 'http';
+import { createReadinessHandler } from './utils/healthReadiness';
+import { drainRequestsThenCloseDatabase } from './utils/shutdown';
 
 dotenv.config();
+// Fail before accepting logins if encrypted sessions cannot be persisted.
+encryptSession('startup-key-validation');
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
-const REQUIRED_NODE_MAJOR = 20;
+const REQUIRED_NODE_MAJOR = 24;
 const SCHEMA_RETRY_DELAY_MS = 5000;
 const SCHEMA_MAX_RETRIES = 12;
 const SCHEMA_RETRY_AFTER_SECONDS = Math.max(1, Math.ceil(SCHEMA_RETRY_DELAY_MS / 1000));
 const HEALTH_DB_TIMEOUT_MS = Number.parseInt(String(process.env.HEALTH_DB_TIMEOUT_MS || '1200'), 10) || 1200;
-const isHealthPath = (p: string) => p === '/health' || p === '/health/';
+const isHealthPath = (p: string) => ['/health', '/health/', '/readyz', '/readyz/'].includes(p);
 const redactSensitiveQuery = (url: string) =>
     url
-        .replace(/([?&](?:token|session_token|sessionToken|password|otp|code|k|secret)=)[^&]*/gi, '$1[redacted]')
+        .replace(/(\/api\/v2\/public\/stream\/|\/public\/stream\/)[^/?]+/gi, '$1[redacted]')
+        .replace(/([?&](?:ticket|token|session_token|sessionToken|password|otp|code|k|secret)=)[^&]*/gi, '$1[redacted]')
         .replace(/([?&](?:authorization)=)[^&]*/gi, '$1[redacted]');
 const getRequestId = (req: Request, res?: Response): string => {
     const responseHeader = res ? String(res.getHeader('x-request-id') || '').trim() : '';
@@ -50,6 +60,8 @@ let schemaInitAttempts = 0;
 let schemaLastError = '';
 let schemaState: 'starting' | 'ready' | 'degraded' = 'starting';
 let telegramWarmupStatus: 'idle' | 'ready' | 'partial' | 'failed' | 'skipped' = 'idle';
+let httpServer: Server | undefined;
+let shuttingDown = false;
 
 app.disable('x-powered-by');
 
@@ -61,7 +73,8 @@ app.use((req, res, next) => {
     next();
 });
 
-app.use(morgan(':req[x-request-id] :method :url :status :response-time ms', {
+morgan.token('safe-url', req => redactSensitiveQuery(req.url || ''));
+app.use(morgan(':req[x-request-id] :method :safe-url :status :response-time ms', {
     skip: (req) => isHealthPath(req.path),
     stream: {
         write: (line: string) => {
@@ -138,7 +151,7 @@ const allowedOrigins = Array.from(
     new Set([...defaultAllowedOrigins, ...configuredAllowedOrigins, frontendOrigin, serverOrigin].filter(Boolean))
 );
 const allowedMethods = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
-const defaultAllowedHeaders = ['Authorization', 'Content-Type', 'X-Requested-With'];
+const defaultAllowedHeaders = ['Authorization', 'Content-Type', 'Range', 'X-Requested-With', 'X-Axya-Request-Key', 'X-Axya-Request-Password', 'X-Axya-Request-Session'];
 const isAllowedOrigin = (origin?: string) => {
     if (!origin) return true;
     if (!isProduction && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) {
@@ -157,6 +170,7 @@ const corsOptions: cors.CorsOptions = {
     credentials: true,
     methods: allowedMethods,
     allowedHeaders: defaultAllowedHeaders,
+    exposedHeaders: ['Accept-Ranges', 'Content-Range', 'Content-Length', 'Retry-After'],
     optionsSuccessStatus: 204,
 };
 app.use((req, res, next) => {
@@ -199,6 +213,11 @@ app.use(cookieParser(cookieSecret));
 
 // Keep process alive during transient DB outages; return 503 until schema/init is ready.
 app.use((req, res, next) => {
+    if (shuttingDown && !isHealthPath(req.path)) {
+        res.setHeader('Connection', 'close');
+        return sendApiError(res, 503, 'server_restarting', 'Server is restarting. Please retry shortly.',
+            { retryable: true, retryAfterSeconds: 5 });
+    }
     if (schemaReady) return next();
     if (req.path === '/' || isHealthPath(req.path)) return next();
     const requestId = getRequestId(req, res);
@@ -278,6 +297,17 @@ app.use('/files', fileRoutes);
 app.use('/upload', uploadRoutes);
 app.use('/api/v2', shareV2Routes);
 app.use('/stream', streamRoutes);
+app.use('/file-requests', fileRequestRoutes);
+
+// Render routes traffic only when dependencies are usable; /health remains a liveness probe.
+app.get('/readyz', createReadinessHandler({
+    schema: () => schemaState,
+    shuttingDown: () => shuttingDown,
+    telegramConfigured: () => Boolean(Number(process.env.TELEGRAM_API_ID) && process.env.TELEGRAM_API_HASH),
+    staging: getUploadStagingReadiness,
+    database: () => pool.query('SELECT 1'),
+    databaseTimeoutMs: Math.min(3000, Math.max(100, HEALTH_DB_TIMEOUT_MS)),
+}));
 
 // ── Lightweight Health Check (Render keep-alive friendly) ───────────────────
 // Keep this endpoint fast and dependency-free for external keep-alive pings.
@@ -288,15 +318,16 @@ app.get('/health', async (req: Request, res: Response) => {
     const deepCheckRequested = String(req.query.deep || '').trim() === '1';
 
     const runDbHealthCheck = async (): Promise<'ok' | 'degraded'> => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
             await Promise.race([
                 pool.query('SELECT 1'),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('health_db_timeout')), HEALTH_DB_TIMEOUT_MS)),
+                new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('health_db_timeout')), HEALTH_DB_TIMEOUT_MS); }),
             ]);
             return 'ok';
         } catch {
             return 'degraded';
-        }
+        } finally { if (timer) clearTimeout(timer); }
     };
 
     // Emit an explicit keep-alive log for cron monitoring and debugging.
@@ -319,7 +350,9 @@ app.get('/health', async (req: Request, res: Response) => {
             : schemaState === 'starting'
                 ? 'starting'
                 : 'degraded';
-        const readyForUploads = schemaReady && (deepCheckRequested ? dbState === 'ok' : true);
+        const telegramConfigured = Boolean(Number(process.env.TELEGRAM_API_ID) && process.env.TELEGRAM_API_HASH);
+        const staging = getUploadStagingReadiness();
+        const readyForUploads = !shuttingDown && schemaReady && telegramConfigured && staging.ready && (deepCheckRequested ? dbState === 'ok' : true);
 
         return res.status(200).json({
             status,
@@ -331,6 +364,8 @@ app.get('/health', async (req: Request, res: Response) => {
                 schema: schemaState,
                 db: dbState,
                 telegramWarmup: telegramWarmupStatus,
+                telegramApi: telegramConfigured ? 'configured' : 'missing',
+                uploadStaging: staging.reason,
             },
         });
     } catch (err: any) {
@@ -365,7 +400,7 @@ app.use((req: Request, res: Response) => {
         retryable: false,
         details: {
             method: req.method,
-            path: req.originalUrl || req.url,
+            path: redactSensitiveQuery(req.originalUrl || req.url),
             requestId: String((req as any).requestId || req.headers['x-request-id'] || '').trim() || null,
         },
     });
@@ -375,22 +410,29 @@ app.use((req: Request, res: Response) => {
 app.use(globalErrorHandler);
 
 // ── Graceful Shutdown ────────────────────────────────────────────────────────
-const shutdown = async (signal: string) => {
+const shutdown = async (signal: string, exitCode = 0) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info('backend.process', 'shutdown_signal', { signal });
+    // Drain acknowledged requests before closing their database connections.
+    // Staged chunks and worker leases survive the eventual bounded process exit.
+    const deadline = setTimeout(() => process.exit(exitCode || 1), 25000);
+    deadline.unref();
     try {
-        await pool.end();
+        await drainRequestsThenCloseDatabase(httpServer, () => pool.end());
         logger.info('backend.process', 'db_pool_closed');
     } catch (e) { }
-    process.exit(0);
+    clearTimeout(deadline);
+    process.exit(exitCode);
 };
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-// ── Uncaught exception handler (prevent Render dyno crash) ──────────────────
+// A process with an uncaught exception must not continue serving production traffic.
 process.on('uncaughtException', (err) => {
     logger.error('backend.process', 'uncaught_exception', { message: err.message, stack: err.stack });
-    // Don't exit — let Render restart if needed via health check
+    void shutdown('uncaughtException', 1);
 });
 
 process.on('unhandledRejection', (reason) => {
@@ -404,7 +446,7 @@ process.on('unhandledRejection', (reason) => {
  * Upload sessions are now persisted in DB and rely on these files for restart resume.
  */
 function cleanOrphanedUploads(): void {
-    const tmpDir = path.join(os.tmpdir(), 'axya_uploads');
+    const tmpDir = path.resolve(process.env.UPLOAD_STORAGE_DIR || path.join(os.tmpdir(), 'axya_uploads'));
     try {
         fs.mkdirSync(tmpDir, { recursive: true });
         logger.info('backend.startup', 'upload_tmp_ready', { tmpDir });
@@ -476,9 +518,11 @@ const scheduleSchemaInitRetry = (delayMs: number) => {
 };
 
 const initializeCoreServices = async () => {
+    if (shuttingDown) return;
     schemaInitAttempts += 1;
     try {
         await initSchema();
+        if (shuttingDown) return;
         schemaReady = true;
         schemaState = 'ready';
         schemaLastError = '';
@@ -527,13 +571,15 @@ const start = async () => {
         logger.info('backend.startup', 'server_starting', { port });
         enforceSupportedNodeRuntime();
         cleanOrphanedUploads();
-        app.listen(port, '0.0.0.0', () => {
+        httpServer = app.listen(port, '0.0.0.0', () => {
             logger.info('backend.startup', 'server_ready', {
                 bind: `http://0.0.0.0:${port}`,
                 node: process.version,
                 env: process.env.NODE_ENV || 'development',
             });
         });
+        httpServer.requestTimeout=10*60*1000;
+        httpServer.headersTimeout=60000;
         void initializeCoreServices();
     } catch (error: any) {
         logger.error('backend.startup', 'server_bind_failed', {

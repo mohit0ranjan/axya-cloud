@@ -1,8 +1,10 @@
 # Node
 node_modules/
+server/data/
 dist/
 build/
 .next/
+.next-dev/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -14,6 +16,9 @@ yarn-error.log*
 .env.development.local
 .env.test.local
 .env.production.local
+.env.*
+!.env.example
+!.env.production.example
 
 # Typescript
 *.tsbuildinfo
@@ -42,3 +47,7 @@ app/dist/
 tmp-export/
 app/trace/
 tools/scripts/**/*.log
+
+app/.tmp-export/
+app/.stage2-web-check/
+native-ui-check/

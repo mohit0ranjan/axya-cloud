@@ -1,4 +1,6 @@
 import pool from '../../config/db';
+import fs from 'fs';
+import path from 'path';
 import { formatFileRow } from '../../utils/formatters';
 import { toInt, parseUploadedChunks, computeNextExpectedChunk, computeMissingChunks } from './upload.helpers';
 import { getCapacitySnapshot, buildBackpressureHints } from './upload.capacity';
@@ -11,6 +13,7 @@ import {
     UploadLifecycleStatus,
     CapacitySnapshot,
     FIXED_CHUNK_SIZE_BYTES,
+    UPLOAD_TMP_ROOT,
 } from './upload.types';
 
 // ─── Session CRUD ───────────────────────────────────────────────────────────
@@ -46,6 +49,50 @@ export const getChunkStats = async (uploadId: string): Promise<UploadChunkStats>
         uploadedBytes: toInt(row.uploaded_bytes),
         uploadedChunks: parseUploadedChunks(row.uploaded_chunks),
     };
+};
+
+/** Remove acknowledgements whose bytes disappeared after a storage restart.
+ * The client must resend these chunks; a Neon row alone is not proof of data. */
+export const reconcileStoredChunks = async (session: UploadSessionRow): Promise<number> => {
+    if (!['uploading', 'queued', 'paused'].includes(session.status)) return 0;
+    const currentRootPath = path.join(UPLOAD_TMP_ROOT, session.upload_id);
+    if (session.temp_file_path !== currentRootPath) {
+        try {
+            await fs.promises.access(session.temp_file_path);
+        } catch {
+            // A former ephemeral path cannot be recovered. Rebase the session
+            // onto the configured staging volume, then request its missing bytes.
+            await fs.promises.mkdir(currentRootPath, { recursive: true });
+            await pool.query(
+                'UPDATE upload_sessions SET temp_file_path = $2 WHERE upload_id = $1 AND temp_file_path = $3',
+                [session.upload_id, currentRootPath, session.temp_file_path]
+            );
+            session.temp_file_path = currentRootPath;
+        }
+    }
+    const rows = await pool.query(
+        'SELECT chunk_index, chunk_size_bytes FROM upload_session_chunks WHERE upload_id = $1',
+        [session.upload_id]
+    );
+    const missing: number[] = [];
+    for (const row of rows.rows) {
+        const chunkIndex = toInt(row.chunk_index);
+        try {
+            const stat = await fs.promises.stat(path.join(session.temp_file_path, `chunk_${chunkIndex}.tmp`));
+            if (!stat.isFile() || stat.size !== toInt(row.chunk_size_bytes)) missing.push(chunkIndex);
+        } catch {
+            missing.push(chunkIndex);
+        }
+    }
+    if (!missing.length) return 0;
+    await pool.query(
+        'DELETE FROM upload_session_chunks WHERE upload_id = $1 AND chunk_index = ANY($2::int[])',
+        [session.upload_id, missing]
+    );
+    const stats = await saveChunkMetricsToSession(session.upload_id, session.status);
+    session.uploaded_chunks = stats.uploadedChunks;
+    session.received_bytes = stats.uploadedBytes;
+    return missing.length;
 };
 
 export const validateChunkManifestIntegrity = async (
@@ -120,9 +167,9 @@ export const saveChunkMetricsToSession = async (uploadId: string, status: Upload
         `UPDATE upload_sessions
          SET uploaded_chunks = $2::jsonb,
              received_bytes = $3,
-             status = $4,
+             status = CASE WHEN status IN ('uploading', 'queued') THEN $4 ELSE status END,
              updated_at = NOW()
-         WHERE upload_id = $1`,
+         WHERE upload_id = $1 AND status NOT IN ('completed', 'cancelled')`,
         [uploadId, JSON.stringify(stats.uploadedChunks), stats.uploadedBytes, status]
     );
     return stats;
@@ -177,6 +224,7 @@ export const toClientUploadStatus = (session: UploadSessionRow): string => {
 };
 
 export const toUploadStatusPayload = async (session: UploadSessionRow, capacityOverride?: CapacitySnapshot) => {
+    await reconcileStoredChunks(session);
     const uploadedChunks = parseUploadedChunks(session.uploaded_chunks);
     const totalChunks = toInt(session.total_chunks);
     const nextExpectedChunk = computeNextExpectedChunk(totalChunks, uploadedChunks);
@@ -213,6 +261,7 @@ export const toUploadStatusPayload = async (session: UploadSessionRow, capacityO
         missingChunks: missingChunks.slice(0, 256),
         missingChunksCount: missingChunks.length,
         totalChunks,
+        chunkSizeBytes: toInt(session.chunk_size_bytes),
         nextExpectedChunk,
         uploadId: session.upload_id,
         uploadMode: 'chunk',

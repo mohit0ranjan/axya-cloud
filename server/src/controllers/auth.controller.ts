@@ -2,18 +2,19 @@ import { Request, Response } from 'express';
 import { generateOTP, verifyOTPAndSignIn } from '../services/telegram.service';
 import pool from '../config/db';
 import jwt from 'jsonwebtoken';
+import { encryptSession } from '../utils/sessionEncryption';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('🔴 FATAL: JWT_SECRET env var not set.');
 
 export const sendCode = async (req: Request, res: Response) => {
     const { phoneNumber } = req.body;
-    if (!phoneNumber) {
-        return res.status(400).json({ success: false, error: 'Phone number is required.' });
+    if (typeof phoneNumber !== 'string' || !/^\+[1-9]\d{6,14}$/.test(phoneNumber)) {
+        return res.status(400).json({ success: false, error: 'Enter your phone number in international format.' });
     }
 
     try {
-        console.log(`📡 [Auth] Requesting code for: ${phoneNumber}`);
+        console.log(`[Auth] Requesting Telegram verification code`);
         const { phoneCodeHash, tempSession } = await generateOTP(phoneNumber);
         console.log(`✅ [Auth] Code sent successfully`);
         res.json({ success: true, phoneCodeHash, tempSession });
@@ -41,14 +42,18 @@ export const sendCode = async (req: Request, res: Response) => {
 };
 
 export const verifyCode = async (req: Request, res: Response) => {
-    const { phoneNumber, phoneCodeHash, phoneCode, tempSession } = req.body;
+    const { phoneNumber, phoneCodeHash, phoneCode, tempSession, password } = req.body;
 
     if (!phoneNumber || !phoneCodeHash || !phoneCode || !tempSession) {
         return res.status(400).json({ success: false, error: 'Missing required credentials.' });
     }
 
+    if (req.body.platform === 'web') {
+        const origins = String(process.env.ALLOWED_ORIGINS || '').split(',').map(value => value.trim());
+        if (!req.headers.origin || !origins.includes(req.headers.origin)) return res.status(403).json({ success: false, error: 'This browser origin is not authorized' });
+    }
     try {
-        const { userSessionString, profileData } = await verifyOTPAndSignIn(phoneNumber, phoneCodeHash, phoneCode, tempSession);
+        const { userSessionString, profileData } = await verifyOTPAndSignIn(phoneNumber, phoneCodeHash, phoneCode, tempSession, password);
 
         let userResult = await pool.query('SELECT id FROM users WHERE phone = $1', [phoneNumber]);
         let userId;
@@ -56,15 +61,19 @@ export const verifyCode = async (req: Request, res: Response) => {
         if (userResult.rows.length === 0) {
             const insertResult = await pool.query(
                 'INSERT INTO users (phone, session_string, name, username) VALUES ($1, $2, $3, $4) RETURNING id',
-                [phoneNumber, userSessionString, profileData.name, profileData.username]
+                [phoneNumber, encryptSession(userSessionString), profileData.name, profileData.username]
             );
             userId = insertResult.rows[0].id;
         } else {
             userId = userResult.rows[0].id;
-            await pool.query('UPDATE users SET session_string = $1, name = $2, username = $3 WHERE id = $4', [userSessionString, profileData.name, profileData.username, userId]);
+            await pool.query('UPDATE users SET session_string = $1, name = $2, username = $3 WHERE id = $4', [encryptSession(userSessionString), profileData.name, profileData.username, userId]);
         }
 
         const token = jwt.sign({ userId }, JWT_SECRET, { expiresIn: '30d' });
+        if (req.body.platform === 'web') {
+            res.cookie('axya_session', token, { httpOnly: true, signed: true,
+                secure: process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/', maxAge: 30 * 24 * 60 * 60 * 1000 });
+        }
 
         res.json({
             success: true,
@@ -81,6 +90,7 @@ export const verifyCode = async (req: Request, res: Response) => {
                 error: 'Two-step verification is enabled on this Telegram account.',
             });
         }
+        if (/PASSWORD_HASH_INVALID/i.test(raw)) return res.status(400).json({ success: false, code: 'TELEGRAM_2FA_REQUIRED', error: 'Incorrect two-step verification password.' });
         if (/PHONE_CODE_EXPIRED/i.test(raw)) {
             return res.status(400).json({ success: false, error: 'OTP expired. Request a new code.' });
         }
@@ -103,6 +113,25 @@ export const getMe = async (req: any, res: Response) => {
     } catch (err) {
         res.status(500).json({ success: false, error: 'Server error' });
     }
+};
+
+// HTML media elements cannot attach bearer headers to range requests.
+// Exchange a verified bearer token for a signed, HttpOnly same-site cookie.
+export const createBrowserSession = (req: Request, res: Response) => {
+    const origin = String(req.headers.origin || '');
+    const allowed = String(process.env.ALLOWED_ORIGINS || '').split(',').map(value => value.trim());
+    const localDevelopment = process.env.NODE_ENV !== 'production' && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+    const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
+    if (!token || (!allowed.includes(origin) && !localDevelopment)) {
+        return res.status(403).json({ success: false, error: 'This browser origin is not authorized' });
+    }
+    // Never extend the lifetime of the original bearer token.
+    const decoded = jwt.decode(token) as { exp?: number } | null;
+    const maxAge = Math.max(0, (Number(decoded?.exp || 0) * 1000) - Date.now());
+    if (!maxAge) return res.status(401).json({ success: false, error: 'Session expired' });
+    res.cookie('axya_session', token, { httpOnly: true, signed: true,
+        secure: process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/', maxAge });
+    return res.json({ success: true });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

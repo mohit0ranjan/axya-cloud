@@ -4,6 +4,8 @@ import { getCachedPreviewAssetUri, resolvePreviewAssetUri, warmPreviewAssetUri }
 import { useServerStatus } from '../context/ServerStatusContext';
 
 type PreviewAssetOptions = {
+    localUri?: string;
+    revision?: string;
     baseUrl: string;
     fileId: string | number;
     jwt: string;
@@ -44,6 +46,8 @@ const shouldWarmFullAsset = (isCurrent: boolean, mimeType?: string | null, fileS
 };
 
 export function usePreviewAssetCache({
+    localUri,
+    revision,
     baseUrl,
     fileId,
     jwt,
@@ -60,35 +64,40 @@ export function usePreviewAssetCache({
     const [cacheVersion, setCacheVersion] = useState(0);
 
     const thumbUri = useMemo(() => (
-        getCachedPreviewAssetUri(baseUrl, fileId, 'thumbnail', { width: thumbWidth, mimeType: 'image/webp' }) ||
-        resolvePreviewAssetUri(baseUrl, fileId, 'thumbnail', { width: thumbWidth, mimeType: 'image/webp' })
-    ), [baseUrl, cacheVersion, fileId, retryNonce, thumbWidth]);
+        getCachedPreviewAssetUri(baseUrl, fileId, 'thumbnail', { revision, width: thumbWidth, mimeType: 'image/webp' }) ||
+        resolvePreviewAssetUri(baseUrl, fileId, 'thumbnail', { revision, width: thumbWidth, mimeType: 'image/webp' })
+    ), [revision, baseUrl, cacheVersion, fileId, retryNonce, thumbWidth]);
 
     const previewWidth = Platform.OS === 'web' ? 2048 : 1080;
     const activeUri = useMemo(() => {
         if (!isCurrent) return thumbUri;
         if (previewIsImage) {
-            return getCachedPreviewAssetUri(baseUrl, fileId, 'thumbnail', { width: previewWidth, mimeType: 'image/webp' }) ||
-                resolvePreviewAssetUri(baseUrl, fileId, 'thumbnail', { width: previewWidth, mimeType: 'image/webp' });
+            if (Number(fileSizeBytes || 0) <= 20 * 1024 * 1024) {
+                return getCachedPreviewAssetUri(baseUrl, fileId, "download", { revision, mimeType: String(mimeType || "") }) || resolvePreviewAssetUri(baseUrl, fileId, "download", { revision, mimeType: String(mimeType || "") });
+            }
+            return getCachedPreviewAssetUri(baseUrl, fileId, 'thumbnail', { revision, width: previewWidth, mimeType: 'image/webp' }) ||
+                resolvePreviewAssetUri(baseUrl, fileId, 'thumbnail', { revision, width: previewWidth, mimeType: 'image/webp' });
         }
-        return getCachedPreviewAssetUri(baseUrl, fileId, 'download', { mimeType: String(mimeType || '') }) ||
-            resolvePreviewAssetUri(baseUrl, fileId, 'download', { mimeType: String(mimeType || '') });
-    }, [baseUrl, fileId, isCurrent, mimeType, previewIsImage, previewWidth, thumbUri, cacheVersion]);
+        return getCachedPreviewAssetUri(baseUrl, fileId, 'download', { revision, mimeType: String(mimeType || '') }) ||
+            resolvePreviewAssetUri(baseUrl, fileId, 'download', { revision, mimeType: String(mimeType || '') });
+    }, [revision, baseUrl, fileId, isCurrent, mimeType, previewIsImage, previewWidth, thumbUri, cacheVersion, fileSizeBytes]);
 
     useEffect(() => {
-        if (!shouldLoad || !jwt || isWaking) return;
+        if (localUri || !shouldLoad || !jwt) return;
 
         let cancelled = false;
         const cancelWork = getLowPriorityHandle(() => {
             void (async () => {
                 try {
                     const thumbResult = await warmPreviewAssetUri(baseUrl, fileId, jwt, 'thumbnail', {
+                        revision,
                         width: thumbWidth,
                         mimeType: 'image/webp',
                     });
 
                     if (previewIsImage && shouldWarmFullAsset(isCurrent, mimeType, fileSizeBytes)) {
                         const fullResult = await warmPreviewAssetUri(baseUrl, fileId, jwt, 'download', {
+                            revision,
                             mimeType: String(mimeType || ''),
                         });
                         if (!cancelled) {
@@ -112,12 +121,12 @@ export function usePreviewAssetCache({
             cancelled = true;
             cancelWork();
         };
-    }, [baseUrl, fileId, fileSizeBytes, isCurrent, isWaking, jwt, mimeType, previewIsImage, retryNonce, shouldLoad, thumbWidth]);
+    }, [revision, localUri, baseUrl, fileId, fileSizeBytes, isCurrent, isWaking, jwt, mimeType, previewIsImage, retryNonce, shouldLoad, thumbWidth]);
 
     return useMemo(() => ({
         headers,
-        thumbSource: { uri: thumbUri, headers },
-        activeSource: { uri: activeUri, headers },
+        thumbSource: { uri: localUri || thumbUri, headers: localUri ? {} : headers },
+        activeSource: { uri: localUri || activeUri, headers: localUri ? {} : headers },
         isImage: previewIsImage,
-    }), [activeUri, headers, previewIsImage, thumbUri]);
+    }), [localUri, activeUri, headers, previewIsImage, thumbUri]);
 }

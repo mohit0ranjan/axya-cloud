@@ -80,6 +80,8 @@ const getStatusLabel = (status: UploadTask['status']): string => {
   const labels: Record<UploadTask['status'], string> = {
     queued: 'Queued',
     uploading: 'Uploading',
+    processing: 'Saving to Telegram',
+    waiting_connection: 'Waiting for connection',
     paused: 'Paused',
     completed: 'Completed',
     failed: 'Failed',

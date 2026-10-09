@@ -32,6 +32,13 @@
         "EXPO_PUBLIC_SITE_URL": "https://axya-web.onrender.com",
         "EXPO_PUBLIC_BASE_URL": "https://axya-web.onrender.com"
       }
+    },
+    "production-apk": {
+      "extends": "production",
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
     }
   }
 }

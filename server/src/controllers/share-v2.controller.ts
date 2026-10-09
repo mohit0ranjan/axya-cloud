@@ -1,3 +1,5 @@
+import { parseByteRange } from '../utils/httpRange';
+import { safeInlineMime } from '../utils/uploadMime';
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import sharp from 'sharp';
@@ -162,6 +164,7 @@ const shareItemsCacheKey = (
 
 const invalidateShareCaches = (shareId: string, slug?: string) => {
     cacheDelByPrefix(shareCachePrefix(shareId));
+    cacheDelByPrefix(shareIdCacheKey(shareId));
     if (slug) {
         cacheDelByPrefix(shareSlugCacheKey(slug));
     }
@@ -320,28 +323,19 @@ const getOwnerShareInsights = async (shareId: string) => {
 };
 
 const getShareBySlug = async (slug: string): Promise<ShareLinkV2Row | null> => {
-    const key = shareSlugCacheKey(slug);
-    const cached = cacheGet<ShareLinkV2Row | null>(key);
-    if (cached !== undefined) return cached;
-
+    // Access policy must be current across all backend processes.
     const res = await withDbReadRetry('get_share_by_slug', async () => {
         return pool.query('SELECT * FROM share_links_v2 WHERE slug = $1', [slug]);
     });
     const share = (res.rows[0] as ShareLinkV2Row | undefined) || null;
-    cacheSet(key, share, SHARE_LOOKUP_CACHE_TTL_SECONDS);
     return share;
 };
 
 const getShareByIdForPublic = async (shareId: string): Promise<ShareLinkV2Row | null> => {
-    const key = shareIdCacheKey(shareId);
-    const cached = cacheGet<ShareLinkV2Row | null>(key);
-    if (cached !== undefined) return cached;
-
     const res = await withDbReadRetry('get_share_by_id_for_public', async () => {
         return pool.query('SELECT * FROM share_links_v2 WHERE id = $1', [shareId]);
     });
     const share = (res.rows[0] as ShareLinkV2Row | undefined) || null;
-    cacheSet(key, share, SHARE_LOOKUP_CACHE_TTL_SECONDS);
     return share;
 };
 
@@ -487,6 +481,9 @@ export const createShareV2 = async (req: AuthRequest, res: Response) => {
     const rootFileId = String(req.body?.root_file_id || '').trim() || null;
     const rootFolderId = String(req.body?.root_folder_id || '').trim() || null;
     const password = String(req.body?.password || '').trim();
+    if (((req.body?.require_password === true || password.length > 0) && password.length < 8) || password.length > 256) {
+        return sendApiError(res, 400, 'invalid_password', 'Use a password between 8 and 256 characters.', { retryable: false });
+    }
     const allowDownload = req.body?.allow_download !== false;
     const allowPreview = req.body?.allow_preview !== false;
     const expiresRaw = req.body?.expires_at;
@@ -581,12 +578,16 @@ export const listSharesV2 = async (req: AuthRequest, res: Response) => {
         const result = await pool.query(
             `SELECT
                 s.*,
+                CASE WHEN s.resource_type = 'file' THEN root_file.file_name
+                     ELSE root_folder.name END AS resource_name,
                 COALESCE(items.file_count, 0)::int AS file_count,
                 COALESCE(events.view_count, 0)::int AS view_count,
                 COALESCE(events.download_count, 0)::int AS download_count,
                 COALESCE(events.preview_count, 0)::int AS preview_count,
                 COALESCE(events.error_count, 0)::int AS error_count
              FROM share_links_v2 s
+             LEFT JOIN files root_file ON root_file.id = s.root_file_id AND root_file.user_id = s.owner_user_id
+             LEFT JOIN folders root_folder ON root_folder.id = s.root_folder_id AND root_folder.user_id = s.owner_user_id
              LEFT JOIN (
                 SELECT share_id, COUNT(*)::int AS file_count
                 FROM share_items_v2
@@ -614,6 +615,7 @@ export const listSharesV2 = async (req: AuthRequest, res: Response) => {
                     id: row.id,
                     slug: row.slug,
                     resourceType: row.resource_type,
+                    resourceName: row.resource_name || null,
                     allowDownload: Boolean(row.allow_download),
                     allowPreview: Boolean(row.allow_preview),
                     requiresPassword: Boolean(row.password_hash),
@@ -696,6 +698,9 @@ export const patchShareV2 = async (req: AuthRequest, res: Response) => {
 
         if (Object.prototype.hasOwnProperty.call(req.body || {}, 'password')) {
             const raw = String(req.body?.password || '').trim();
+            if (raw && (raw.length < 8 || raw.length > 256)) {
+                return sendApiError(res, 400, 'invalid_password', 'Use a password between 8 and 256 characters.', { retryable: false });
+            }
             const hashed = raw ? await bcrypt.hash(raw, 12) : null;
             updates.push(`password_hash = $${idx++}`);
             values.push(hashed);
@@ -1096,6 +1101,7 @@ export const listPublicShareItemsV2 = async (req: Request, res: Response) => {
 };
 
 export const createShareItemTicketV2 = async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'private, no-store');
     const ctx = await resolvePublicSession(req, res);
     if (!ctx) return;
 
@@ -1115,7 +1121,7 @@ export const createShareItemTicketV2 = async (req: Request, res: Response) => {
             ? 'thumbnail'
             : 'inline';
 
-    if (disposition === 'inline' && !share.allow_preview) {
+    if ((disposition === 'inline' || disposition === 'thumbnail') && !share.allow_preview) {
         return sendApiError(res, 403, 'forbidden', 'Preview is disabled for this share.', { retryable: false });
     }
     if (disposition === 'attachment' && !share.allow_download) {
@@ -1151,6 +1157,9 @@ export const createShareItemTicketV2 = async (req: Request, res: Response) => {
 };
 
 export const streamShareItemV2 = async (req: Request, res: Response) => {
+    // A ticket is a temporary capability. Browsers and intermediaries must not
+    // reuse even a downloaded response after the owner revokes the share.
+    res.setHeader('Cache-Control', 'private, no-store');
     const ticket = String(req.params.ticket || '').trim();
     const payload = verifyShareV2Ticket(ticket);
     if (!payload) {
@@ -1164,7 +1173,7 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
         if (share.revoked_at) return sendApiError(res, 410, 'share_revoked', 'Share revoked.', { retryable: false });
         if (isShareExpired(share.expires_at)) return sendApiError(res, 410, 'share_expired', 'Share expired.', { retryable: false });
 
-        if (payload.disposition === 'inline' && !share.allow_preview) {
+        if ((payload.disposition === 'inline' || payload.disposition === 'thumbnail') && !share.allow_preview) {
             return sendApiError(res, 403, 'forbidden', 'Preview is disabled for this share.', { retryable: false });
         }
         if (payload.disposition === 'attachment' && !share.allow_download) {
@@ -1219,18 +1228,16 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
         let offset = 0;
         let limit = Infinity;
 
-        if (reqRange && totalSize > 0 && /^bytes=\d*-\d*$/.test(reqRange)) {
-            const parts = reqRange.replace('bytes=', '').split('-');
-            const start = Number.parseInt(parts[0], 10);
-            const end = parts[1] ? Number.parseInt(parts[1], 10) : totalSize - 1;
-            if (Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end >= start) {
-                offset = start;
-                limit = Math.max(1, end - start + 1);
-                res.status(206);
-                res.setHeader('Content-Range', `bytes ${start}-${Math.min(end, totalSize - 1)}/${totalSize}`);
+        if (payload.disposition !== 'thumbnail') {
+            try {
+                const range = parseByteRange(reqRange || undefined, totalSize);
                 res.setHeader('Accept-Ranges', 'bytes');
-                res.setHeader('Content-Length', String(Math.min(limit, Math.max(totalSize - start, 0))));
-            }
+                if (range) {
+                    offset = range.start; limit = range.end - range.start + 1;
+                    res.status(206).setHeader('Content-Range', `bytes ${range.start}-${range.end}/${totalSize}`);
+                    res.setHeader('Content-Length', String(limit));
+                } else if (totalSize > 0) res.setHeader('Content-Length', String(totalSize));
+            } catch { return res.status(416).set('Content-Range', `bytes */${totalSize}`).end(); }
         }
 
         const mimeType = item.mime_type || 'application/octet-stream';
@@ -1247,12 +1254,9 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
             return res.status(304).end();
         }
 
-        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Content-Type', safeInlineMime(mimeType));
+        res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Content-Disposition', buildContentDisposition(payload.disposition, resolvedFileName));
-
-        if (payload.disposition === 'thumbnail' || payload.disposition === 'inline') {
-            res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400, immutable');
-        }
 
         req.socket.setTimeout(5 * 60 * 1000);
         req.socket.on('timeout', () => req.destroy(new Error('stream_timeout')));
@@ -1265,7 +1269,7 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
 
         const stream = iterFileDownload(resolved.client, resolved.message as any, offset, limit);
         let clientClosed = false;
-        req.on('close', () => {
+        res.on('close', () => {
             clientClosed = true;
             res.end();
         });
@@ -1307,7 +1311,7 @@ export const streamShareItemV2 = async (req: Request, res: Response) => {
 
             try {
                 // Pipe stream through Sharp — quality bumped from 50→75 for better clarity
-                const transformer = sharp({ failOnError: false })
+                const transformer = sharp({ failOn: 'none' })
                     .resize(480, 480, { fit: 'inside', withoutEnlargement: true })
                     .toFormat('webp', { quality: 75, effort: 3 });
 
@@ -1382,7 +1386,9 @@ const addItemsToArchive = async (share: ShareLinkV2Row, items: ShareItemV2Row[],
     for (const row of items) {
         const chatId = String(row.telegram_chat_id || '').trim();
         const messageId = Number.parseInt(String(row.telegram_message_id || ''), 10);
-        if (!chatId || !Number.isFinite(messageId) || messageId <= 0) continue;
+        if (!chatId || !Number.isFinite(messageId) || messageId <= 0) {
+            throw new Error('A shared file has no Telegram source.');
+        }
 
         const resolved = await resolveTelegramMessageForShareItem(share.owner_user_id, chatId, messageId, {
             shareItemId: row.id,
@@ -1397,7 +1403,7 @@ const addItemsToArchive = async (share: ShareLinkV2Row, items: ShareItemV2Row[],
                 statusCode: resolved.failure.status,
                 errorCode: resolved.failure.code,
             });
-            continue;
+            throw new Error('A shared file is unavailable in Telegram.');
         }
 
         const safeName = String(row.display_name || 'file').replace(/[\\/:*?"<>|]/g, '_');
@@ -1444,7 +1450,7 @@ const runAsyncZipJob = async (jobId: string, share: ShareLinkV2Row, items: Share
             output.on('close', done);
             output.on('error', fail);
             archive.on('error', fail);
-            archive.on('warning', (w) => logger.warn('share-zip-warning', w?.message));
+            archive.on('warning', fail);
             archive.pipe(output);
 
             try {
@@ -1543,7 +1549,7 @@ export const downloadAllShareZipV2 = async (req: Request, res: Response) => {
         req.socket.on('timeout', () => req.destroy(new Error('zip_stream_timeout')));
 
         const archive = archiver('zip', { zlib: { level: 2 }, highWaterMark: 16384 });
-        archive.on('warning', (w) => logger.warn('share-zip-warning', w?.message));
+        archive.on('warning', () => archive.abort());
         archive.on('error', () => {
             if (!res.headersSent) {
                 sendApiError(res, 500, 'internal_error', 'Failed to build ZIP.', { retryable: true });
@@ -1579,13 +1585,34 @@ export const downloadAllShareZipV2 = async (req: Request, res: Response) => {
 };
 
 export const getShareZipJobV2 = async (req: Request, res: Response) => {
-    const ctx = await resolvePublicSession(req, res);
-    if (!ctx) return;
-
-    const share = ctx.share;
+    res.setHeader('Cache-Control', 'private, no-store');
     const jobId = String(req.params.jobId || '').trim();
     if (!isUuid(jobId)) {
         return sendApiError(res, 400, 'invalid_request', 'Invalid job id.', { retryable: false });
+    }
+    const download = String(req.query.download || '').trim() === '1';
+    const zipTicket = String(req.query.ticket || '').trim();
+    let share: ShareLinkV2Row;
+    if (download && zipTicket) {
+        const payload = verifyShareV2Ticket(zipTicket);
+        if (!payload || payload.itemId !== jobId || payload.disposition !== 'attachment') {
+            return sendApiError(res, 401, 'stream_ticket_invalid', 'Invalid or expired ZIP ticket.', { retryable: false });
+        }
+        const shareRes = await pool.query('SELECT * FROM share_links_v2 WHERE id = $1', [payload.shareId]);
+        const currentShare = shareRes.rows[0] as ShareLinkV2Row | undefined;
+        if (!currentShare || currentShare.slug !== String(req.params.slug || '')) {
+            return sendApiError(res, 404, 'not_found', 'Share not found.', { retryable: false });
+        }
+        if (currentShare.revoked_at) return sendApiError(res, 410, 'share_revoked', 'Share revoked.', { retryable: false });
+        if (isShareExpired(currentShare.expires_at)) return sendApiError(res, 410, 'share_expired', 'Share expired.', { retryable: false });
+        share = currentShare;
+    } else {
+        const ctx = await resolvePublicSession(req, res);
+        if (!ctx) return;
+        share = ctx.share;
+    }
+    if (!share.allow_download) {
+        return sendApiError(res, 403, 'forbidden', 'Download is disabled for this share.', { retryable: false });
     }
 
     const result = await pool.query(
@@ -1623,7 +1650,6 @@ export const getShareZipJobV2 = async (req: Request, res: Response) => {
     const current = refreshed.rows[0];
 
     if (current.status === 'completed' && current.zip_path) {
-        const download = String(req.query.download || '').trim() === '1';
         if (download) {
             const zipPath = String(current.zip_path);
             if (!fs.existsSync(zipPath)) {
@@ -1654,7 +1680,7 @@ export const getShareZipJobV2 = async (req: Request, res: Response) => {
             error_code: current.error_code || null,
             error_message: current.error_message || null,
             download_url: current.status === 'completed'
-                ? `/api/v2/public/shares/${encodeURIComponent(share.slug)}/zip-jobs/${encodeURIComponent(jobId)}?download=1`
+                ? `/api/v2/public/shares/${encodeURIComponent(share.slug)}/zip-jobs/${encodeURIComponent(jobId)}?download=1&ticket=${encodeURIComponent(signShareV2Ticket({ shareId: share.id, itemId: jobId, disposition: 'attachment' }))}`
                 : null,
         },
     });

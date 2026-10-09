@@ -1,6 +1,11 @@
+import { parseByteRange } from '../utils/httpRange';
+import { safeInlineMime } from '../utils/uploadMime';
 import { Response } from 'express';
 import { AuthRequest } from '../middlewares/auth.middleware';
-import { getDynamicClient } from '../services/telegram.service';
+import { getDynamicClient, iterFileDownload } from '../services/telegram.service';
+import { mediaRevision, signMediaTicket, MEDIA_TICKET_SECONDS } from '../utils/mediaTicket';
+import { MediaRequest } from '../middlewares/media.middleware';
+import { pipeMediaChunks } from '../utils/pipeMedia';
 import pool from '../config/db';
 import fs from 'fs';
 import path from 'path';
@@ -33,9 +38,9 @@ const invalidateUserPerformanceCaches = (userId: string) => {
 
 const getFileReadSessionCandidates = (ownerSessionString: string) => {
     const candidates = [
-        String(process.env.TELEGRAM_STORAGE_SESSION || '').trim(),
-        String(process.env.TELEGRAM_SESSION || '').trim(),
         String(ownerSessionString || '').trim(),
+        process.env.ALLOW_LEGACY_STORAGE_READS === 'true' ? String(process.env.TELEGRAM_STORAGE_SESSION || '').trim() : '',
+        process.env.ALLOW_LEGACY_STORAGE_READS === 'true' ? String(process.env.TELEGRAM_SESSION || '').trim() : '',
     ].filter(Boolean);
     return Array.from(new Set(candidates));
 };
@@ -77,9 +82,7 @@ const getChatCandidatesForClient = (chatId: string, isStorageSession: boolean): 
     const out: string[] = [];
 
     if (raw === 'me') {
-        if (isStorageSession && storageChat) out.push(storageChat);
-        out.push('me');
-        if (!isStorageSession && storageChat) out.push(storageChat);
+        if (!isStorageSession) out.push('me');
     } else {
         out.push(raw);
     }
@@ -95,6 +98,7 @@ const resolveMessageFromTelegramClients = async (
     let lastErr: unknown = null;
 
     for (const entry of clients) {
+        if (chatId === 'me' && entry.isStorageSession) continue;
         const chatCandidates = getChatCandidatesForClient(chatId, entry.isStorageSession);
         for (const chatCandidate of chatCandidates) {
             try {
@@ -144,6 +148,31 @@ type TrashDeleteFileRow = {
 };
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A verified duplicate can share one Telegram message with another file entry.
+// Preserve messages still referenced by surviving files or share snapshots.
+async function pointerHasSurvivors(db: Pick<import('pg').PoolClient, 'query'>, userId: string, chatId: string, messageId: number, removingIds: string[]): Promise<boolean> {
+    const result = await db.query(`SELECT EXISTS (
+        SELECT 1 FROM files WHERE user_id = $1 AND telegram_chat_id = $2 AND telegram_message_id = $3
+        AND NOT (id = ANY($4::uuid[]))
+        UNION ALL
+        SELECT 1 FROM file_versions v WHERE v.user_id = $1 AND v.snapshot->>'telegram_chat_id' = $2
+        AND v.snapshot->>'telegram_message_id' = $3::text AND NOT(v.file_id = ANY($4::uuid[]))
+        UNION ALL
+        SELECT 1 FROM file_versions v, jsonb_array_elements(COALESCE(v.manifest->'segments', '[]'::jsonb)) segment
+        WHERE v.user_id = $1 AND v.manifest->>'telegram_chat_id' = $2
+        AND segment->>'telegram_message_id' = $3::text AND NOT(v.file_id = ANY($4::uuid[]))
+        UNION ALL
+        SELECT 1 FROM file_segment_manifests m, jsonb_array_elements(m.segments) segment
+        WHERE m.user_id = $1 AND m.telegram_chat_id = $2
+        AND segment->>'telegram_message_id' = $3::text AND NOT(m.file_id = ANY($4::uuid[]))
+        UNION ALL
+        SELECT 1 FROM share_items_v2 i JOIN share_links_v2 s ON s.id = i.share_id
+        WHERE s.owner_user_id = $1 AND i.telegram_chat_id = $2 AND i.telegram_message_id = $3
+        AND (s.root_file_id IS NULL OR NOT (s.root_file_id = ANY($4::uuid[])))
+    ) AS retained`, [userId, chatId, messageId, removingIds]);
+    return Boolean(result.rows[0]?.retained);
+}
 
 const deleteTrashRowsAtomically = async (
     userId: string,
@@ -216,7 +245,8 @@ const deleteTrashRowsAtomically = async (
             return { deletedFiles: 0, deletedFolders: 0 };
         }
 
-        const clients = fileRows.length > 0 ? await getTelegramReadClients(ownerSessionString) : [];
+        let clients: TelegramReadClient[] | undefined;
+        const deletedPointers = new Set<string>();
 
         for (const row of fileRows) {
             const chatId = String(row.telegram_chat_id || '').trim();
@@ -224,6 +254,9 @@ const deleteTrashRowsAtomically = async (
             if (!chatId || !Number.isFinite(messageId) || messageId <= 0) {
                 continue;
             }
+            const pointer = `${chatId}:${messageId}`;
+            if (deletedPointers.has(pointer) || await pointerHasSurvivors(client, userId, chatId, messageId, fileRows.map(f => f.id))) continue;
+            clients ||= await getTelegramReadClients(ownerSessionString);
 
             let deletedInTelegram = false;
             for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -235,6 +268,7 @@ const deleteTrashRowsAtomically = async (
             if (!deletedInTelegram) {
                 throw new Error('Could not delete Telegram message for one or more trashed files. Please retry.');
             }
+            deletedPointers.add(pointer);
         }
 
         // ✅ FIX: Delete share_links_v2 rows BEFORE deleting files/folders.
@@ -323,6 +357,8 @@ export const fetchFiles = async (req: AuthRequest, res: Response) => {
     if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
 
     const { folder_id, sort = 'created_at', order = 'DESC' } = req.query;
+    const search = String(req.query.q || '').trim().slice(0, 200);
+    const type = String(req.query.type || '').trim().toLowerCase();
     const limit = clampInt(req.query.limit, 50, 1, 500);
     const page = clampInt(req.query.page, 1, 1, 100_000);
     const offset = req.query.offset !== undefined ? clampInt(req.query.offset, 0, 0, 100_000) : (page - 1) * limit;
@@ -330,45 +366,51 @@ export const fetchFiles = async (req: AuthRequest, res: Response) => {
     const sortCol = validSorts.includes(sort as string) ? sort : 'created_at';
     const sortOrder = order === 'ASC' ? 'ASC' : 'DESC';
 
+    let whereSql = ' WHERE f.user_id = $1 AND f.is_trashed = false';
+    const filters: any[] = [req.user.id];
+    if (folder_id === 'root' || folder_id === 'null') {
+        whereSql += ' AND f.folder_id IS NULL';
+    } else if (folder_id !== undefined) {
+        filters.push(folder_id);
+        whereSql += ` AND f.folder_id = $${filters.length}`;
+    }
+    if (search) {
+        filters.push(search.toLowerCase());
+        whereSql += ` AND POSITION($${filters.length} IN LOWER(f.file_name)) > 0`;
+    }
+    if (['image', 'video', 'audio'].includes(type)) {
+        filters.push(`${type}/%`);
+        whereSql += ` AND f.mime_type LIKE $${filters.length}`;
+    } else if (type === 'docs') {
+        whereSql += ` AND COALESCE(f.mime_type, '') NOT LIKE 'image/%'
+          AND COALESCE(f.mime_type, '') NOT LIKE 'video/%'
+          AND COALESCE(f.mime_type, '') NOT LIKE 'audio/%'`;
+    }
+
     let query = `SELECT
         f.*,
         tph.pointer_status AS pointer_health,
         CASE WHEN fsm.mode = 'segmented' AND fsm.status IN ('scheduled', 'building', 'ready') THEN true ELSE false END AS segment_mode_enabled
       FROM files f
       LEFT JOIN telegram_pointer_health tph ON tph.file_id = f.id
-      LEFT JOIN file_segment_manifests fsm ON fsm.file_id = f.id
-      WHERE f.user_id = $1 AND f.is_trashed = false`;
-    const params: any[] = [req.user.id];
-
-    if (folder_id === 'root' || folder_id === 'null') {
-        query += ` AND f.folder_id IS NULL`;
-    } else if (folder_id !== undefined) {
-        params.push(folder_id);
-        query += ` AND f.folder_id = $${params.length}`;
-    }
-
-    query += ` ORDER BY f.${sortCol} ${sortOrder}`;
+      LEFT JOIN file_segment_manifests fsm ON fsm.file_id = f.id`;
+    query += whereSql;
+    // Stable tie-breaker prevents same-timestamp rows swapping between pages.
+    query += ` ORDER BY f.${sortCol} ${sortOrder}, f.id ${sortOrder}`;
+    const params = [...filters];
     params.push(limit);
     query += ` LIMIT $${params.length}`;
     params.push(offset);
     query += ` OFFSET $${params.length}`;
 
     try {
-        // Build count query with safe parameterization
-        let countQuery = `SELECT COUNT(*)::int as total FROM files WHERE user_id = $1 AND is_trashed = false`;
-        const countParams: any[] = [req.user.id];
-        if (folder_id === 'root' || folder_id === 'null') {
-            countQuery += ` AND folder_id IS NULL`;
-        } else if (folder_id !== undefined) {
-            countParams.push(folder_id);
-            countQuery += ` AND folder_id = $${countParams.length}`;
-        }
+        const countQuery = `SELECT COUNT(*)::int as total FROM files f${whereSql}`;
 
         const [result, countResult] = await Promise.all([
             pool.query(query, params),
-            pool.query(countQuery, countParams),
+            pool.query(countQuery, filters),
         ]);
-        res.json({ success: true, files: result.rows.map(formatFileRow), total_count: countResult.rows[0]?.total || 0 });
+        res.json({ success: true, files: result.rows.map(formatFileRow), total_count: countResult.rows[0]?.total || 0, limit, offset });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -521,6 +563,11 @@ export const updateFile = async (req: AuthRequest, res: Response) => {
     values.push(req.user.id);
 
     try {
+        if (folder_id !== undefined && folder_id !== null) {
+            if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(folder_id)) return res.status(400).json({ success: false, error: 'Invalid destination folder' });
+            const folder = await pool.query('SELECT id FROM folders WHERE id = $1 AND user_id = $2 AND is_trashed = false', [folder_id, req.user.id]);
+            if (!folder.rows.length) return res.status(404).json({ success: false, error: 'Destination folder not found' });
+        }
         const result = await pool.query(
             `UPDATE files SET ${updates.join(', ')} WHERE id = $${values.length - 1} AND user_id = $${values.length} AND is_trashed = false RETURNING *`,
             values
@@ -595,46 +642,48 @@ export const trashFile = async (req: AuthRequest, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // RESTORE FROM TRASH
 // ─────────────────────────────────────────────────────────────────────────────
+// Restore descendants from the same trash operation, preserving earlier deletions.
+async function restoreItem(client: import('pg').PoolClient, id: string, userId: string): Promise<number> {
+    const file = await client.query(`UPDATE files SET is_trashed = false, trashed_at = NULL,
+        folder_id = CASE WHEN EXISTS (SELECT 1 FROM folders p WHERE p.id = files.folder_id AND p.is_trashed = true) THEN NULL ELSE folder_id END
+        WHERE id = $1 AND user_id = $2 AND is_trashed = true RETURNING id`, [id, userId]);
+    if (file.rowCount) return file.rowCount;
+    const root = await client.query('SELECT id FROM folders WHERE id = $1 AND user_id = $2 AND is_trashed = true FOR UPDATE', [id, userId]);
+    if (!root.rowCount) return 0;
+    const subtree = `WITH RECURSIVE subtree AS (
+        SELECT id FROM folders WHERE id = $1 AND user_id = $2
+        UNION SELECT f.id FROM folders f JOIN subtree s ON f.parent_id = s.id WHERE f.user_id = $2
+    )`;
+    await client.query(`${subtree} UPDATE files SET is_trashed = false, trashed_at = NULL
+        WHERE user_id = $2 AND folder_id IN (SELECT id FROM subtree)
+        AND trashed_at = (SELECT trashed_at FROM folders WHERE id = $1 AND user_id = $2)`, [id, userId]);
+    const folders = await client.query(`${subtree} UPDATE folders SET is_trashed = false, trashed_at = NULL,
+        parent_id = CASE WHEN id = $1 AND EXISTS (SELECT 1 FROM folders p WHERE p.id = folders.parent_id AND p.is_trashed = true) THEN NULL ELSE parent_id END,
+        name = CASE WHEN EXISTS (SELECT 1 FROM folders f2 WHERE f2.user_id = folders.user_id
+            AND f2.parent_id IS NOT DISTINCT FROM (CASE WHEN folders.id = $1 AND EXISTS
+                (SELECT 1 FROM folders p WHERE p.id = folders.parent_id AND p.is_trashed = true) THEN NULL ELSE folders.parent_id END)
+            AND f2.name = folders.name
+            AND f2.is_trashed = false AND f2.id != folders.id)
+            THEN name || ' (Restored ' || substr(id::text, 1, 8) || ')' ELSE name END
+        WHERE user_id = $2 AND id IN (SELECT id FROM subtree)
+        AND (id = $1 OR trashed_at = (SELECT trashed_at FROM folders WHERE id = $1 AND user_id = $2)) RETURNING id`, [id, userId]);
+    return folders.rowCount || 0;
+}
+
 export const restoreFile = async (req: AuthRequest, res: Response) => {
     if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
-    const { id } = req.params;
-
+    const client = await pool.connect();
     try {
-        let result = await pool.query(
-            `UPDATE files SET is_trashed = false, trashed_at = NULL WHERE id = $1 AND user_id = $2 RETURNING id`,
-            [id, req.user.id]
-        );
-        
-        let type = 'File';
-        if (result.rows.length === 0) {
-            result = await pool.query(
-                `UPDATE folders SET is_trashed = false, trashed_at = NULL,
-                 name = CASE 
-                     WHEN EXISTS (
-                         SELECT 1 FROM folders f2 
-                         WHERE f2.user_id = folders.user_id 
-                           AND f2.parent_id IS NOT DISTINCT FROM folders.parent_id 
-                           AND f2.name = folders.name 
-                           AND f2.is_trashed = false 
-                           AND f2.id != folders.id
-                     ) 
-                     THEN folders.name || ' (Restored ' || substr(folders.id::text, 1, 4) || ')'
-                     ELSE folders.name 
-                 END
-                 WHERE id = $1 AND user_id = $2 RETURNING id`,
-                [id, req.user.id]
-            );
-            type = 'Folder';
-        }
-        
-        if (result.rows.length === 0) return res.status(404).json({ success: false, error: 'Item not found in trash' });
-        
-        await logActivity(req.user.id, 'restore', String(id));
+        await client.query('BEGIN');
+        const affected = await restoreItem(client, String(req.params.id), req.user.id);
+        await client.query('COMMIT');
+        if (!affected) return res.status(404).json({ success: false, error: 'Item not found in trash' });
         invalidateUserPerformanceCaches(req.user.id);
-        res.json({ success: true, message: `${type} restored.` });
+        res.json({ success: true, message: 'Item restored.', affected });
     } catch (err: any) {
+        await client.query('ROLLBACK');
         res.status(500).json({ success: false, error: err.message });
-    }
+    } finally { client.release(); }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -643,13 +692,14 @@ export const restoreFile = async (req: AuthRequest, res: Response) => {
 export const deleteFile = async (req: AuthRequest, res: Response) => {
     if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
-
+    const db = await pool.connect();
     try {
-        const fileResult = await pool.query(
-            'SELECT telegram_message_id, telegram_chat_id FROM files WHERE id = $1 AND user_id = $2',
+        await db.query('BEGIN');
+        const fileResult = await db.query(
+            'SELECT telegram_message_id, telegram_chat_id FROM files WHERE id = $1 AND user_id = $2 FOR UPDATE',
             [id, req.user.id]
         );
-        if (fileResult.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
+        if (fileResult.rows.length === 0) { await db.query('ROLLBACK'); return res.status(404).json({ success: false, error: 'File not found' }); }
 
         const { telegram_message_id, telegram_chat_id } = fileResult.rows[0];
 
@@ -657,32 +707,36 @@ export const deleteFile = async (req: AuthRequest, res: Response) => {
         const chatId = String(telegram_chat_id || '').trim();
         const hasTelegramPointer = chatId && Number.isFinite(messageId) && messageId > 0;
 
-        if (hasTelegramPointer) {
+        if (hasTelegramPointer && !await pointerHasSurvivors(db, req.user.id, chatId, messageId, [String(id)])) {
             let clients: TelegramReadClient[] = [];
             try {
                 clients = await getTelegramReadClients(req.user.sessionString);
             } catch (e) {
+                await db.query('ROLLBACK');
                 return res.status(502).json({ success: false, error: 'Could not connect Telegram session for delete. Please retry.' });
             }
 
             const deletedInTelegram = await deleteMessageAcrossTelegramClients(clients, chatId, messageId);
             if (!deletedInTelegram) {
+                await db.query('ROLLBACK');
                 return res.status(502).json({ success: false, error: 'Could not delete Telegram message. File was not removed.' });
             }
         }
 
         // ✅ FIX: Delete share_links_v2 for this file BEFORE deleting the file row.
         // Without this, ON DELETE SET NULL on root_file_id violates the share_links_v2_root_xor constraint.
-        await pool.query(
+        await db.query(
             `DELETE FROM share_links_v2 WHERE owner_user_id = $2 AND root_file_id = $1`,
             [id, req.user.id]
         );
 
-        await pool.query('DELETE FROM files WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+        await db.query('DELETE FROM files WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+        await db.query('COMMIT');
         await logActivity(req.user.id, 'delete_permanent', String(id));
         invalidateUserPerformanceCaches(req.user.id);
         res.json({ success: true, message: 'File permanently deleted.' });
     } catch (err: any) {
+        await db.query('ROLLBACK');
         const message = String(err?.message || '');
         // Catch constraint violations and return a structured error
         if (message.includes('share_links_v2_root_xor') || message.includes('violates check constraint')) {
@@ -692,7 +746,7 @@ export const deleteFile = async (req: AuthRequest, res: Response) => {
             );
         }
         res.status(500).json({ success: false, error: err.message });
-    }
+    } finally { db.release(); }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -762,95 +816,7 @@ export const emptyTrash = async (req: AuthRequest, res: Response) => {
 // DOWNLOAD — Buffer download (fine for one-shot file saves)
 // ─────────────────────────────────────────────────────────────────────────────
 export const downloadFile = async (req: AuthRequest, res: Response) => {
-    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
-    const { id } = req.params;
-
-    try {
-        const fileResult = await pool.query(
-            'SELECT telegram_message_id, telegram_chat_id, mime_type, file_name, file_size FROM files WHERE id = $1 AND user_id = $2 AND is_trashed = false',
-            [id, req.user.id]
-        );
-        if (fileResult.rows.length === 0) return sendApiError(res, 404, 'not_found', 'File not found', { retryable: false });
-
-        const { telegram_message_id, telegram_chat_id, mime_type, file_name } = fileResult.rows[0];
-        const chatId = String(telegram_chat_id || '').trim();
-        const messageId = Number.parseInt(String(telegram_message_id || ''), 10);
-
-        if (!chatId || !Number.isFinite(messageId) || messageId <= 0) {
-            return sendApiError(res, 409, 'invalid_request', 'File metadata is incomplete. Re-upload required.', { retryable: false });
-        }
-
-        let clients: TelegramReadClient[] = [];
-        try {
-            clients = await getTelegramReadClients(req.user.sessionString);
-        } catch (clientErr: any) {
-            logger.error('backend.download', 'telegram_session_init_failed', {
-                fileId: id,
-                userId: req.user.id,
-                message: clientErr?.message,
-            });
-            const mapped = mapTelegramError(clientErr, 'Telegram session unavailable. Please reconnect Telegram.');
-            return sendApiError(res, mapped.status, mapped.code, mapped.message, { retryable: mapped.retryable });
-        }
-
-        let resolved: { client: any; message: any; chatIdUsed: string } | null = null;
-        try {
-            resolved = await resolveMessageFromTelegramClients(clients, chatId, messageId);
-        } catch (messageErr: any) {
-            logger.error('backend.download', 'telegram_message_fetch_failed', {
-                fileId: id,
-                userId: req.user.id,
-                chatId,
-                messageId,
-                message: messageErr?.message,
-            });
-            const mapped = mapTelegramError(messageErr, 'Could not load file from Telegram');
-            return sendApiError(res, mapped.status, mapped.code, mapped.message, { retryable: mapped.retryable });
-        }
-
-        if (!resolved) {
-            return sendApiError(res, 404, 'telegram_message_not_found', 'File no longer exists in Telegram', { retryable: false });
-        }
-
-        const mediaData = await resolved.client.downloadMedia(resolved.message as any);
-        if (!mediaData) return sendApiError(res, 502, 'telegram_transient', 'Failed to retrieve file from Telegram', { retryable: true });
-
-        const buffer = Buffer.isBuffer(mediaData)
-            ? mediaData
-            : typeof mediaData === 'string' && fs.existsSync(mediaData)
-                ? fs.readFileSync(mediaData)
-                : Buffer.from(mediaData);
-
-        if (!buffer || buffer.length === 0) {
-            return sendApiError(res, 502, 'telegram_transient', 'Downloaded file is empty', { retryable: true });
-        }
-
-        const rawName = String(file_name || 'download');
-        const safeAsciiName = rawName
-            .replace(/[\/\\:*?"<>|\r\n]+/g, '_')
-            .replace(/\s+/g, ' ')
-            .trim() || 'download';
-
-        res.set('Content-Type', mime_type || 'application/octet-stream');
-        res.set('Content-Disposition', `attachment; filename="${safeAsciiName}"; filename*=UTF-8''${encodeURIComponent(rawName)}`);
-        res.set('X-Download-Source', 'telegram');
-        res.set('X-File-Id', String(id));
-        res.set('X-Telegram-Message-Id', String(messageId));
-        res.set('X-Telegram-Chat-Id', resolved.chatIdUsed);
-        res.set('Cache-Control', 'private, max-age=3600');
-        res.send(buffer);
-    } catch (err: any) {
-        logger.error('backend.download', 'download_failed', {
-            fileId: id,
-            userId: req.user?.id,
-            message: err?.message,
-            stack: err?.stack,
-        });
-        if (!res.headersSent) {
-            const mapped = mapTelegramError(err, 'Internal download error');
-            sendApiError(res, mapped.status, mapped.code, mapped.message, { retryable: mapped.retryable });
-        }
-    }
+    return serveCachedFile(req, res, 'attachment');
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -869,11 +835,20 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
     const requestedWidth = clampInt(req.query.w, 1080, 240, 2048);
 
     try {
+        // Authorization must precede every cache hit, including trashed/deleted files.
+        const fileResult = await pool.query(
+            'SELECT telegram_message_id, telegram_chat_id, file_name, mime_type, thumbnail_failed_count FROM files WHERE id = $1 AND user_id = $2 AND is_trashed = false',
+            [id, req.user.id]
+        );
+        if (fileResult.rows.length === 0) return sendApiError(res, 404, 'not_found', 'File not found', { retryable: false });
+        res.setHeader('Cache-Control', 'private, max-age=300, must-revalidate');
+        res.setHeader('Vary', 'Authorization, Cookie');
         // ✅ Check disk cache first — avoid Telegram download on repeated requests
         // Check both width-specific and generic cache files (upload saves ${id}.webp, endpoint uses ${id}_${width}.webp)
-        const cacheFile = path.join(THUMB_CACHE_DIR, `${id}_${requestedWidth}.webp`);
+        const contentKey = crypto.createHash('sha256').update(`${fileResult.rows[0].telegram_chat_id}:${fileResult.rows[0].telegram_message_id}`).digest('hex').slice(0,20);
+        const cacheFile = path.join(THUMB_CACHE_DIR, `${id}_${contentKey}_${requestedWidth}.webp`);
         const uploadCacheFile = path.join(THUMB_CACHE_DIR, `${id}.webp`);
-        const cacheFileCandidates = [cacheFile, uploadCacheFile];
+        const cacheFileCandidates = [cacheFile];
         for (const candidate of cacheFileCandidates) {
             try {
                 if (fs.existsSync(candidate)) {
@@ -881,8 +856,7 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
                     const age = Date.now() - stat.mtimeMs;
                     if (age < THUMB_CACHE_TTL_MS && stat.size > 0) {
                         res.setHeader('Content-Type', 'image/webp');
-                        res.setHeader('Cache-Control', 'public, max-age=31536000, s-maxage=604800, stale-while-revalidate=86400, immutable');
-                        res.setHeader('ETag', `W/"${id}-thumb-${stat.size}"`);
+                        res.setHeader('ETag', `W/"${id}-${contentKey}-thumb-${stat.size}"`);
                         res.setHeader('X-Cache', 'HIT');
                         return fs.createReadStream(candidate).pipe(res);
                     }
@@ -890,16 +864,7 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
             } catch { /* candidate not readable, try next */ }
         }
 
-        const fileResult = await pool.query(
-            'SELECT telegram_message_id, telegram_chat_id, file_name, mime_type, thumbnail_failed_count FROM files WHERE id = $1 AND user_id = $2 AND is_trashed = false',
-            [id, req.user.id]
-        );
-        if (fileResult.rows.length === 0) return sendApiError(res, 404, 'not_found', 'File not found', { retryable: false });
-
         const { telegram_message_id, telegram_chat_id, file_name, mime_type, thumbnail_failed_count } = fileResult.rows[0];
-        if (thumbnail_failed_count >= 3) {
-            return sendApiError(res, 404, 'thumbnail_failed', 'Thumbnail generation previously failed multiple times for this file', { retryable: false });
-        }
         const messageId = Number.parseInt(String(telegram_message_id || ''), 10);
         const chatId = String(telegram_chat_id || '').trim();
         if (!chatId || !Number.isFinite(messageId) || messageId <= 0) {
@@ -921,8 +886,7 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
         }
         if (!resolved) return sendApiError(res, 404, 'telegram_message_not_found', 'File no longer exists', { retryable: false });
 
-        res.setHeader('Cache-Control', 'public, max-age=31536000, s-maxage=604800, stale-while-revalidate=86400, immutable');
-                res.setHeader('ETag', `W/"${id}-thumb"`);
+                res.setHeader('ETag', `W/"${id}-${contentKey}-thumb"`);
         res.setHeader('X-Cache', 'MISS');
 
         const message = resolved.message;
@@ -950,6 +914,9 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
 
         // 2. Fallback: download full image and compress
         if (!buffer || buffer.length === 0) {
+            if (!String(mime_type || '').startsWith('image/')) {
+                return sendApiError(res, 422, 'thumbnail_unavailable', 'This file has no image thumbnail', { retryable: false });
+            }
             buffer = (await client.downloadMedia(message as any)) as Buffer | undefined;
         }
 
@@ -959,7 +926,7 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
 
         // 3. Compress with Sharp
         try {
-            const optimizedBuffer = await sharp(buffer, { failOnError: false })
+            const optimizedBuffer = await sharp(buffer, { failOn: 'none' })
                 .resize(requestedWidth, requestedWidth, { fit: 'inside', withoutEnlargement: true })
                 .toFormat('webp', { quality: 85, effort: 3 })
                 .toBuffer();
@@ -985,7 +952,7 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
             });
             // Increment fail count
             await pool.query('UPDATE files SET thumbnail_failed_count = thumbnail_failed_count + 1 WHERE id = $1', [id]);
-            res.setHeader('Content-Type', mime_type || 'application/octet-stream');
+            res.setHeader('Content-Type', safeInlineMime(mime_type || ''));
             return res.send(buffer);
         }
 
@@ -1006,9 +973,8 @@ export const getThumbnail = async (req: AuthRequest, res: Response) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STREAM MEDIA — Disk-cached streaming with HTTP Range support
-// ✅ Download once from Telegram → /tmp cache → stream instantly with Range
-// ✅ Cache auto-expires after 1 hour; concurrent-safe via download locks
+// Private playback streams cold ranges directly; completed download caches are reused.
+// Downloads still publish complete, size-verified cache files atomically.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const STREAM_CACHE_DIR = path.join(os.tmpdir(), 'axya_streams');
@@ -1020,29 +986,51 @@ try { fs.mkdirSync(STREAM_CACHE_DIR, { recursive: true }); } catch { }
 // Prevents double-download when player sends multiple Range requests at once
 const streamDownloadLocks = new Map<string, Promise<string>>();
 
+const streamCacheCleanup = setInterval(async () => {
+    try {
+        for (const name of await fs.promises.readdir(STREAM_CACHE_DIR)) {
+            // Only our complete UUID cache entries; never symlinks, active partials or unrelated files.
+            const match = /^([0-9a-f-]{36})(?:_([0-9a-f]{20}))?\.cache$/i.exec(name);
+            if (!match || streamDownloadLocks.has(name.replace(/\.cache$/, ''))) continue;
+            const target = path.join(STREAM_CACHE_DIR, name);
+            try {
+                const stat = await fs.promises.lstat(target);
+                if (stat.isFile() && Date.now() - stat.mtimeMs > STREAM_CACHE_TTL_MS) await fs.promises.unlink(target);
+            } catch { /* A download/read/cleanup may be using the entry. */ }
+        }
+    } catch { /* Cache cleanup is best effort. */ }
+}, 30 * 60 * 1000);
+streamCacheCleanup?.unref?.();
+
 async function ensureStreamCached(
     fileId: string,
     ownerSessionString: string,
     telegramMessageId: string,
     telegramChatId: string,
+    expectedSize: number,
 ): Promise<string> {
-    const cachePath = path.join(STREAM_CACHE_DIR, `${fileId}.cache`);
+    const contentKey = `${fileId}_${crypto.createHash('sha256').update(`${telegramChatId}:${telegramMessageId}`).digest('hex').slice(0,20)}`;
+    const cachePath = path.join(STREAM_CACHE_DIR, `${contentKey}.cache`);
+
+    // A final cache entry is published only after a complete download.
+    if (streamDownloadLocks.has(contentKey)) return streamDownloadLocks.get(contentKey)!;
 
     // Already cached and fresh?
     try {
         const stat = fs.statSync(cachePath);
-        if (stat.size > 0 && (Date.now() - stat.mtimeMs) < STREAM_CACHE_TTL_MS) {
+        if (stat.size === expectedSize && stat.size > 0 && (Date.now() - stat.mtimeMs) < STREAM_CACHE_TTL_MS) {
             return cachePath;
         }
     } catch { /* not cached */ }
 
     // Already downloading? Wait on the same promise
-    if (streamDownloadLocks.has(fileId)) {
-        return streamDownloadLocks.get(fileId)!;
+    if (streamDownloadLocks.has(contentKey)) {
+        return streamDownloadLocks.get(contentKey)!;
     }
 
     // Start new download
     const downloadPromise = (async () => {
+        const partialPath = `${cachePath}.${crypto.randomUUID()}.part`;
         try {
             const messageId = Number.parseInt(String(telegramMessageId || ''), 10);
             const chatId = String(telegramChatId || '').trim();
@@ -1056,29 +1044,133 @@ async function ensureStreamCached(
                 throw new Error('File no longer exists in Telegram');
             }
 
-            const result = await resolved.client.downloadMedia(resolved.message as any, {
-                outputFile: cachePath,
-            } as any);
+            // GramJS calls close() on a path-backed WriteStream without awaiting
+            // its buffered writes. Supply an awaited writer so a successful
+            // download cannot be published before all bytes reach the cache.
+            const handle = await fs.promises.open(partialPath, 'w');
+            let closePromise: Promise<void> | null = null;
+            const writer = {
+                async write(chunk: Buffer) {
+                    let offset = 0;
+                    while (offset < chunk.length) {
+                        const result = await handle.write(chunk, offset, chunk.length - offset, null);
+                        if (result.bytesWritten <= 0) throw new Error('Telegram cache write stopped early');
+                        offset += result.bytesWritten;
+                    }
+                },
+                close() {
+                    if (!closePromise) closePromise = handle.close();
+                    return closePromise;
+                },
+            };
+            try {
+                await resolved.client.downloadMedia(resolved.message as any, { outputFile: writer } as any);
+            } finally {
+                await writer.close();
+            }
 
-            const diskPath = typeof result === 'string' ? result : cachePath;
-            if (!fs.existsSync(diskPath) || fs.statSync(diskPath).size === 0) {
+            if (!fs.existsSync(partialPath) || fs.statSync(partialPath).size !== expectedSize) {
                 throw new Error('Download to disk failed');
             }
-            if (diskPath !== cachePath) {
-                fs.renameSync(diskPath, cachePath);
-            }
+            fs.renameSync(partialPath, cachePath);
 
             return cachePath;
         } finally {
-            streamDownloadLocks.delete(fileId);
+            try { await fs.promises.unlink(partialPath); } catch { /* already renamed or not created */ }
+            streamDownloadLocks.delete(contentKey);
         }
     })();
 
-    streamDownloadLocks.set(fileId, downloadPromise);
+    streamDownloadLocks.set(contentKey, downloadPromise);
     return downloadPromise;
 }
 
-export const streamFile = async (req: AuthRequest, res: Response) => {
+export const createPlaybackTicket = async (req: AuthRequest, res: Response) => {
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized');
+    try {
+        const result = await pool.query('SELECT telegram_chat_id, telegram_message_id FROM files WHERE id=$1 AND user_id=$2 AND is_trashed=false', [req.params.id, req.user.id]);
+        if (!result.rows.length) return sendApiError(res, 404, 'not_found', 'File not found');
+        const file = result.rows[0];
+        const ticket = signMediaTicket(req.user.id, String(req.params.id), mediaRevision(file.telegram_chat_id, file.telegram_message_id));
+        res.set('Cache-Control', 'no-store').json({ success: true, ticket, expiresIn: MEDIA_TICKET_SECONDS });
+    } catch { return sendApiError(res, 503, 'playback_unavailable', 'Cannot prepare video access. Please retry.', { retryable: true }); }
+};
+
+/** Both URL families use the same source and cache. Cold playback streams only requested bytes. */
+export const streamFile = async (req: MediaRequest, res: Response) => {
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized');
+    const abort = new AbortController();
+    const onClose = () => abort.abort();
+    res.once('close', onClose);
+    try {
+        const result = await pool.query('SELECT telegram_message_id, telegram_chat_id, mime_type, file_name, file_size FROM files WHERE id=$1 AND user_id=$2 AND is_trashed=false', [req.params.id, req.user.id]);
+        if (!result.rows.length) return sendApiError(res, 404, 'not_found', 'File not found');
+        const file = result.rows[0];
+        const revision = mediaRevision(file.telegram_chat_id, file.telegram_message_id);
+        if (req.mediaRevision && req.mediaRevision !== revision) return sendApiError(res, 401, 'playback_expired', 'This file changed. Retry playback.');
+        const size = Number(file.file_size);
+        if (!Number.isSafeInteger(size) || size <= 0) return sendApiError(res, 422, 'invalid_media', 'Video size metadata is invalid.');
+        let range;
+        try { range = parseByteRange(req.headers.range, size); }
+        catch { return res.status(416).set('Content-Range', `bytes */${size}`).end(); }
+        const start = range?.start ?? 0, end = range?.end ?? size - 1;
+        const headers: Record<string, string> = {
+            'Content-Type': safeInlineMime(file.mime_type || 'application/octet-stream'),
+            'X-Content-Type-Options': 'nosniff', 'Accept-Ranges': 'bytes', 'Content-Length': String(end - start + 1),
+            'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer',
+            'Content-Disposition': `inline; filename="${String(file.file_name || 'video').replace(/[^a-zA-Z0-9._ -]/g, '_')}"`,
+        };
+        if (range) headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
+        // HEAD and invalid ranges never trigger a Telegram transfer.
+        if (req.method === 'HEAD') return res.status(range ? 206 : 200).set(headers).end();
+        const cachePath = path.join(STREAM_CACHE_DIR, `${req.params.id}_${revision}.cache`);
+        let cached = false;
+        try { const stat = await fs.promises.stat(cachePath); cached = stat.size === size && Date.now() - stat.mtimeMs < STREAM_CACHE_TTL_MS; } catch { }
+        if (abort.signal.aborted) return;
+        let chunks: AsyncIterable<Buffer>;
+        if (cached) chunks = fs.createReadStream(cachePath, { start, end });
+        else {
+            const clients = await getTelegramReadClients(req.user.sessionString);
+            const resolved = await resolveMessageFromTelegramClients(clients, String(file.telegram_chat_id), Number(file.telegram_message_id));
+            if (!resolved?.message?.media) return sendApiError(res, 404, 'source_missing', 'Video is no longer available in Telegram.');
+            chunks = iterFileDownload(resolved.client, resolved.message, start, end - start + 1);
+        }
+        if (abort.signal.aborted) return;
+        // Pull the first chunk before committing headers so Telegram failures return an actual API error.
+        const iterator = chunks[Symbol.asyncIterator]();
+        try {
+            const first = await iterator.next();
+            if (abort.signal.aborted) return;
+            if (first.done || !first.value.length) throw new Error('Video source returned no bytes');
+            res.status(range ? 206 : 200).set(headers);
+            async function* withFirst() {
+                yield first.value;
+                while (!abort.signal.aborted) { const next = await iterator.next(); if (next.done) break; yield next.value; }
+            }
+            await pipeMediaChunks(withFirst(), res, end - start + 1, abort.signal);
+        } finally { await iterator.return?.(); }
+    } catch (error: any) {
+        if (abort.signal.aborted) return;
+        logger.error('backend.stream', 'video_stream_failed', { fileId: req.params.id, message: error.message });
+        if (res.headersSent) res.destroy(error);
+        else sendApiError(res, 502, 'video_stream_failed', 'Video could not load from Telegram. Please retry.', { retryable: true });
+    } finally { res.off('close', onClose); }
+};
+
+export const streamFileStatus = async (req: AuthRequest, res: Response) => {
+    if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized');
+    try {
+        const result = await pool.query('SELECT telegram_chat_id, telegram_message_id, file_size FROM files WHERE id=$1 AND user_id=$2 AND is_trashed=false', [req.params.id, req.user.id]);
+        if (!result.rows.length) return sendApiError(res, 404, 'not_found', 'File not found');
+        const file = result.rows[0], size = Number(file.file_size);
+        const key = `${req.params.id}_${mediaRevision(file.telegram_chat_id, file.telegram_message_id)}`;
+        let cached = false;
+        try { const stat = await fs.promises.stat(path.join(STREAM_CACHE_DIR, `${key}.cache`)); cached = stat.size === size && Date.now() - stat.mtimeMs < STREAM_CACHE_TTL_MS; } catch { }
+        res.set('Cache-Control', 'no-store').json({ success: true, status: cached ? 'ready' : 'streaming', cached, totalSize: size, progress: cached ? 100 : null });
+    } catch { return sendApiError(res, 503, 'stream_status_unavailable', 'Cannot check video status.', { retryable: true }); }
+};
+
+async function serveCachedFile(req: AuthRequest, res: Response, disposition: 'inline' | 'attachment') {
     if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
 
@@ -1089,10 +1181,10 @@ export const streamFile = async (req: AuthRequest, res: Response) => {
         );
         if (fileResult.rows.length === 0) return res.status(404).json({ success: false, error: 'File not found' });
 
-        const { telegram_message_id, telegram_chat_id, mime_type, file_name } = fileResult.rows[0];
+        const { telegram_message_id, telegram_chat_id, mime_type, file_name, file_size } = fileResult.rows[0];
 
         // Download to cache (or use existing cache)
-        const cachePath = await ensureStreamCached(String(id), req.user.sessionString, String(telegram_message_id), String(telegram_chat_id));
+        const cachePath = await ensureStreamCached(String(id), req.user.sessionString, String(telegram_message_id), String(telegram_chat_id), Number(file_size));
 
         const stat = fs.statSync(cachePath);
         const totalSize = stat.size;
@@ -1104,29 +1196,26 @@ export const streamFile = async (req: AuthRequest, res: Response) => {
         let end = totalSize - 1;
         let isRangeRequest = false;
 
-        if (rangeHeader) {
-            const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
-            if (match) {
-                start = match[1] ? parseInt(match[1], 10) : 0;
-                end = match[2] ? parseInt(match[2], 10) : totalSize - 1;
+        try {
+            const range = parseByteRange(rangeHeader, totalSize);
+            if (range) {
+                start = range.start;
+                end = range.end;
                 isRangeRequest = true;
             }
-
-            if (start < 0 || end < start || start >= totalSize) {
-                res.status(416).set({ 'Content-Range': `bytes */${totalSize}` });
-                return res.end();
-            }
-            end = Math.min(end, totalSize - 1);
+        } catch {
+            return res.status(416).set('Content-Range', `bytes */${totalSize}`).end();
         }
 
         const chunkLength = end - start + 1;
 
         const headers: Record<string, string> = {
-            'Content-Type': mimeType,
+            'Content-Type': safeInlineMime(mimeType),
+            'X-Content-Type-Options': 'nosniff',
             'Accept-Ranges': 'bytes',
             'Content-Length': String(chunkLength),
             'Cache-Control': 'private, max-age=3600',
-            'Content-Disposition': `inline; filename="${encodeURIComponent(file_name)}"`,
+            'Content-Disposition': `${disposition}; filename="${String(file_name || 'download').replace(/[^a-zA-Z0-9._ -]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(file_name || 'download')}`,
         };
 
         if (isRangeRequest) {
@@ -1142,6 +1231,7 @@ export const streamFile = async (req: AuthRequest, res: Response) => {
             logger.error('backend.stream', 'stream_read_error', { fileId: id, message: err.message });
             if (!res.headersSent) res.status(500).json({ success: false, error: 'Stream read failed' });
         });
+        res.on('close', () => stream.destroy());
         stream.pipe(res);
 
     } catch (err: any) {
@@ -1162,9 +1252,14 @@ export const streamFile = async (req: AuthRequest, res: Response) => {
 export const createFolder = async (req: AuthRequest, res: Response) => {
     if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { name, parent_id = null, color = '#3174ff' } = req.body;
-    if (!name?.trim()) return res.status(400).json({ success: false, error: 'Folder name required' });
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 255) return res.status(400).json({ success: false, error: 'Folder name must contain 1–255 characters' });
 
     try {
+        if (parent_id !== null) {
+            if (typeof parent_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(parent_id)) return res.status(400).json({ success: false, error: 'Invalid parent folder' });
+            const parent = await pool.query('SELECT id FROM folders WHERE id = $1 AND user_id = $2 AND is_trashed = false', [parent_id, req.user.id]);
+            if (!parent.rows.length) return res.status(404).json({ success: false, error: 'Parent folder not found' });
+        }
         const checkDuplicate = await pool.query(
             `SELECT id FROM folders WHERE user_id = $1 AND name = $2 AND parent_id ${parent_id ? '= $3' : 'IS NULL'} AND is_trashed = false`,
             parent_id ? [req.user.id, name.trim(), parent_id] : [req.user.id, name.trim()]
@@ -1318,39 +1413,24 @@ export const updateFolder = async (req: AuthRequest, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 export const trashFolder = async (req: AuthRequest, res: Response) => {
     if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
-    const { id } = req.params;
-
+    const client = await pool.connect();
     try {
-        // Recursively find ALL descendant folder IDs (including the root)
-        const descendantsRes = await pool.query(`
-            WITH RECURSIVE subtree AS (
-                SELECT id FROM folders WHERE id = $1 AND user_id = $2
-                UNION ALL
-                SELECT f.id FROM folders f INNER JOIN subtree s ON f.parent_id = s.id
-            )
-            SELECT id FROM subtree
-        `, [id, req.user.id]);
-
-        const folderIds = descendantsRes.rows.map(r => r.id);
-        if (folderIds.length === 0) return res.status(404).json({ success: false, error: 'Folder not found' });
-
-        // Soft-delete all descendant folders
-        await pool.query(
-            `UPDATE folders SET is_trashed = true, trashed_at = NOW() WHERE id = ANY($1::uuid[]) AND user_id = $2`,
-            [folderIds, req.user.id]
-        );
-        // Soft-delete all files inside any of those folders
-        await pool.query(
-            `UPDATE files SET is_trashed = true, trashed_at = NOW() WHERE folder_id = ANY($1::uuid[]) AND user_id = $2`,
-            [folderIds, req.user.id]
-        );
-        await logActivity(req.user.id, 'trash_folder', undefined, id as string);
+        await client.query('BEGIN');
+        const descendants = await client.query(`WITH RECURSIVE subtree AS (
+            SELECT id FROM folders WHERE id = $1 AND user_id = $2
+            UNION SELECT f.id FROM folders f JOIN subtree s ON f.parent_id = s.id WHERE f.user_id = $2
+        ) SELECT id FROM subtree`, [req.params.id, req.user.id]);
+        const ids = descendants.rows.map(row => row.id);
+        if (!ids.length) { await client.query('ROLLBACK'); return res.status(404).json({ success: false, error: 'Folder not found' }); }
+        await client.query('UPDATE folders SET is_trashed = true, trashed_at = NOW() WHERE id = ANY($1::uuid[]) AND user_id = $2 AND is_trashed = false', [ids, req.user.id]);
+        await client.query('UPDATE files SET is_trashed = true, trashed_at = NOW() WHERE folder_id = ANY($1::uuid[]) AND user_id = $2 AND is_trashed = false', [ids, req.user.id]);
+        await client.query('COMMIT');
         invalidateUserPerformanceCaches(req.user.id);
-
-        res.json({ success: true, message: `Folder and ${folderIds.length - 1} sub-folder(s) moved to trash.` });
+        res.json({ success: true, message: 'Folder and its contents moved to trash.' });
     } catch (err: any) {
+        await client.query('ROLLBACK');
         res.status(500).json({ success: false, error: err.message });
-    }
+    } finally { client.release(); }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1405,6 +1485,9 @@ export const getStats = async (req: AuthRequest, res: Response) => {
             // Flat convenience fields for mobile storage card
             image_count: imageRow ? imageRow.count : 0,
             video_count: videoRow ? videoRow.count : 0,
+            imageBytes: Number(imageRow?.bytes || 0),
+            videoBytes: Number(videoRow?.bytes || 0),
+            docBytes: Number(byTypeRows.find((r: any) => r.category === 'pdf')?.bytes || 0),
             storageByType: byTypeRows,
         };
 
@@ -1468,27 +1551,8 @@ export const bulkAction = async (req: AuthRequest, res: Response) => {
                     const client = await pool.connect();
                     try {
                         await client.query('BEGIN');
-                        const fileRes = await client.query(`UPDATE files SET is_trashed = false, trashed_at = NULL WHERE id = ANY($1::uuid[]) AND user_id = $2 RETURNING id`, [ids, req.user.id]);
-                        const folderRes = await client.query(`
-                            UPDATE folders
-                            SET is_trashed = false, trashed_at = NULL,
-                                name = CASE 
-                                    WHEN EXISTS (
-                                        SELECT 1 FROM folders f2 
-                                        WHERE f2.user_id = folders.user_id 
-                                          AND f2.parent_id IS NOT DISTINCT FROM folders.parent_id 
-                                          AND f2.name = folders.name 
-                                          AND f2.is_trashed = false 
-                                          AND f2.id != folders.id
-                                    ) 
-                                    THEN folders.name || ' (Restored ' || substr(folders.id::text, 1, 4) || ')'
-                                    ELSE folders.name 
-                                END
-                            WHERE id = ANY($1::uuid[]) AND user_id = $2
-                            RETURNING id
-                        `, [ids, req.user.id]);
+                        for (const id of ids) affected += await restoreItem(client, id, req.user.id);
                         await client.query('COMMIT');
-                        affected = (fileRes.rowCount || 0) + (folderRes.rowCount || 0);
                     } catch (err) {
                         await client.query('ROLLBACK');
                         throw err;
@@ -1528,10 +1592,23 @@ export const bulkAction = async (req: AuthRequest, res: Response) => {
                             `UPDATE files SET folder_id = $1, updated_at = NOW() WHERE id = ANY($2::uuid[]) AND user_id = $3 AND is_trashed = false`,
                             [folder_id || null, ids, req.user.id]
                         );
-                        // Make sure we don't accidentally move a folder into itself or its descendants here? That might be complex.
-                        // Assuming frontend prevents dragging folder into itself natively. Backend will just do it, which could orphan if parent loop is created.
+                        if (folder_id !== null) {
+                            // Lock the owner's tree so concurrent moves cannot create a cycle.
+                            await client.query('SELECT id FROM folders WHERE user_id = $1 FOR UPDATE', [req.user.id]);
+                            const cycle = await client.query(
+                                `WITH RECURSIVE descendants AS (
+                                    SELECT id FROM folders WHERE id = ANY($1::uuid[]) AND user_id = $2
+                                    UNION
+                                    SELECT f.id FROM folders f JOIN descendants d ON f.parent_id = d.id WHERE f.user_id = $2
+                                ) SELECT id FROM descendants WHERE id = $3`, [ids, req.user.id, folder_id]
+                            );
+                            if (cycle.rows.length) {
+                                await client.query('ROLLBACK');
+                                return res.status(400).json({ success: false, error: 'A folder cannot be moved into itself or a child folder' });
+                            }
+                        }
                         const folderRes = await client.query(
-                            `UPDATE folders SET parent_id = $1, updated_at = NOW() WHERE id = ANY($2::uuid[]) AND user_id = $3 AND is_trashed = false AND id != $1`,
+                            `UPDATE folders SET parent_id = $1, updated_at = NOW() WHERE id = ANY($2::uuid[]) AND user_id = $3 AND is_trashed = false`,
                             [folder_id || null, ids, req.user.id]
                         );
                         await client.query('COMMIT');
@@ -1575,12 +1652,16 @@ export const addTag = async (req: AuthRequest, res: Response) => {
     if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized', { retryable: false });
     const { id } = req.params;
     const { tag } = req.body;
-    if (!tag?.trim()) return res.status(400).json({ success: false, error: 'tag required' });
+    if (typeof tag !== 'string' || !tag.trim() || tag.trim().length > 64) return res.status(400).json({ success: false, error: 'Tag must contain 1–64 characters.' });
     try {
-        await pool.query(
-            `INSERT INTO file_tags (file_id, tag, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        const inserted = await pool.query(
+            `INSERT INTO file_tags (file_id, tag, user_id) SELECT id, $2, $3 FROM files WHERE id = $1 AND user_id = $3 AND is_trashed = false ON CONFLICT DO NOTHING`,
             [id, tag.trim().toLowerCase(), req.user.id]
         );
+        if (!inserted.rowCount) {
+            const owned = await pool.query('SELECT id FROM files WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+            if (!owned.rowCount) return sendApiError(res, 404, 'not_found', 'File not found.');
+        }
         res.json({ success: true });
     } catch (err: any) { res.status(500).json({ success: false, error: err.message }); }
 };
@@ -1739,4 +1820,3 @@ export const getFileDetails = async (req: AuthRequest, res: Response) => {
         });
     } catch (err: any) { res.status(500).json({ success: false, error: err.message }); }
 };
-

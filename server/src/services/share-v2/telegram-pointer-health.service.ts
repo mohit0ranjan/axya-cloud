@@ -15,8 +15,10 @@ type UpsertPointerHealthInput = {
 };
 
 export const upsertPointerHealth = async (input: UpsertPointerHealthInput): Promise<void> => {
-    const fileId = input.fileId || null;
     const shareItemId = input.shareItemId || null;
+    // A share snapshot has its own health record. The schema requires exactly
+    // one target; writing both also collides with the private file's unique row.
+    const fileId = shareItemId ? null : input.fileId || null;
 
     if (!fileId && !shareItemId) return;
 
@@ -38,7 +40,7 @@ export const upsertPointerHealth = async (input: UpsertPointerHealthInput): Prom
             last_checked_at,
             recovered_at
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),$11)
-        ON CONFLICT (${targetColumn}) DO UPDATE SET
+        ON CONFLICT (${targetColumn}) WHERE ${targetColumn} IS NOT NULL DO UPDATE SET
             user_id = EXCLUDED.user_id,
             telegram_chat_id = EXCLUDED.telegram_chat_id,
             telegram_message_id = EXCLUDED.telegram_message_id,

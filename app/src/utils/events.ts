@@ -1,5 +1,6 @@
 import { DeviceEventEmitter } from 'react-native';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { applyFileListEvent } from './fileListUpdates';
 
 export const FILE_REFRESH_EVENT = 'EVENT_FILE_REFRESH';
 export const FILE_DELETED_EVENT = 'EVENT_FILE_DELETED';
@@ -50,19 +51,18 @@ export const useFileRefresh = (callback: () => void) => {
 /**
  * React hook to optimistically update a local files array immediately.
  */
-export const useOptimisticFiles = (setFiles: (updater: (prev: any[]) => any[]) => void) => {
+export const useOptimisticFiles = (setFiles: (updater: (prev: any[]) => any[]) => void, accepts: (file: any) => boolean = () => true) => {
+    const scope = useRef(accepts);
+    scope.current = accepts;
     require('react').useEffect(() => {
         const sub1 = DeviceEventEmitter.addListener(FILE_DELETED_EVENT, (id: string) => {
-            setFiles((prev) => prev.filter((f) => f.id !== id));
+            setFiles(prev => applyFileListEvent(prev, {type:'delete', id}, scope.current));
         });
         const sub2 = DeviceEventEmitter.addListener(FILE_ADDED_EVENT, (file: any) => {
-            setFiles((prev) => {
-                if (prev.find(f => f.id === file.id)) return prev;
-                return [file, ...prev];
-            });
+            setFiles(prev => applyFileListEvent(prev, {type:'add', file}, scope.current));
         });
         const sub3 = DeviceEventEmitter.addListener(FILE_UPDATED_EVENT, ({ id, updates }: { id: string, updates: any }) => {
-            setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...updates } : f)));
+            setFiles(prev => applyFileListEvent(prev, {type:'update', id, updates}, scope.current));
         });
         return () => {
             sub1.remove();

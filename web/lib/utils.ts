@@ -16,7 +16,8 @@ export const formatSize = (bytes: number) => {
 export const isImage = (file: SharedFile) => String(file.mime_type || '').startsWith('image/');
 export const isVideo = (file: SharedFile) => String(file.mime_type || '').startsWith('video/');
 export const isPdf = (file: SharedFile) => String(file.mime_type || '').toLowerCase() === 'application/pdf';
-export const supportsInlinePreview = (file: SharedFile) => isImage(file) || isVideo(file) || isPdf(file);
+export const isAudio = (file: SharedFile) => String(file.mime_type || '').startsWith('audio/');
+export const supportsInlinePreview = (file: SharedFile) => isImage(file) || isVideo(file) || isPdf(file) || isAudio(file);
 export const getFileLabel = (file: SharedFile) => String(file.display_name || file.relative_path || 'Untitled file').trim() || 'Untitled file';
 
 export const formatDate = (dateString: string) => {

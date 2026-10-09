@@ -7,6 +7,7 @@ export interface ShareOptions {
     allow_download?: boolean;
     allow_preview?: boolean;
     password?: string;
+    require_password?: boolean;
 }
 
 export interface SharePatchOptions {
@@ -37,6 +38,8 @@ export const createShareLink = async (options: ShareOptions) => {
     };
 
     const normalizedPassword = String(options.password || '').trim();
+    if (options.require_password && normalizedPassword.length < 8) throw new Error('A password of at least 8 characters is required.');
+    payload.require_password = options.require_password === true;
     if (normalizedPassword) payload.password = normalizedPassword;
 
     const { data } = await apiClient.post('/api/v2/shares', payload);

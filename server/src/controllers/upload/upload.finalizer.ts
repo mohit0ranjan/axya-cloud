@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import { finished } from 'stream/promises';
 import pool from '../../config/db';
 import { getDynamicClient } from '../../services/telegram.service';
@@ -9,8 +10,10 @@ import { enqueueUploadFinalizerJob, isUploadFinalizerTracked } from '../../servi
 import { logger } from '../../utils/logger';
 import sharp from 'sharp';
 import { encode } from 'blurhash';
+import { cacheDelByPrefix } from '../../services/cache.service';
+import { commitUploadFile, saveDeliveryCheckpoint } from './upload.delivery';
 
-import { toInt, logUploadStage, classifyUploadFailure, computeFileHashes, computePartialFileSha256 } from './upload.helpers';
+import { toInt, logUploadStage, classifyUploadFailure, computeFileHashes, computePartialFileSha256, parseUploadedChunks } from './upload.helpers';
 import { getUploadSessionById, getChunkStats, updateSessionFailure } from './upload.session';
 import { getCapacitySnapshot } from './upload.capacity';
 import { promoteQueuedSessionsIfCapacity } from './upload.queue';
@@ -50,7 +53,7 @@ export const clearFinalizerRetryState = (uploadId: string) => {
 const queueRetryableFinalizerFailure = async (uploadId: string, code: string, message: string) => {
     await pool.query(
         `UPDATE upload_sessions
-         SET status = 'queued',
+         SET status = 'processing',
              error_code = $2,
              error_message = $3,
              retryable = true,
@@ -60,14 +63,21 @@ const queueRetryableFinalizerFailure = async (uploadId: string, code: string, me
     );
 };
 
-const scheduleUploadFinalizerRetry = (uploadId: string, ownerSessionString: string, reason: string) => {
-    if (FINALIZER_MAX_RETRIES <= 0) return;
+const scheduleUploadFinalizerRetry = async (uploadId: string, ownerSessionString: string, reason: string) => {
+    if (FINALIZER_MAX_RETRIES <= 0) {
+        void updateSessionFailure(uploadId, 'finalizer_retry_exhausted', 'Telegram delivery failed. Retry this upload.', true).catch(() => undefined);
+        return;
+    }
     if (pendingFinalizerRetries.has(uploadId)) return;
 
-    const currentAttempt = finalizerAttemptByUploadId.get(uploadId) || 0;
-    const nextAttempt = currentAttempt + 1;
+    const attempts = await pool.query(
+        'UPDATE upload_sessions SET finalizer_attempts = finalizer_attempts + 1 WHERE upload_id = $1 AND status = \'processing\' RETURNING finalizer_attempts', [uploadId]);
+    if (!attempts.rows[0]) return;
+    const nextAttempt = Number(attempts.rows[0].finalizer_attempts);
+    const currentAttempt = nextAttempt - 1;
     if (nextAttempt > FINALIZER_MAX_RETRIES) {
         finalizerAttemptByUploadId.delete(uploadId);
+        void updateSessionFailure(uploadId, 'finalizer_retry_exhausted', 'Telegram delivery failed after repeated attempts. Retry this upload.', true).catch(() => undefined);
         logger.error('backend.upload', 'finalizer_retry_exhausted', {
             uploadId,
             attempts: currentAttempt,
@@ -78,6 +88,7 @@ const scheduleUploadFinalizerRetry = (uploadId: string, ownerSessionString: stri
 
     finalizerAttemptByUploadId.set(uploadId, nextAttempt);
     const delayMs = getFinalizerBackoffMs(nextAttempt);
+    await pool.query('UPDATE upload_sessions SET finalizer_retry_at = NOW() + ($2::bigint * INTERVAL \'1 millisecond\') WHERE upload_id = $1', [uploadId, delayMs]);
     const timer = setTimeout(() => {
         pendingFinalizerRetries.delete(uploadId);
         startUploadFinalizer(uploadId, ownerSessionString);
@@ -98,11 +109,41 @@ const scheduleUploadFinalizerRetry = (uploadId: string, ownerSessionString: stri
 
 const finalizeUploadSession = async (uploadId: string, ownerSessionString: string) => {
     const release = await telegramSemaphore.acquire();
+    const leaseToken = crypto.randomUUID();
+    let heartbeat: NodeJS.Timeout | undefined;
+    let leaseLost = false;
+    let locked = false;
     try {
+        // An atomic expiring row lease survives crashes and works with pooled
+        // PostgreSQL connections; no session-level advisory lock is required.
+        const lock = await pool.query(
+            `UPDATE upload_sessions SET worker_lease_token = $2, worker_lease_until = NOW() + INTERVAL '90 seconds'
+             WHERE upload_id = $1 AND status IN ('processing', 'uploading')
+               AND (worker_lease_until IS NULL OR worker_lease_until < NOW()) RETURNING upload_id`, [uploadId, leaseToken]);
+        locked = lock.rows.length > 0;
+        if (!locked) return;
+        heartbeat = setInterval(() => {
+            void pool.query(
+                `UPDATE upload_sessions SET worker_lease_until = NOW() + INTERVAL '90 seconds', updated_at = NOW()
+                 WHERE upload_id = $1 AND worker_lease_token = $2 AND status = 'processing'`, [uploadId, leaseToken]
+            ).then(result => { if (!result.rowCount) leaseLost = true; }).catch(() => { leaseLost = true; });
+        }, 15000);
+        heartbeat.unref?.();
         const session = await getUploadSessionById(uploadId);
         if (!session) return;
         if (session.status === 'completed' || session.status === 'cancelled') return;
         if (session.status !== 'processing' && session.status !== 'uploading') return;
+        if (session.storage_delivery?.integrity) {
+            // Telegram already owns these bytes. Recover metadata even if the
+            // host's temporary disk was lost during a deployment/restart.
+            const file = await commitUploadFile(session, session.storage_delivery, session.storage_delivery.integrity,
+                parseUploadedChunks(session.uploaded_chunks), null);
+            cleanupSessionTempFile(session.temp_file_path);
+            cacheDelByPrefix(`user:${session.user_id}:`);
+            logUploadStage('delivery_checkpoint_recovered', {uploadId, fileId:file?.id});
+            await promoteQueuedSessionsIfCapacity();
+            return;
+        }
 
         const chunkStats = await getChunkStats(uploadId);
         const totalChunks = toInt(session.total_chunks);
@@ -182,36 +223,22 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             : serverHash;
 
         const preCheck = await pool.query(
-            `SELECT * FROM files WHERE (sha256_hash = $1 OR md5_hash = $2) AND user_id = $3 AND is_trashed = false LIMIT 1`,
-            [serverHash, serverMd5, session.user_id]
+            `SELECT * FROM files WHERE sha256_hash = $1 AND file_size = $2 AND user_id = $3 AND is_trashed = false LIMIT 1`,
+            [serverHash, session.total_bytes, session.user_id]
         );
-        if (preCheck.rows.length > 0) {
-            const reused = preCheck.rows[0];
-            await pool.query(
-                `UPDATE upload_sessions
-                 SET status = 'completed',
-                     file_id = $2,
-                     file_sha256 = $3,
-                     file_md5 = $4,
-                     telegram_progress_percent = 100,
-                     received_bytes = total_bytes,
-                     uploaded_chunks = $5::jsonb,
-                     error_code = NULL,
-                     error_message = NULL,
-                     retryable = false,
-                     updated_at = NOW(),
-                     completed_at = NOW()
-                 WHERE upload_id = $1`,
-                [uploadId, reused.id, serverHash, serverMd5, JSON.stringify(chunkStats.uploadedChunks)]
-            );
+        if (!session.storage_delivery && preCheck.rows.length > 0) {
+            const source = preCheck.rows[0];
+            const reused = await commitUploadFile(session, {
+                provider: 'telegram', providerFileId: source.telegram_file_id,
+                providerMessageId: String(source.telegram_message_id), storageChatId: source.telegram_chat_id,
+                nativeMeta: { mediaMeta: source.tg_media_meta || {}, durationSec: source.tg_duration_sec,
+                    width: source.tg_width, height: source.tg_height, caption: source.tg_caption }
+            }, { sha256: serverHash, md5: serverMd5, partial: partialHash }, chunkStats.uploadedChunks, source.blurhash, source.id);
             cleanupSessionTempFile(session.temp_file_path);
-            logger.info('backend.upload', 'upload_completed', {
-                uploadId,
-                userId: session.user_id,
-                deduped: true,
-                fileId: reused.id,
-            });
+            cacheDelByPrefix(`user:${session.user_id}:`);
+            logUploadStage('upload_completed', { uploadId, deduped: true, fileId: reused?.id });
             finalizerAttemptByUploadId.delete(uploadId);
+            await promoteQueuedSessionsIfCapacity();
             return;
         }
 
@@ -220,6 +247,7 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
         let lastProgressWriteAt = 0;
         let lastProgressValue = 0;
         const progressCallback = (progress: number) => {
+            if (leaseLost) throw new Error('UPLOAD_WORKER_LEASE_LOST');
             const next = Math.min(Math.max(Math.round(progress * 100), 0), 100);
             const now = Date.now();
             if (next === lastProgressValue && now - lastProgressWriteAt < FINALIZER_PROGRESS_UPDATE_THROTTLE_MS) return;
@@ -234,7 +262,8 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             ).catch(() => undefined);
         };
 
-        const uploadedFile = await storageAdapter.uploadFile({
+        const uploadedFile = session.storage_delivery || await storageAdapter.uploadFile({
+            idempotencyKey: uploadId,
             ownerSessionString,
             requestedChatId: String(session.telegram_chat_id || 'me'),
             filePath: session.temp_file_path,
@@ -245,13 +274,16 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             onProgress: progressCallback,
         });
 
-        // Fix #1: Immediately re-check session status after Telegram upload.
+        // Persist the pointer before metadata work so retries do not re-send bytes.
+        if (!session.storage_delivery) await saveDeliveryCheckpoint(uploadId, uploadedFile, {sha256:serverHash,md5:serverMd5,partial:partialHash});
+
+        // Immediately re-check session status after Telegram upload.
         const latestSession = await getUploadSessionById(uploadId);
         if (!latestSession || latestSession.status === 'cancelled') {
             try {
                 const tgMsgId = toInt(uploadedFile.providerMessageId);
-                if (uploadedFile.provider === 'telegram' && tgMsgId > 0 && uploadedFile.providerContext?.session) {
-                    const cleanupClient = await getDynamicClient(uploadedFile.providerContext.session);
+                if (uploadedFile.provider === 'telegram' && tgMsgId > 0) {
+                    const cleanupClient = await getDynamicClient(ownerSessionString);
                     await cleanupClient.deleteMessages(uploadedFile.storageChatId, [tgMsgId], { revoke: true });
                     logger.info('backend.upload', 'orphan_telegram_message_deleted', {
                         uploadId,
@@ -292,7 +324,7 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
                             .resize(32, 32, { fit: 'inside' })
                             .toBuffer({ resolveWithObject: true });
                         finalBlurhash = encode(new Uint8ClampedArray(data), info.width, info.height, 4, 3);
-                        finalThumbBuffer = await sharp(session.temp_file_path, { failOnError: false })
+                        finalThumbBuffer = await sharp(session.temp_file_path, { failOn: 'none' })
                             .resize(300, 300, { fit: 'inside', withoutEnlargement: true })
                             .toFormat('webp', { quality: 70, effort: 3 })
                             .toBuffer();
@@ -308,67 +340,16 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             }
         }
 
-        let fileRow: any = null;
-        let isOrphanedRace = false;
-
-        const insertResult = await pool.query(
-            `INSERT INTO files (user_id, folder_id, file_name, file_size, telegram_file_id, telegram_message_id, telegram_chat_id, mime_type, sha256_hash, md5_hash, partial_sha256, blurhash, tg_media_meta, tg_duration_sec, tg_width, tg_height, tg_caption, tg_source_tag)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18)
-             ON CONFLICT (user_id, sha256_hash) WHERE sha256_hash IS NOT NULL AND is_trashed = false
-             DO NOTHING
-             RETURNING *`,
-            [
-                session.user_id,
-                session.folder_id,
-                session.file_name,
-                toInt(session.total_bytes),
-                telegramFileId,
-                messageId,
-                uploadedFile.storageChatId,
-                session.mime_type || 'application/octet-stream',
-                serverHash,
-                serverMd5,
-                partialHash,
-                finalBlurhash,
-                JSON.stringify(nativeMeta.mediaMeta || {}),
-                nativeMeta.durationSec,
-                nativeMeta.width,
-                nativeMeta.height,
-                nativeMeta.caption,
-                session.source_tag,
-            ]
-        );
-
-        if (insertResult.rows.length > 0) {
-            fileRow = insertResult.rows[0];
-        } else {
-            const existingRes = await pool.query(
-                `SELECT * FROM files WHERE user_id = $1 AND sha256_hash = $2 AND is_trashed = false LIMIT 1`,
-                [session.user_id, serverHash]
-            );
-            if (existingRes.rows.length > 0) {
-                fileRow = existingRes.rows[0];
-                isOrphanedRace = true;
+        const fileRow = await commitUploadFile(session, uploadedFile,
+            { sha256: serverHash, md5: serverMd5, partial: partialHash }, chunkStats.uploadedChunks, finalBlurhash);
+        if (!fileRow) {
+            // Cancellation won the transaction lock. Remove only this new message.
+            if (!session.storage_delivery) {
+                const client = await getDynamicClient(ownerSessionString);
+                await client.deleteMessages(uploadedFile.storageChatId, [messageId], { revoke: true });
             }
-        }
-
-        if (isOrphanedRace && uploadedFile.provider === 'telegram' && messageId > 0 && uploadedFile.providerContext?.session) {
-            try {
-                const cleanupClient = await getDynamicClient(uploadedFile.providerContext.session);
-                await cleanupClient.deleteMessages(uploadedFile.storageChatId, [messageId], { revoke: true });
-                logger.info('backend.upload', 'orphan_telegram_message_deleted', {
-                    uploadId,
-                    telegramMessageId: messageId,
-                    chatId: uploadedFile.storageChatId,
-                    reason: 'race_condition_duplicate',
-                });
-            } catch (deleteErr: any) {
-                logger.warn('backend.upload', 'orphan_telegram_message_delete_failed', {
-                    uploadId,
-                    telegramMessageId: messageId,
-                    message: deleteErr?.message,
-                });
-            }
+            cleanupSessionTempFile(session.temp_file_path);
+            return;
         }
 
         if (fileRow && finalThumbBuffer) {
@@ -378,7 +359,7 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
                 await fs.promises.writeFile(path.join(thumbDir, `${fileRow.id}.webp`), finalThumbBuffer);
                 await fs.promises.writeFile(path.join(thumbDir, `${fileRow.id}_300.webp`), finalThumbBuffer);
                 try {
-                    const microThumb = await sharp(finalThumbBuffer, { failOnError: false })
+                    const microThumb = await sharp(finalThumbBuffer, { failOn: 'none' })
                         .resize(240, 240, { fit: 'inside', withoutEnlargement: true })
                         .toFormat('webp', { quality: 70, effort: 2 })
                         .toBuffer();
@@ -389,25 +370,8 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
             }
         }
 
-        await pool.query(
-            `UPDATE upload_sessions
-             SET status = 'completed',
-                 file_id = $2,
-                 file_sha256 = $3,
-                 file_md5 = $4,
-                 telegram_progress_percent = 100,
-                 received_bytes = total_bytes,
-                 uploaded_chunks = $5::jsonb,
-                 error_code = NULL,
-                 error_message = NULL,
-                 retryable = false,
-                 updated_at = NOW(),
-                 completed_at = NOW()
-             WHERE upload_id = $1`,
-            [uploadId, fileRow?.id || null, serverHash, serverMd5, JSON.stringify(chunkStats.uploadedChunks)]
-        );
-
         cleanupSessionTempFile(session.temp_file_path);
+        cacheDelByPrefix(`user:${session.user_id}:`);
         logger.info('backend.upload', 'upload_completed', {
             uploadId,
             userId: session.user_id,
@@ -416,6 +380,10 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
         finalizerAttemptByUploadId.delete(uploadId);
         await promoteQueuedSessionsIfCapacity();
     } catch (err: any) {
+        // A stale worker must not overwrite the replacement worker's state.
+        if (leaseLost || err?.message === 'UPLOAD_WORKER_LEASE_LOST') return;
+        const stillOwned = await pool.query('SELECT 1 FROM upload_sessions WHERE upload_id = $1 AND worker_lease_token = $2', [uploadId, leaseToken]);
+        if (locked && !stillOwned.rowCount) return;
         const mapped = classifyUploadFailure(err);
         if (mapped.retryable) {
             await queueRetryableFinalizerFailure(uploadId, mapped.code, mapped.message);
@@ -435,6 +403,8 @@ const finalizeUploadSession = async (uploadId: string, ownerSessionString: strin
         });
         await promoteQueuedSessionsIfCapacity();
     } finally {
+        if (heartbeat) clearInterval(heartbeat);
+        if (locked) await pool.query('UPDATE upload_sessions SET worker_lease_token = NULL, worker_lease_until = NULL WHERE upload_id = $1 AND worker_lease_token = $2', [uploadId, leaseToken]).catch(() => undefined);
         release();
     }
 };
@@ -464,7 +434,7 @@ export const startUploadFinalizer = (uploadId: string, ownerSessionString: strin
     });
 
     const promise = queued
-        .catch((err: any) => {
+        .catch(async (err: any) => {
             logger.error('backend.upload', 'finalizer_crashed', {
                 uploadId,
                 message: err?.message,
@@ -472,7 +442,7 @@ export const startUploadFinalizer = (uploadId: string, ownerSessionString: strin
             });
 
             if (Boolean(err?.retryable)) {
-                scheduleUploadFinalizerRetry(uploadId, ownerSessionString, String(err?.code || err?.message || 'retryable_failure'));
+                await scheduleUploadFinalizerRetry(uploadId, ownerSessionString, String(err?.code || err?.message || 'retryable_failure'));
             } else {
                 clearFinalizerRetryState(uploadId);
             }
@@ -489,7 +459,8 @@ export const recoverActiveFinalizers = async () => {
         `SELECT us.upload_id, u.session_string
          FROM upload_sessions us
          JOIN users u ON u.id = us.user_id
-         WHERE us.status = 'processing'
+         WHERE us.status = 'processing' AND (us.finalizer_retry_at IS NULL OR us.finalizer_retry_at <= NOW())
+           AND (us.worker_lease_until IS NULL OR us.worker_lease_until < NOW())
          ORDER BY us.updated_at ASC
          LIMIT 50`
     );

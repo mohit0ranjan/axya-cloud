@@ -97,9 +97,11 @@ export const getCapacitySnapshot = async (userId: string): Promise<CapacitySnaps
     const result = await pool.query(
         `SELECT
             COUNT(*) FILTER (WHERE status IN ('uploading', 'processing'))::int AS active_global,
-            COUNT(*) FILTER (WHERE status = 'queued')::int AS queued_global,
+            COUNT(*) FILTER (WHERE status = 'queued'
+                AND COALESCE(client_seen_at, created_at) > NOW() - INTERVAL '3 minutes')::int AS queued_global,
             COUNT(*) FILTER (WHERE user_id = $1 AND status IN ('uploading', 'processing'))::int AS active_user,
-            COUNT(*) FILTER (WHERE user_id = $1 AND status = 'queued')::int AS queued_user
+            COUNT(*) FILTER (WHERE user_id = $1 AND status = 'queued'
+                AND COALESCE(client_seen_at, created_at) > NOW() - INTERVAL '3 minutes')::int AS queued_user
          FROM upload_sessions`,
         [userId]
     );
@@ -121,14 +123,17 @@ export const getAdaptiveConcurrencyLimits = (capacity: CapacitySnapshot): Adapti
     const diskUsageMb = Math.round((disk.totalBytes - disk.availableBytes) / (1024 * 1024));
     const diskUsagePercent = Number(disk.usedPercent.toFixed(2));
     const availableDiskMb = Math.round(disk.availableBytes / (1024 * 1024));
-    const diskPauseNewUploads = diskUsagePercent >= DISK_PAUSE_THRESHOLD_PERCENT || disk.availableBytes < RESERVED_DISK_BYTES;
-    const diskCritical = diskUsagePercent >= DISK_CRITICAL_THRESHOLD_PERCENT || disk.availableBytes < Math.round(RESERVED_DISK_BYTES * 0.5);
+    // Shared-volume utilization is diagnostic, not a storage quota. A large
+    // volume can be 93% full and still have many GB available for uploads.
+    const diskPauseNewUploads = disk.availableBytes < RESERVED_DISK_BYTES
+        || (disk.source === 'estimate' && diskUsagePercent >= DISK_PAUSE_THRESHOLD_PERCENT);
+    const diskCritical = disk.availableBytes < Math.round(RESERVED_DISK_BYTES * 0.5)
+        || (disk.source === 'estimate' && diskUsagePercent >= DISK_CRITICAL_THRESHOLD_PERCENT);
     const diskPressure: 'normal' | 'high' = diskPauseNewUploads ? 'high' : 'normal';
 
     const lowLoad = heapRatio < 0.68
         && rssMb < 360
         && diskPressure === 'normal'
-        && capacity.queuedGlobal === 0
         && capacity.activeGlobal <= SAFE_ACTIVE_UPLOADS_GLOBAL;
 
     const perUserLimit = diskPauseNewUploads

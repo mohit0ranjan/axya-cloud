@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { SharedFile, ShareMeta } from './types';
 import { X, ChevronLeft, ChevronRight, Download, Info, Share2, RefreshCw } from 'lucide-react';
-import { formatSize, getFileLabel, isImage, isPdf, isVideo, supportsInlinePreview } from '../../lib/utils';
+import { formatSize, getFileLabel, isImage, isPdf, isVideo, isAudio, supportsInlinePreview } from '../../lib/utils';
 
 interface PreviewModalProps {
     isOpen: boolean;
@@ -145,6 +145,7 @@ export function PreviewModal({
         if (isImage(currentFile)) {
             return (
                 <div className="relative">
+                    {!imageLoaded && <div role="status" className="absolute inset-0 z-10 grid place-items-center"><span className="rounded-full bg-neutral-900/70 px-4 py-2 text-sm text-white">Loading image…</span></div>}
                     {/* Blurred thumbnail underneath for progressive loading */}
                     {thumbUrl && !imageLoaded && (
                         <img
@@ -177,6 +178,9 @@ export function PreviewModal({
                     onError={() => onPreviewMediaError?.(currentFile)}
                 />
             );
+        }
+        if (isAudio(currentFile)) {
+            return <div className="rounded-2xl bg-white p-6 shadow-xl"><p className="mb-4 font-medium">{getFileLabel(currentFile)}</p><audio src={previewUrl} controls preload="metadata" onError={() => onPreviewMediaError?.(currentFile)} /></div>;
         }
         if (isPdf(currentFile)) {
             return (

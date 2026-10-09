@@ -36,6 +36,11 @@ export type UploadSessionRow = {
     error_code: string | null;
     error_message: string | null;
     retryable: boolean;
+    storage_delivery: import('../../services/storage/storage.adapter').StorageUploadResult | null;
+    finalizer_attempts: number;
+    finalizer_retry_at: string | null;
+    worker_lease_token: string | null;
+    worker_lease_until: string | null;
     created_at: string;
     updated_at: string;
     completed_at: string | null;
@@ -113,7 +118,7 @@ export class Semaphore {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-export const UPLOAD_TMP_ROOT = path.join(os.tmpdir(), 'axya_uploads');
+export const UPLOAD_TMP_ROOT = path.resolve(process.env.UPLOAD_STORAGE_DIR || path.join(os.tmpdir(), 'axya_uploads'));
 export const FIXED_CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
 
 export const DISK_PAUSE_THRESHOLD_PERCENT = Math.max(50, Math.min(99, Number.parseFloat(String(process.env.UPLOAD_DISK_PAUSE_PERCENT || '80'))));

@@ -4,6 +4,7 @@ import { Share2, Tag, Star, Move, Trash2, Folder } from 'lucide-react-native';
 import apiClient from '../services/apiClient';
 import { useToast } from '../context/ToastContext';
 import { useTheme } from '../context/ThemeContext';
+import { useNavigation } from '@react-navigation/native';
 import { showDestructiveConfirm } from '../utils/alert';
 import AppButton from './AppButton';
 import ShareFolderModal from './ShareFolderModal';
@@ -26,6 +27,7 @@ const ActionRow = ({ style, onPress, children }: { style: any; onPress: () => vo
 };
 
 export default function FileQuickActions({ item, visible, onClose, onRefresh }: any) {
+    const navigation:any = useNavigation();
     const { theme, isDark } = useTheme();
     const { showToast } = useToast();
     const s = createStyles(theme, isDark);
@@ -207,6 +209,7 @@ export default function FileQuickActions({ item, visible, onClose, onRefresh }: 
                             <Move color={theme.colors.textHeading} size={20} />
                             <Text style={s.rowText}>Move to Folder</Text>
                         </ActionRow>
+                        {!isFolder && <ActionRow style={s.row} onPress={() => { onClose(); navigation.navigate('FileTools', {file:item}); }}><Tag color={theme.colors.primary} size={20}/><Text style={s.rowText}>Offline, tags & versions</Text></ActionRow>}
 
                         <ActionRow style={[s.row, { backgroundColor: isDark ? 'rgba(239,68,68,0.1)' : '#FEF2F2', marginTop: 8 }]} onPress={handleDelete}>
                             <Trash2 color="#EF4444" size={20} />

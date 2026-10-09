@@ -65,7 +65,7 @@ const requestTimers = new Map<string, NodeJS.Timeout>();
 const injectTokenAndLog = async (config: CustomAxiosRequestConfig) => {
     try {
         const token = await getSecureValue(SECURE_KEYS.JWT_TOKEN);
-        if (token) {
+        if (token && !(config.headers as any)?.Authorization) {
             if (!config.headers) config.headers = {} as any;
             (config.headers as any).Authorization = `Bearer ${token}`;
         }
@@ -102,10 +102,10 @@ const injectTokenAndLog = async (config: CustomAxiosRequestConfig) => {
     }
 
     // Show server waking UI if a request takes longer than 2 seconds
-    if (!isHealthRequestPath(config.url, config.baseURL)) {
+    if (!isUploadRequest && !isHealthRequestPath(config.url, config.baseURL)) {
         const timer = setTimeout(() => {
             serverStatusManager.setWaking(true, SERVER_WAKE_BANNER_TEXT);
-        }, 2000);
+        }, 8000);
         requestTimers.set(reqId, timer);
     }
 

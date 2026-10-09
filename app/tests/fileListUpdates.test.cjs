@@ -1,0 +1,6 @@
+const test=require('node:test'), assert=require('node:assert/strict'), fs=require('node:fs'), vm=require('node:vm'), ts=require('typescript');
+const exportsUnderTest={};vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/utils/fileListUpdates.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,{exports:exportsUnderTest});
+const apply=exportsUnderTest.applyFileListEvent;
+test('file moved to another folder immediately disappears from the old folder',()=>{const files=[{id:'one',folder_id:'old'},{id:'two',folder_id:'old'}];const result=apply(files,{type:'update',id:'one',updates:{folder_id:'new'}},f=>f.folder_id==='old');assert.equal(result.length,1);assert.equal(result[0].id,'two');assert.equal(files[0].folder_id,'old');});
+test('unstar removes a file from Starred while other lists retain it',()=>{const files=[{id:'one',is_starred:true}];assert.equal(apply(files,{type:'update',id:'one',updates:{is_starred:false}},f=>!!f.is_starred).length,0);assert.equal(apply(files,{type:'update',id:'one',updates:{is_starred:false}}).length,1);});
+test('a file added elsewhere cannot enter a folder-specific list',()=>{const files=[];assert.equal(apply(files,{type:'add',file:{id:'one',folder_id:'other'}},f=>f.folder_id==='this'),files);});

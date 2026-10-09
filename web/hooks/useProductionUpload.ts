@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ProductionUploadManager,
   getUploadManager,
-} from '../upload/productionUploadManager';
-import { UploadTask, UploadStats, UploadQueueConfig } from '../upload/production-types';
+} from '../lib/upload/productionUploadManager';
+import { UploadTask, UploadStats, UploadQueueConfig } from '../lib/upload/production-types';
 
 export function useProductionUpload(config?: Partial<UploadQueueConfig>) {
   const [tasks, setTasks] = useState<UploadTask[]>([]);
@@ -34,7 +34,7 @@ export function useProductionUpload(config?: Partial<UploadQueueConfig>) {
   }, []);
 
   useEffect(() => {
-    manager.on({
+    const unsubscribe = manager.on({
       onTaskUpdate: handleTaskUpdate,
       onStatsUpdate: handleStatsUpdate,
       onQueueChange: handleTaskUpdate,
@@ -43,6 +43,7 @@ export function useProductionUpload(config?: Partial<UploadQueueConfig>) {
     // Initial state
     setTasks([...manager.getTasks()]);
     setStats(manager.getStats());
+    return unsubscribe;
   }, [manager, handleTaskUpdate, handleStatsUpdate]);
 
   const addFiles = useCallback(

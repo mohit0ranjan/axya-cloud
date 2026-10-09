@@ -16,6 +16,8 @@ import NodeCache from 'node-cache';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { logger } from '../utils/logger';
+import { decryptSession } from '../utils/sessionEncryption';
+import { computeCheck } from 'telegram/Password';
 
 dotenv.config();
 
@@ -59,6 +61,7 @@ const clientInitPromises = new Map<string, Promise<TelegramClient>>();
 // Auto-reconnects if the cached client is disconnected.
 
 export const getDynamicClient = async (sessionString: string): Promise<TelegramClient> => {
+    sessionString = decryptSession(String(sessionString || ''));
     if (!String(sessionString || '').trim()) {
         throw new Error('Telegram session string is missing.');
     }
@@ -159,7 +162,8 @@ export const verifyOTPAndSignIn = async (
     phoneNumber: string,
     phoneCodeHash: string,
     phoneCode: string,
-    tempSession: string
+    tempSession: string,
+    password?: string
 ) => {
     const { apiId, apiHash } = getApiConfig();
     const client = new TelegramClient(new StringSession(tempSession), apiId, apiHash, {
@@ -167,13 +171,21 @@ export const verifyOTPAndSignIn = async (
     });
     await client.connect();
 
-    await client.invoke(
-        new Api.auth.SignIn({
-            phoneNumber,
-            phoneCodeHash,
-            phoneCode,
-        })
-    );
+    try {
+        await client.invoke(new Api.auth.SignIn({ phoneNumber, phoneCodeHash, phoneCode }));
+    } catch (error: any) {
+        if (!/SESSION_PASSWORD_NEEDED/.test(String(error?.message)) || !password) {
+            await client.disconnect();
+            throw error;
+        }
+        try {
+            const params = await client.invoke(new Api.account.GetPassword());
+            await client.invoke(new Api.auth.CheckPassword({ password: await computeCheck(params, password) }));
+        } catch (passwordError) {
+            await client.disconnect();
+            throw passwordError;
+        }
+    }
 
     const me = await client.getMe() as Api.User;
     const profileData = {
@@ -254,6 +266,15 @@ export async function* iterFileDownload(
     const maxBytes = limit;
 
     let fileToDownload: any = media.document || media;
+    if (media.document) {
+        const document = media.document;
+        fileToDownload = new Api.InputDocumentFileLocation({
+            id: document.id,
+            accessHash: document.accessHash,
+            fileReference: document.fileReference,
+            thumbSize: '',
+        });
+    }
 
     if (media.photo) {
         // GramJS requires an explicit InputPhotoFileLocation for iterDownload
@@ -273,6 +294,9 @@ export async function* iterFileDownload(
         file: fileToDownload,
         offset: require('big-integer')(offset),
         requestSize: chunkSize,
+        limit: Number.isFinite(maxBytes) ? Math.ceil(maxBytes / chunkSize) : undefined,
+        dcId: media.document?.dcId || media.photo?.dcId,
+        fileSize: media.document?.size,
     };
 
     for await (const chunk of client.iterDownload(iterOptions)) {

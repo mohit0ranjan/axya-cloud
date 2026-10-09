@@ -3,189 +3,88 @@ import { AuthRequest } from '../../middlewares/auth.middleware';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import os from 'os';
 import pool from '../../config/db';
 import { logger } from '../../utils/logger';
 import { sendApiError } from '../../utils/apiError';
 import { isAllowedUploadMime } from '../../utils/uploadMime';
 import { resolveTelegramUploadTransport } from '../../services/storage/telegram-storage.adapter';
-import { withUploadBandwidthBudget } from '../../services/upload-job-queue.service';
 import { sanitizeUploadFileName } from './upload.helpers';
+import { ensureTempUploadFile, cleanupSessionTempFile } from './upload.temp';
+import { startUploadFinalizer } from './upload.finalizer';
+import { checkUploadStatus, cancelUpload } from './upload.handlers';
+import { FIXED_CHUNK_SIZE_BYTES, MAX_FILE_SIZE_BYTES } from './upload.types';
 
-const MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024; // 5GB
-const UPLOAD_TEMP_DIR = path.join(os.tmpdir(), 'teledrive_uploads');
-
-// Ensure temp directory exists
-try {
-    fs.mkdirSync(UPLOAD_TEMP_DIR, { recursive: true });
-} catch (err) {
-    logger.warn('Failed to create upload temp dir:', err);
-}
-
-/**
- * Simple single-file upload handler
- * POST /upload/file
- * Form data: { file: File, folderId?: number, telegramChatId?: string }
- */
+/** Multipart compatibility endpoint backed by the canonical manifest and finalizer. */
 export const uploadFile = async (req: AuthRequest, res: Response) => {
+    let uploadDir = '';
+    let committed = false;
     try {
-        if (!req.user) {
-            return sendApiError(res, 401, 'unauthorized', 'Unauthorized');
+        if (!req.user) return sendApiError(res, 401, 'unauthorized', 'Unauthorized');
+        const file = req.file;
+        if (!file || file.size <= 0) return sendApiError(res, 400, 'invalid_file', 'Choose a non-empty file');
+        if (file.size > MAX_FILE_SIZE_BYTES) return sendApiError(res, 413, 'file_too_large', 'File exceeds the configured upload limit');
+        if (!isAllowedUploadMime(file.mimetype)) return sendApiError(res, 400, 'unsupported_type', 'This file type is not supported');
+        const folderId = req.body.folderId || null;
+        if (folderId) {
+            const folder = await pool.query('SELECT id FROM folders WHERE id = $1 AND user_id = $2 AND is_trashed = false', [folderId, req.user.id]);
+            if (!folder.rows.length) return sendApiError(res, 404, 'not_found', 'Folder not found');
         }
-
-        if (!req.file) {
-            return sendApiError(res, 400, 'no_file', 'No file provided');
-        }
-
-        const { file } = req;
-        const { folderId, telegramChatId } = req.body;
-
-        // Validate file
-        if (!file.originalname || !file.size) {
-            return sendApiError(res, 400, 'invalid_file', 'Invalid file');
-        }
-
-        if (file.size > MAX_FILE_SIZE) {
-            return sendApiError(res, 413, 'file_too_large', 'File exceeds maximum size of 5GB');
-        }
-
-        if (!isAllowedUploadMime(file.mimetype)) {
-            return sendApiError(res, 400, 'unsupported_type', `File type ${file.mimetype} not allowed`);
-        }
-
-        // Generate upload ID
-        const uploadId = crypto.randomBytes(16).toString('hex');
+        const target = await resolveTelegramUploadTransport(req.user.sessionString, req.body.telegramChatId);
+        const uploadId = crypto.randomUUID();
         const fileName = sanitizeUploadFileName(file.originalname);
-        const tempPath = path.join(UPLOAD_TEMP_DIR, uploadId);
-
-        // Move file to temp location
-        await fs.promises.rename(file.path, tempPath);
-
-        // Apply bandwidth budget
-        await withUploadBandwidthBudget(String(req.user.id), file.size);
-
-        // Store in database
-        const result = await pool.query(
-            `INSERT INTO upload_sessions (
-                id, user_id, file_name, file_size, file_mime, status, 
-                folder_id, telegram_chat_id, temp_file_path, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
-            RETURNING *`,
-            [
-                uploadId,
-                req.user.id,
-                fileName,
-                file.size,
-                file.mimetype,
-                'processing', // New status for simple uploads
-                folderId || null,
-                telegramChatId || null,
-                tempPath,
-            ]
-        );
-
-        // Enqueue for processing/finalization
-        // This would be handled by a background job that moves files to permanent storage
-        logger.info(`[UPLOAD] Simple upload initiated: ${uploadId} by user ${req.user.id}`);
-
-        res.json({
-            success: true,
-            uploadId,
-            fileName,
-            fileSize: file.size,
-            status: 'processing',
-            message: 'File uploaded successfully and queued for processing',
-        });
-    } catch (err: any) {
-        logger.error('[UPLOAD] Simple upload error:', err);
-        sendApiError(res, 500, 'upload_failed', 'Upload failed', { error: err.message });
-    }
-};
-
-/**
- * Get upload status
- * GET /upload/simple/status/:uploadId
- */
-export const getUploadFileStatus = async (req: AuthRequest, res: Response) => {
-    try {
-        if (!req.user) {
-            return sendApiError(res, 401, 'unauthorized', 'Unauthorized');
-        }
-
-        const { uploadId } = req.params;
-
-        const result = await pool.query(
-            'SELECT * FROM upload_sessions WHERE id = $1 AND user_id = $2',
-            [uploadId, req.user.id]
-        );
-
-        if (result.rows.length === 0) {
-            return sendApiError(res, 404, 'not_found', 'Upload not found');
-        }
-
-        const session = result.rows[0];
-
-        res.json({
-            uploadId: session.id,
-            fileName: session.file_name,
-            fileSize: session.file_size,
-            status: session.status,
-            createdAt: session.created_at,
-            updatedAt: session.updated_at,
-            error: session.error_message || null,
-        });
-    } catch (err: any) {
-        logger.error('[UPLOAD] Get status error:', err);
-        sendApiError(res, 500, 'status_error', 'Failed to get upload status');
-    }
-};
-
-/**
- * Cancel upload
- * POST /upload/simple/cancel/:uploadId
- */
-export const cancelUploadFile = async (req: AuthRequest, res: Response) => {
-    try {
-        if (!req.user) {
-            return sendApiError(res, 401, 'unauthorized', 'Unauthorized');
-        }
-
-        const { uploadId } = req.params;
-
-        const result = await pool.query(
-            'SELECT * FROM upload_sessions WHERE id = $1 AND user_id = $2',
-            [uploadId, req.user.id]
-        );
-
-        if (result.rows.length === 0) {
-            return sendApiError(res, 404, 'not_found', 'Upload not found');
-        }
-
-        const session = result.rows[0];
-
-        // Clean up temp file
-        if (session.temp_file_path) {
-            try {
-                await fs.promises.unlink(session.temp_file_path);
-            } catch {
-                // ignore
+        uploadDir = ensureTempUploadFile(uploadId, fileName, file.size);
+        const totalChunks = Math.ceil(file.size / FIXED_CHUNK_SIZE_BYTES);
+        const manifest: Array<{ index: number; size: number; hash: string }> = [];
+        const source = await fs.promises.open(file.path, 'r');
+        try {
+            for (let index = 0; index < totalChunks; index++) {
+                if (req.aborted) throw new Error('Upload request interrupted');
+                const size = Math.min(FIXED_CHUNK_SIZE_BYTES, file.size - index * FIXED_CHUNK_SIZE_BYTES);
+                const buffer = Buffer.allocUnsafe(size);
+                let read = 0;
+                while (read < size) {
+                    const result = await source.read(buffer, read, size - read, index * FIXED_CHUNK_SIZE_BYTES + read);
+                    if (!result.bytesRead) throw new Error('Incomplete uploaded file');
+                    read += result.bytesRead;
+                }
+                await fs.promises.writeFile(path.join(uploadDir, `chunk_${index}.tmp`), buffer, { flag: 'wx' });
+                manifest.push({ index, size, hash: crypto.createHash('sha256').update(buffer).digest('hex') });
             }
-        }
-
-        // Update status
-        await pool.query(
-            'UPDATE upload_sessions SET status = $1, updated_at = NOW() WHERE id = $2',
-            ['cancelled', uploadId]
-        );
-
-        logger.info(`[UPLOAD] Cancelled upload: ${uploadId}`);
-
-        res.json({
-            success: true,
-            message: 'Upload cancelled',
-        });
-    } catch (err: any) {
-        logger.error('[UPLOAD] Cancel error:', err);
-        sendApiError(res, 500, 'cancel_failed', 'Failed to cancel upload');
+        } finally { await source.close(); }
+        const db = await pool.connect();
+        try {
+            await db.query('BEGIN');
+            await db.query(
+                `INSERT INTO upload_sessions (upload_id, user_id, file_name, mime_type, folder_id, telegram_chat_id,
+                    total_bytes, chunk_size_bytes, total_chunks, received_bytes, uploaded_chunks, status, temp_file_path)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$7,$10::jsonb,'processing',$11)`,
+                [uploadId, req.user.id, fileName, file.mimetype, folderId, target.chatId, file.size,
+                    FIXED_CHUNK_SIZE_BYTES, totalChunks, JSON.stringify(manifest.map(chunk => chunk.index)), uploadDir]
+            );
+            for (const chunk of manifest) {
+                await db.query(`INSERT INTO upload_session_chunks (upload_id, chunk_index, chunk_size_bytes, chunk_hash_sha256)
+                    VALUES ($1,$2,$3,$4)`, [uploadId, chunk.index, chunk.size, chunk.hash]);
+            }
+            await db.query('COMMIT');
+            committed = true;
+        } catch (error) {
+            await db.query('ROLLBACK');
+            throw error;
+        } finally { db.release(); }
+        startUploadFinalizer(uploadId, req.user.sessionString);
+        return res.status(202).json({ success: true, uploadId, fileName, fileSize: file.size, status: 'processing',
+            message: 'File received. Saving to Telegram.' });
+    } catch (error: any) {
+        logger.error('backend.upload', 'multipart_upload_failed', { message: error?.message });
+        return sendApiError(res, 500, 'upload_failed', 'Could not prepare the upload. Please retry.');
+    } finally {
+        if (req.file?.path) await fs.promises.rm(req.file.path, { force: true }).catch(() => undefined);
+        if (!committed && uploadDir) cleanupSessionTempFile(uploadDir);
     }
+};
+
+export const getUploadFileStatus = checkUploadStatus;
+export const cancelUploadFile = (req: AuthRequest, res: Response) => {
+    req.body = { ...req.body, uploadId: req.params.uploadId };
+    return cancelUpload(req, res);
 };

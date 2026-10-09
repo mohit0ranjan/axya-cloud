@@ -49,6 +49,7 @@ const renderItem = useCallback((index: number, file: SharedFile, context: any) =
 
     return (
         <VirtuosoGrid
+            context={{ share, onPreview, onDownload, ticketMap, previewUrlMap, onLoadThumbnail }}
             useWindowScroll
             data={files}
             endReached={onEndReached}

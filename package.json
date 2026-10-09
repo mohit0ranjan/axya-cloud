@@ -1,10 +1,11 @@
 {
   "engines": {
-    "node": "20.x"
+    "node": "24.x"
   },
   "scripts": {
-    "build": "cd server && npm install && npm run build",
-    "start": "cd server && npm start"
+    "build": "npm --prefix server ci && npm --prefix server run build",
+    "start": "npm --prefix server start",
+    "deploy:smoke": "node tools/scripts/deployment/render-smoke.cjs"
   },
   "dependencies": {
     "axios": "^1.13.6",

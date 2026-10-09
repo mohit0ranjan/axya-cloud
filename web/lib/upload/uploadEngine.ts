@@ -12,6 +12,8 @@ type RuntimeTask = {
   file: File;
   size: number;
   name: string;
+  folderId?: string;
+  telegramChatId?: string;
   uploadId?: string;
   chunkSizeBytes: number;
   totalChunks: number;
@@ -69,13 +71,18 @@ export class UploadEngine {
   }
 
   public enqueue(task: UploadTask) {
+    const existing = this.runtimes.get(task.id);
+    if (existing) this.finalizeRuntime(existing);
     const runtime: RuntimeTask = {
       taskId: task.id,
       file: task.file,
       size: task.size,
       name: task.name,
-      chunkSizeBytes: DEFAULT_CHUNK_SIZE,
-      totalChunks: Math.max(1, Math.ceil(task.size / DEFAULT_CHUNK_SIZE)),
+      folderId: task.folderId,
+      telegramChatId: task.telegramChatId,
+      uploadId: task.uploadId,
+      chunkSizeBytes: task.chunkSizeBytes || DEFAULT_CHUNK_SIZE,
+      totalChunks: task.totalChunks || Math.max(1, Math.ceil(task.size / DEFAULT_CHUNK_SIZE)),
       uploadedChunks: new Set<number>(),
       retriesByChunk: new Map<number, number>(),
       status: 'queued',
@@ -88,7 +95,8 @@ export class UploadEngine {
     };
 
     this.runtimes.set(task.id, runtime);
-    void this.run(runtime);
+    if (runtime.uploadId) void this.resumeFromServer(runtime);
+    else void this.run(runtime);
   }
 
   public pause(taskId: string) {
@@ -110,7 +118,8 @@ export class UploadEngine {
     rt.paused = false;
     rt.status = 'queued';
     this.patch(rt.taskId, { status: 'queued', error: undefined });
-    void this.resumeFromServer(rt);
+    if (rt.uploadId) void this.resumeFromServer(rt);
+    else void this.run(rt);
   }
 
   public cancel(taskId: string) {
@@ -131,6 +140,7 @@ export class UploadEngine {
 
   public dispose() {
     for (const rt of this.runtimes.values()) {
+      rt.paused = true;
       for (const c of rt.controllers.values()) c.abort();
       rt.controllers.clear();
       if (rt.syncTimer) clearInterval(rt.syncTimer);
@@ -141,6 +151,7 @@ export class UploadEngine {
   private async run(rt: RuntimeTask) {
     try {
       const hashes: { hash?: string; partial_hash?: string } = await computeInitHashes(rt.file).catch(() => ({}));
+      if (rt.paused || rt.cancelled) return;
       const init = await uploadService.initUpload({
         originalname: rt.name,
         size: rt.size,
@@ -149,6 +160,8 @@ export class UploadEngine {
         upload_mode: 'chunk',
         hash: hashes.hash,
         partial_hash: hashes.partial_hash,
+        folder_id: rt.folderId,
+        telegram_chat_id: rt.telegramChatId,
       });
 
       if (init?.duplicate) {
@@ -183,18 +196,10 @@ export class UploadEngine {
 
       if (rt.cancelled || rt.paused) return;
       if (rt.uploadedChunks.size >= rt.totalChunks) {
-        await uploadService.completeUpload(rt.uploadId);
-        this.patch(rt.taskId, {
-          status: 'completed',
-          progress: 100,
-          uploadedBytes: rt.size,
-          speedBps: 0,
-          etaSeconds: 0,
-        });
-        this.finalizeRuntime(rt);
+        await this.finishUpload(rt);
       }
     } catch (err: any) {
-      if (rt.cancelled) return;
+      if (rt.cancelled || rt.paused) return;
       if (isNetworkError(err)) {
         rt.paused = true;
         rt.status = 'waiting_connection';
@@ -268,7 +273,7 @@ export class UploadEngine {
       rt.avgSpeedBps = rt.avgSpeedBps === 0 ? chunkSpeed : (rt.avgSpeedBps * 0.8) + (chunkSpeed * 0.2);
 
       const uploadedBytes = Math.min(rt.size, rt.uploadedBytes);
-      const progress = Math.min(100, (uploadedBytes / rt.size) * 100);
+      const progress = Math.min(95, (uploadedBytes / Math.max(1, rt.size)) * 95);
       const remaining = Math.max(0, rt.size - uploadedBytes);
       const eta = rt.avgSpeedBps > 0 ? remaining / rt.avgSpeedBps : Infinity;
 
@@ -336,6 +341,20 @@ export class UploadEngine {
     try {
       await uploadService.resumeUpload(rt.uploadId).catch(() => undefined);
       const status = await uploadService.getUploadStatus(rt.uploadId);
+      if (rt.paused || rt.cancelled) return;
+      if (status.status === 'completed') {
+        this.patch(rt.taskId, { status: 'completed', progress: 100, uploadedBytes: rt.size, speedBps: 0, etaSeconds: 0 });
+        this.finalizeRuntime(rt);
+        return;
+      }
+      if (status.status === 'processing') {
+        rt.status = 'processing';
+        this.patch(rt.taskId, { status: 'processing', progress: 95, speedBps: 0 });
+        this.startSyncTimer(rt);
+        return;
+      }
+      rt.chunkSizeBytes = Number(status.chunkSizeBytes || rt.chunkSizeBytes);
+      this.startSyncTimer(rt);
       const uploadedChunks = Array.isArray(status?.uploadedChunks) ? status.uploadedChunks.map((n: any) => Number(n)) : [];
       rt.uploadedChunks = new Set(uploadedChunks.filter((n: number) => Number.isFinite(n) && n >= 0));
       rt.totalChunks = Number(status?.totalChunks || rt.totalChunks);
@@ -354,15 +373,7 @@ export class UploadEngine {
 
       await this.uploadMissingChunks(rt);
       if (!rt.paused && !rt.cancelled && rt.uploadedChunks.size >= rt.totalChunks) {
-        await uploadService.completeUpload(rt.uploadId);
-        this.patch(rt.taskId, {
-          status: 'completed',
-          progress: 100,
-          uploadedBytes: rt.size,
-          speedBps: 0,
-          etaSeconds: 0,
-        });
-        this.finalizeRuntime(rt);
+        await this.finishUpload(rt);
       }
     } catch (err: any) {
       if (isNetworkError(err)) {
@@ -372,6 +383,14 @@ export class UploadEngine {
       this.patch(rt.taskId, { status: 'failed', error: String(err?.message || 'Resume failed') });
       this.finalizeRuntime(rt);
     }
+  }
+
+  private async finishUpload(rt: RuntimeTask) {
+    if (!rt.uploadId || rt.paused || rt.cancelled || rt.status === 'processing') return;
+    await uploadService.completeUpload(rt.uploadId);
+    rt.status = 'processing';
+    this.patch(rt.taskId, { status: 'processing', progress: 95, uploadedBytes: rt.size, speedBps: 0, etaSeconds: Infinity });
+    this.startSyncTimer(rt);
   }
 
   private startSyncTimer(rt: RuntimeTask) {
@@ -414,8 +433,8 @@ export class UploadEngine {
             return;
           }
           
-          if (serverState === 'failed') {
-             this.patch(rt.taskId, { status: 'failed', uploadedBytes, progress, speedBps: 0 });
+          if (serverState === 'failed' || serverState === 'error') {
+             this.patch(rt.taskId, { status: 'failed', error: status.errorMessage || status.error || 'Saving to Telegram failed. Please retry.', uploadedBytes, progress, speedBps: 0 });
              this.finalizeRuntime(rt);
              return;
           }
@@ -426,13 +445,18 @@ export class UploadEngine {
           } else if (serverState === 'uploading' && rt.status === 'queued') {
             rt.status = 'uploading';
             this.patch(rt.taskId, { status: 'uploading' });
-            void this.uploadMissingChunks(rt);
+            void this.uploadMissingChunks(rt).then(() => {
+              if (rt.uploadedChunks.size >= rt.totalChunks) return this.finishUpload(rt);
+            }).catch((error) => {
+              this.patch(rt.taskId, { status: 'failed', error: String(error?.message || 'Upload failed') });
+              this.finalizeRuntime(rt);
+            });
             return;
           }
 
           this.patch(rt.taskId, {
             uploadedBytes,
-            progress,
+            progress: serverState === 'processing' || rt.status === 'processing' ? 95 : Math.min(95, progress),
             uploadedChunks: [...rt.uploadedChunks].sort((a, b) => a - b),
             totalChunks: Number(status?.totalChunks || rt.totalChunks),
           });

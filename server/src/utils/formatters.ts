@@ -3,12 +3,16 @@
  * Single source of truth — avoids drift between the two copies.
  */
 
+import { createHash } from 'node:crypto';
 import { getMessageCacheState } from '../services/share-v2/telegram-read-cache.service';
 
 // ── formatFileRow ────────────────────────────────────────────────────────────
 // Normalizes a raw `files` DB row into the standard API response shape.
 
+const contentRevision = (row: any) => createHash("sha256").update(`${row.telegram_chat_id || ""}:${row.telegram_message_id || ""}:${row.sha256_hash || ""}`).digest("hex").slice(0, 24);
+
 export const formatFileRow = (row: any) => ({
+    content_revision: contentRevision(row),
     id: row.id,
     name: row.file_name,
     folder_id: row.folder_id,
@@ -25,7 +29,7 @@ export const formatFileRow = (row: any) => ({
     cache_state: row.cache_state || getMessageCacheState(String(row.telegram_chat_id || ''), Number(row.telegram_message_id || 0)),
     segment_mode_enabled: Boolean(row.segment_mode_enabled),
     thumbnail_url: row.mime_type?.startsWith('image/') || row.mime_type?.startsWith('video/')
-        ? `${process.env.SERVER_BASE_URL || ''}/api/files/${row.id}/thumbnail`
+        ? `${process.env.SERVER_BASE_URL || ''}/files/${row.id}/thumbnail?v=${contentRevision(row)}`
         : null,
 });
 

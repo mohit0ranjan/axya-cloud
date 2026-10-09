@@ -1,6 +1,18 @@
 # Axya on Render — deployment and recovery
 
-This is prepared configuration, not evidence of a deployed release. The root render.yaml proposes paid Starter backend/web services and a 10 GB upload staging disk. Review the plans and cost in Render before provisioning.
+This is prepared configuration, not evidence of a deployed release. The root `render.yaml` selects Free backend/web services for testing. `render.paid.yaml` preserves the paid Starter services and 10 GB upload staging disk proposal for a later durable deployment. Select only one Blueprint for the same services; do not provision duplicates.
+
+## Deploy using Free instances
+
+In Render, select the repository branch `axya/reliability-and-ui` and Blueprint path `render.yaml`. Preview must show two Free web services, no disk and no pre-deploy command. Enter the required secrets listed below, retaining the existing Neon database and original session encryption key. If resources already exist, inspect the proposed changes before applying; removing an existing disk would discard staging data. Do not change a paid deployment with active uploads to this profile.
+
+The Docker image's default start command runs the API. Its existing startup path initializes the database schema and retries database initialization; `/readyz` stays unavailable until initialization succeeds. Free instances do not support Render's paid pre-deploy step, so the existing encrypted-session compatibility scan is not run by this profile. The exact original session encryption key remains required. Web configuration and APK endpoint checks below still apply.
+
+Free instances sleep after 15 minutes without inbound traffic; waking takes about a minute. Sleep, restart and redeploy discard local upload chunks and caches. Completed Telegram originals and metadata in the external Neon database are separate from this local filesystem. An incomplete upload may need its original file resent; do not promise that it can resume after server filesystem loss. A successful readiness check proves directory access, not durable storage. The configured file/staging limits are application caps, not guaranteed Free-instance capacity; begin with small files and batches.
+
+Both services share 750 Free instance hours per workspace per month. Bandwidth/build limits and unusually high service-initiated external traffic can also block service or builds. A Telegram relay can be affected by this traffic restriction. Monitor Render usage; do not use keep-alive pings to claim always-on reliability. Keep the existing Neon database: Free Render Postgres expires after 30 days. See [Render Free instance limits](https://render.com/docs/free) and [paid pre-deploy availability](https://render.com/docs/deploys).
+
+Use this profile for a test deployment. Persistent staging or an implemented durable external staging provider is needed before claiming upload recovery across server replacement. Upgrading only the Render workspace/account does not change the compute instance limits.
 
 ## Confirmed architecture
 
@@ -16,7 +28,7 @@ The Android app is built separately with EAS; it is not installed or executed on
 
 ## Why persistent storage is required
 
-Upload sessions are stored in Neon; acknowledged chunks are stored under UPLOAD_STORAGE_DIR. Both must survive restart. Configure /data/uploads on a persistent disk. Free Render instances have an ephemeral filesystem and cannot preserve those chunks across redeploys. Keep-alive pings do not replace a durable disk. Render disks permit one service instance; do not enable multiple API instances with this design.
+Upload sessions are stored in Neon; acknowledged chunks are stored under UPLOAD_STORAGE_DIR. Both must survive restart for durable recovery. The paid profile configures /data/uploads on a persistent disk. Free Render instances have an ephemeral filesystem and cannot preserve those chunks across redeploys. Keep-alive pings do not replace a durable disk. Render disks permit one service instance; do not enable multiple API instances with this design.
 
 Official references: [disks](https://render.com/docs/disks), [free instances](https://render.com/docs/free), [Blueprint specification](https://render.com/docs/blueprint-spec).
 
@@ -26,7 +38,7 @@ Use the existing axya-server and axya-web services if you own them. Verify actua
 
 API: Dockerfile server/Dockerfile with build context server. Web: root directory web, build npm ci && npm run build, start npm run start. The web start script uses Render's PORT. Auto deployment follows passing repository CI checks. Connect the correct reviewed Git branch; local uncommitted changes are not deployed by Render.
 
-For an existing backend, set the pre-deploy command to `node scripts/predeploy.cjs` and health check to `/readyz`. Do not set `maxShutdownDelaySeconds`: Render rejects a custom shutdown delay for services with a persistent disk. The application retains its bounded 25-second shutdown handler and durable upload recovery. Leave the Docker start command unset so the image's CMD runs. Keep one backend instance. The old Azure workflow is now manual so a future Git push cannot automatically deploy to two providers.
+For an existing paid backend, set the pre-deploy command to `node scripts/predeploy.cjs` and health check to `/readyz`. Do not set `maxShutdownDelaySeconds`: Render rejects a custom shutdown delay for services with a persistent disk. The application retains its bounded 25-second shutdown handler and durable upload recovery when staging is persistent. Leave the Docker start command unset so the image's CMD runs. Keep one backend instance. The old Azure workflow is now manual so a future Git push cannot automatically deploy to two providers.
 
 The pre-deploy command validates production configuration and verifies that every currently encrypted Telegram session can be opened with the supplied key before running the existing transactional, advisory-locked schema migration. It does not re-encrypt sessions or touch disk files. Render runs pre-deploy commands in a separate instance without the persistent disk, so staging permissions are checked by `/readyz` at runtime. See [Render deploy steps](https://render.com/docs/deploys).
 

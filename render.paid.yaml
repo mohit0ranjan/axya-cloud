@@ -1,0 +1,67 @@
+# Paid service plans and disk are a deployment proposal, not provisioned resources.
+services:
+  - type: web
+    name: axya-server
+    runtime: docker
+    region: ohio
+    plan: starter
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    autoDeployTrigger: checksPass
+    preDeployCommand: node scripts/predeploy.cjs
+    healthCheckPath: /readyz
+    disk:
+      name: axya-upload-staging
+      mountPath: /data/uploads
+      sizeGB: 10
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_ENCRYPTION_KEY
+        sync: false
+      - key: TELEGRAM_API_ID
+        sync: false
+      - key: TELEGRAM_API_HASH
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: COOKIE_SECRET
+        generateValue: true
+      - key: UPLOAD_STORAGE_DIR
+        value: /data/uploads
+      - key: UPLOAD_MAX_FILE_SIZE_BYTES
+        value: 1073741824
+      - key: UPLOAD_TMP_USAGE_SOFT_LIMIT_BYTES
+        value: 6442450944
+      - key: ALLOWED_ORIGINS
+        value: https://axya-web.onrender.com
+      - key: SERVER_BASE_URL
+        value: https://axya-server.onrender.com
+      - key: FRONTEND_BASE_URL
+        value: https://axya-web.onrender.com
+      - key: STORAGE_PROVIDER
+        value: telegram
+  - type: web
+    name: axya-web
+    runtime: node
+    region: ohio
+    plan: starter
+    rootDir: web
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_VERSION
+        value: 24
+      - key: AXYA_API_URL
+        value: https://axya-server.onrender.com
+      - key: NEXT_PUBLIC_API_URL
+        value: /backend
+      - key: NEXT_PUBLIC_SITE_URL
+        value: https://axya-web.onrender.com
+      - key: NEXT_PUBLIC_BASE_URL
+        value: https://axya-web.onrender.com

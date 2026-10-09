@@ -1,19 +1,15 @@
-# Paid service plans and disk are a deployment proposal, not provisioned resources.
+# Free testing deployment. Local upload chunks are lost on sleep/restart/redeploy.
+# For durable upload staging, use the separately reviewed render.paid.yaml.
 services:
   - type: web
     name: axya-server
     runtime: docker
     region: ohio
-    plan: starter
+    plan: free
     dockerfilePath: ./server/Dockerfile
     dockerContext: ./server
     autoDeployTrigger: checksPass
-    preDeployCommand: node scripts/predeploy.cjs
     healthCheckPath: /readyz
-    disk:
-      name: axya-upload-staging
-      mountPath: /data/uploads
-      sizeGB: 10
     envVars:
       - key: NODE_ENV
         value: production
@@ -49,7 +45,7 @@ services:
     name: axya-web
     runtime: node
     region: ohio
-    plan: starter
+    plan: free
     rootDir: web
     buildCommand: npm ci && npm run build
     startCommand: npm run start

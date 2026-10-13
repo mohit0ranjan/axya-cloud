@@ -16,6 +16,12 @@ Use this profile for a test deployment. Persistent staging or an implemented dur
 
 ## Confirmed architecture
 
+The deployed backend origin is `https://axya-cloud-zxjk.onrender.com`. On 13 October 2026, read-only checks returned HTTP 200 for `/health` and `/readyz`, with database readiness confirmed. The root returns the API's JSON identity; a diagnostic `/s/` route returns the API's JSON 404. This deployment hosts the backend only. Live authenticated uploads and downloads have not been verified by these health checks.
+
+Next.js web/sharing is not deployed yet. `https://axya-web.onrender.com` in existing sharing defaults is still a proposed domain, not a verified deployment. Do not point share pages to the backend origin. Deploy the `web` service, then replace its site/base URL, the API's frontend/origins, and the app's share URLs and native link hosts with the actual web origin. `web/.env.production.example` supplies the confirmed API origin for that build. Existing local development `.env` files remain local.
+
+The backend was created manually in Render. Do not import a Blueprint as a second backend: its proposed service name may differ from the existing service. Set `SERVER_BASE_URL=https://axya-cloud-zxjk.onrender.com` in the existing Render service's Environment settings; changes to a committed template do not update those dashboard values. For manual deployment with an empty Root Directory, use Dockerfile Path `./server/Dockerfile` and Docker Build Context `./server`.
+
 | Component | Runs on | Role |
 | --- | --- | --- |
 | Axya Android app | User's phone, installed APK | Current Expo UI, native background transfers and previews |

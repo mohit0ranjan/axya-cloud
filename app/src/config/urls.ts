@@ -1,7 +1,7 @@
 import { logger } from '../utils/logger';
 import { Platform } from 'react-native';
 
-const DEFAULT_BACKEND_URL = 'https://axya-server.onrender.com';
+const DEFAULT_BACKEND_URL = 'https://axya-cloud-zxjk.onrender.com';
 const DEV_BACKEND_URL = Platform.select({
     android: 'http://10.0.2.2:3000',
     ios: 'http://localhost:3000',

@@ -33,7 +33,7 @@ const toPathname = (urlOrPath?: string, baseUrl?: string) => {
         if (raw.startsWith('http://') || raw.startsWith('https://')) {
             return new URL(raw).pathname;
         }
-        const base = String(baseUrl || API_BASE || '').trim() || 'https://axya-server.onrender.com';
+        const base = String(baseUrl || API_BASE || '').trim() || 'https://axya-cloud-zxjk.onrender.com';
         return new URL(raw, base).pathname;
     } catch {
         return raw.startsWith('/') ? raw : `/${raw}`;

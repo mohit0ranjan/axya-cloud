@@ -17,7 +17,7 @@
       "channel": "preview",
       "env": {
         "EXPO_PUBLIC_ENV": "production",
-        "EXPO_PUBLIC_API_URL": "https://axya-server.onrender.com",
+        "EXPO_PUBLIC_API_URL": "https://axya-cloud-zxjk.onrender.com",
         "EXPO_PUBLIC_SHARE_BASE_URL": "https://axya-web.onrender.com",
         "EXPO_PUBLIC_SITE_URL": "https://axya-web.onrender.com",
         "EXPO_PUBLIC_BASE_URL": "https://axya-web.onrender.com"
@@ -27,7 +27,7 @@
       "autoIncrement": true,
       "channel": "production",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://axya-server.onrender.com",
+        "EXPO_PUBLIC_API_URL": "https://axya-cloud-zxjk.onrender.com",
         "EXPO_PUBLIC_SHARE_BASE_URL": "https://axya-web.onrender.com",
         "EXPO_PUBLIC_SITE_URL": "https://axya-web.onrender.com",
         "EXPO_PUBLIC_BASE_URL": "https://axya-web.onrender.com"

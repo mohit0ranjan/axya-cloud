@@ -33,7 +33,7 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run build
         env:
-          AXYA_API_URL: https://axya-server.onrender.com
+          AXYA_API_URL: https://axya-cloud-zxjk.onrender.com
           NEXT_PUBLIC_API_URL: /backend
   render-container:
     runs-on: ubuntu-latest

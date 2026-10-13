@@ -36,7 +36,7 @@ services:
       - key: ALLOWED_ORIGINS
         value: https://axya-web.onrender.com
       - key: SERVER_BASE_URL
-        value: https://axya-server.onrender.com
+        value: https://axya-cloud-zxjk.onrender.com
       - key: FRONTEND_BASE_URL
         value: https://axya-web.onrender.com
       - key: STORAGE_PROVIDER
@@ -54,7 +54,7 @@ services:
       - key: NODE_VERSION
         value: 24
       - key: AXYA_API_URL
-        value: https://axya-server.onrender.com
+        value: https://axya-cloud-zxjk.onrender.com
       - key: NEXT_PUBLIC_API_URL
         value: /backend
       - key: NEXT_PUBLIC_SITE_URL

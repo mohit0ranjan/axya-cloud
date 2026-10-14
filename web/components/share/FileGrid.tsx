@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { SharedFile, ShareMeta } from './types';
 import { FileCard } from './FileCard';
 import { VirtuosoGrid } from 'react-virtuoso';
@@ -15,6 +15,8 @@ interface FileGridProps {
 }
 
 function FileGridComponent({ files, share, onPreview, onDownload, ticketMap, previewUrlMap, onLoadThumbnail, onEndReached }: FileGridProps) {
+    const context = useMemo(() => ({ share, onPreview, onDownload, ticketMap, previewUrlMap, onLoadThumbnail }),
+        [share, onPreview, onDownload, ticketMap, previewUrlMap, onLoadThumbnail]);
 const renderItem = useCallback((index: number, file: SharedFile, context: any) => {
         return (
             <div className="w-full">
@@ -49,7 +51,7 @@ const renderItem = useCallback((index: number, file: SharedFile, context: any) =
 
     return (
         <VirtuosoGrid
-            context={{ share, onPreview, onDownload, ticketMap, previewUrlMap, onLoadThumbnail }}
+            context={context}
             useWindowScroll
             data={files}
             endReached={onEndReached}

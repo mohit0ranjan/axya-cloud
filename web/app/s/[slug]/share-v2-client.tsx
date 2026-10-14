@@ -674,6 +674,31 @@ export default function ShareV2Client({ slug }: { slug: string }) {
     void getTicketUrl(file.id, 'thumbnail');
   }, [getTicketUrl]);
 
+  const handleLoadPreview = useCallback(async (file: SharedFile) => {
+    if (!supportsInlinePreview(file)) return;
+    setPreviewErrorMap((curr) => curr[file.id] ? { ...curr, [file.id]: '' } : curr);
+    const url = await getTicketUrl(file.id, 'inline');
+    if (!url) {
+      setPreviewErrorMap((curr) => curr[file.id] ? curr : {
+        ...curr,
+        [file.id]: 'Preview temporarily unavailable for this file.',
+      });
+    }
+  }, [getTicketUrl]);
+
+  const handlePreviewMediaError = useCallback((file: SharedFile) => {
+    setPreviewUrlMap((curr) => {
+      if (!curr[`${file.id}:inline`]) return curr;
+      const next = { ...curr };
+      delete next[`${file.id}:inline`];
+      return next;
+    });
+    setPreviewErrorMap((curr) => curr[file.id] === 'Preview failed to load. Please retry.' ? curr : {
+      ...curr,
+      [file.id]: 'Preview failed to load. Please retry.',
+    });
+  }, []);
+
   usePreviewWarmup({
     enabled: imageModal.open,
     files: imageModal.items,
@@ -1040,8 +1065,8 @@ export default function ShareV2Client({ slug }: { slug: string }) {
                         <FileGrid
                           files={section.files}
                           share={share as ShareMeta}
-                          onPreview={(file) => openImageModal(file)}
-                          onDownload={(file) => handleDownloadItem(file)}
+                          onPreview={openImageModal}
+                          onDownload={handleDownloadItem}
                           ticketMap={ticketLoadingMap}
                           previewUrlMap={previewUrlMap}
                           onLoadThumbnail={handleLoadThumbnail}
@@ -1082,30 +1107,8 @@ export default function ShareV2Client({ slug }: { slug: string }) {
           share={share as ShareMeta}
           previewUrlMap={previewUrlMap}
           previewErrors={previewErrorMap}
-          onPreviewMediaError={(file) => {
-            // Clear stale preview URLs so retry fetches fresh tickets
-            setPreviewUrlMap((curr) => {
-              const next = { ...curr };
-              delete next[`${file.id}:inline`];
-              return next;
-            });
-            setPreviewErrorMap((curr) => ({
-              ...curr,
-              [file.id]: 'Preview failed to load. Please retry.',
-            }));
-          }}
-          onLoadPreview={async (file) => {
-            if (!supportsInlinePreview(file)) return;
-            setPreviewErrorMap((curr) => ({ ...curr, [file.id]: '' }));
-            const url = await getTicketUrl(file.id, 'inline');
-            if (!url) {
-              setPreviewErrorMap((curr) => ({
-                ...curr,
-                [file.id]: curr[file.id] || 'Preview temporarily unavailable for this file.',
-              }));
-              return;
-            }
-          }}
+          onPreviewMediaError={handlePreviewMediaError}
+          onLoadPreview={handleLoadPreview}
         />
       </ErrorBoundary>
     </div>

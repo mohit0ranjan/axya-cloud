@@ -27,6 +27,12 @@ services:
         generateValue: true
       - key: COOKIE_SECRET
         generateValue: true
+      - key: SHARE_V2_SESSION_SECRET
+        generateValue: true
+      - key: SHARE_V2_TICKET_SECRET
+        generateValue: true
+      - key: SHARE_V2_LINK_PEPPER
+        generateValue: true
       - key: UPLOAD_STORAGE_DIR
         value: /data/uploads
       - key: UPLOAD_MAX_FILE_SIZE_BYTES

@@ -8,6 +8,8 @@ function validConfig() {
     return { NODE_ENV: 'production', DATABASE_URL: 'postgresql://user:private-test-password@db.example.com/db',
         SESSION_ENCRYPTION_KEY: 'ab'.repeat(32), TELEGRAM_API_ID: '123456', TELEGRAM_API_HASH: 'cd'.repeat(16),
         JWT_SECRET: 'jwt-test-only-'.repeat(4), COOKIE_SECRET: 'cookie-test-only-'.repeat(4),
+        SHARE_V2_SESSION_SECRET: 'session-test-only-'.repeat(4), SHARE_V2_TICKET_SECRET: 'ticket-test-only-'.repeat(4),
+        SHARE_V2_LINK_PEPPER: 'pepper-test-only-'.repeat(4),
         SERVER_BASE_URL: 'https://api.example.com', FRONTEND_BASE_URL: 'https://web.example.com',
         ALLOWED_ORIGINS: 'https://web.example.com', UPLOAD_STORAGE_DIR: path.resolve('test-deployment-staging') };
 }

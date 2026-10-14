@@ -8,7 +8,8 @@ export const productionConfigErrors = (env: NodeJS.ProcessEnv): string[] => {
         if (!env[name]?.trim()) errors.push(name);
     };
     for (const name of ['DATABASE_URL', 'SESSION_ENCRYPTION_KEY', 'TELEGRAM_API_ID', 'TELEGRAM_API_HASH',
-        'JWT_SECRET', 'COOKIE_SECRET', 'SERVER_BASE_URL', 'FRONTEND_BASE_URL', 'ALLOWED_ORIGINS', 'UPLOAD_STORAGE_DIR']) requireValue(name);
+        'JWT_SECRET', 'COOKIE_SECRET', 'SHARE_V2_SESSION_SECRET', 'SHARE_V2_TICKET_SECRET', 'SHARE_V2_LINK_PEPPER',
+        'SERVER_BASE_URL', 'FRONTEND_BASE_URL', 'ALLOWED_ORIGINS', 'UPLOAD_STORAGE_DIR']) requireValue(name);
     const validUrl = (raw: string, protocols: string[], originOnly = false): boolean => {
         try {
             const url = new URL(raw);

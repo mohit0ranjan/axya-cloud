@@ -56,6 +56,7 @@ The pre-deploy command validates production configuration and verifies that ever
 - SESSION_ENCRYPTION_KEY: preserve the EXACT existing key used to encrypt database Telegram sessions. A new key cannot decrypt existing sessions. Back it up securely; never commit it.
 - TELEGRAM_API_ID and TELEGRAM_API_HASH: existing application credentials.
 - JWT_SECRET and COOKIE_SECRET: stable random secrets; Blueprint generates them only if missing. Rotating them invalidates authentication sessions.
+- SHARE_V2_SESSION_SECRET, SHARE_V2_TICKET_SECRET and SHARE_V2_LINK_PEPPER: all three are required even when web is not yet deployed. For a first deployment generate separate random 32-byte secrets (64 hex characters each). Manual services must receive them in Render Environment settings; Blueprints generate them for new services. Preserve existing values when moving an established deployment. Changing LINK_PEPPER invalidates existing share-link secret hashes; session/ticket key changes invalidate their issued tokens. For links previously created in development without an explicit pepper, the hashing fallback was that environment's JWT_SECRET, so switching to a new pepper requires recreating those links or a planned migration.
 - Optional share signing secrets: preserve existing SHARE_LINK_SECRET, SHARE_ACCESS_SECRET, SPACE_ACCESS_SECRET and SIGNED_DOWNLOAD_SECRET if configured.
 
 Each user signs into their own Telegram account. A global TELEGRAM_SESSION is not required for this per-user model. Do not put user Telegram sessions into client bundles.

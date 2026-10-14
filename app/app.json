@@ -16,7 +16,7 @@
       "bundleIdentifier": "com.mohit.axya",
       "associatedDomains": [
         "applinks:axyzcloud.com",
-        "applinks:axya-web.onrender.com"
+        "applinks:axya-web-ih1c.onrender.com"
       ],
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Axya needs access to save files to your library.",
@@ -62,7 +62,7 @@
             },
             {
               "scheme": "https",
-              "host": "axya-web.onrender.com"
+              "host": "axya-web-ih1c.onrender.com"
             }
           ]
         },

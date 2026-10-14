@@ -44,11 +44,11 @@ services:
       - key: UPLOAD_TMP_USAGE_SOFT_LIMIT_BYTES
         value: 6442450944
       - key: ALLOWED_ORIGINS
-        value: https://axya-web.onrender.com
+        value: https://axya-web-ih1c.onrender.com
       - key: SERVER_BASE_URL
         value: https://axya-cloud-zxjk.onrender.com
       - key: FRONTEND_BASE_URL
-        value: https://axya-web.onrender.com
+        value: https://axya-web-ih1c.onrender.com
       - key: STORAGE_PROVIDER
         value: telegram
   - type: web
@@ -68,6 +68,6 @@ services:
       - key: NEXT_PUBLIC_API_URL
         value: /backend
       - key: NEXT_PUBLIC_SITE_URL
-        value: https://axya-web.onrender.com
+        value: https://axya-web-ih1c.onrender.com
       - key: NEXT_PUBLIC_BASE_URL
-        value: https://axya-web.onrender.com
+        value: https://axya-web-ih1c.onrender.com

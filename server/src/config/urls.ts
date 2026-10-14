@@ -7,7 +7,7 @@ const sanitizeUrl = (url: string | undefined, fallback: string): string => {
 };
 
 // Default fallbacks (only used if environment variables are completely missing)
-const RENDER_WEB_DOMAIN = 'https://axya-web.onrender.com';
+const RENDER_WEB_DOMAIN = 'https://axya-web-ih1c.onrender.com';
 // Default to the domain we actually host on to prevent failed redirects
 const DEFAULT_FRONTEND_URL = RENDER_WEB_DOMAIN;
 const DEFAULT_SERVER_URL = 'https://axya-cloud-zxjk.onrender.com';

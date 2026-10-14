@@ -77,7 +77,7 @@ const Stack = createNativeStackNavigator();
 const linkingPrefixes = [
   "axya://",
   "https://axyzcloud.com",
-  "https://axya-web.onrender.com",
+  "https://axya-web-ih1c.onrender.com",
 ];
 
 const getLinking = (isAuthenticated: boolean): LinkingOptions<any> => ({

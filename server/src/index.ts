@@ -122,7 +122,7 @@ app.use(helmet({
 }));
 
 const defaultAllowedOrigins = isProduction ? [
-    'https://axya-web.onrender.com'
+    'https://axya-web-ih1c.onrender.com'
 ] : [
     'http://localhost:3000',
     'http://localhost:3001',

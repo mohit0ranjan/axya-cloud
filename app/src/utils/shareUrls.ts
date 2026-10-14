@@ -1,6 +1,6 @@
 import { sanitizeRemoteUri } from './fileSafety';
 
-const DEFAULT_PUBLIC_WEB_URL = 'https://axya-web.onrender.com';
+const DEFAULT_PUBLIC_WEB_URL = 'https://axya-web-ih1c.onrender.com';
 
 const sanitizeShareBase = (value: string): string => {
     const trimmed = String(value || '').trim().replace(/\/+$/, '');

@@ -4,7 +4,7 @@ const sanitizeUrl = (url: string | undefined, fallback: string): string => {
 };
 
 // We are assuming a local backend running on port 3000 for local dev if missing.
-const DEFAULT_SITE_URL = 'https://axya-web.onrender.com';
+const DEFAULT_SITE_URL = 'https://axya-web-ih1c.onrender.com';
 const DEFAULT_API_URL = '/backend';
 
 export const API_URL = sanitizeUrl(

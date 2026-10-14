@@ -2,6 +2,9 @@ import { Platform } from "react-native";
 import { requireOptionalNativeModule } from "expo";
 
 type Bridge = {
+  directConfigure(owner: string, config: string): Promise<string>;
+  directStatus(owner: string): Promise<string>;
+  directAuthenticate(owner: string, kind: string, value: string): Promise<string>;
   configure(
     owner: string,
     token: string,

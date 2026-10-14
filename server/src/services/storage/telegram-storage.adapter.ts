@@ -1,10 +1,12 @@
-import { CustomFile } from 'telegram/client/uploads';
+import { uploadTelegramParts } from './telegram-part-upload';
+import { uploadWithMtcute } from './mtcute-upload';
 import { Api } from 'telegram';
 import crypto from 'crypto';
 import bigInt from 'big-integer';
 import { extractTelegramNativeMeta } from '../../utils/formatters';
 import { getDynamicClient } from '../telegram.service';
 import { StorageAdapter, StorageUploadRequest, StorageUploadResult } from './storage.adapter';
+import { logger } from '../../utils/logger';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -104,14 +106,9 @@ export class TelegramStorageAdapter implements StorageAdapter {
     public readonly providerName = 'telegram' as const;
 
     public async uploadFile(request: StorageUploadRequest): Promise<StorageUploadResult> {
+        const startedAt = Date.now();
         const target = await resolveTelegramUploadTransport(request.ownerSessionString, request.requestedChatId);
         const client = await getDynamicClient(target.session);
-
-        const customFile = new CustomFile(
-            request.fileName,
-            Math.max(0, Number(request.fileSize || 0)),
-            request.filePath
-        );
 
         const operationId = request.idempotencyKey || crypto.randomUUID();
         const marker = '#axya_' + operationId.replace(/[^a-zA-Z0-9]/g, '');
@@ -133,11 +130,17 @@ export class TelegramStorageAdapter implements StorageAdapter {
             // A stable MTProto random_id prevents retries from sending a second
             // message if the original send succeeded but its response was lost.
             const randomId = bigInt(crypto.createHash('sha256').update(operationId).digest().readBigInt64LE(0).toString());
+            let preparedFile: Api.TypeInputFile | undefined;
             uploadedMessage = await uploadToTelegramWithRetry(client, target.chatId, async () => {
                 const recovered = request.idempotencyKey ? await lookup() : undefined;
                 if (recovered) return recovered;
-                const file = await client.uploadFile({ file: customFile,
-                    workers: request.fileSize > 500 * 1024 * 1024 ? 2 : 4, onProgress: progress });
+                // A send-message retry can reuse the completed temporary file.
+                const useMtcute = (process.env.TELEGRAM_UPLOAD_TRANSPORT || 'mtcute') === 'mtcute';
+                const file = preparedFile || (useMtcute ? await uploadWithMtcute({ ...request, onProgress: progress }) : await uploadTelegramParts(client, {
+                    filePath: request.filePath, fileName: request.fileName,
+                    fileSize: request.fileSize, onProgress: progress,
+                }));
+                preparedFile = file;
                 const media = new Api.InputMediaUploadedDocument({ file, mimeType: request.mimeType,
                     attributes: [new Api.DocumentAttributeFilename({ fileName: request.fileName })] });
                 const send = new Api.messages.SendMedia({ peer, media,
@@ -146,6 +149,7 @@ export class TelegramStorageAdapter implements StorageAdapter {
                     const result = await client.invoke(send);
                     return (client as any)._getResponseMessage(send, result, peer) || await lookup();
                 } catch (error: any) {
+                    if (/FILE_PART_.*MISSING|FILE_ID_INVALID/.test(String(error?.message || ''))) preparedFile = undefined;
                     if (/RANDOM_ID_DUPLICATE/.test(String(error?.message || ''))) {
                         const existing = await lookup();
                         if (existing) return existing;
@@ -166,6 +170,12 @@ export class TelegramStorageAdapter implements StorageAdapter {
                 : '';
 
         const nativeMeta = extractTelegramNativeMeta(uploadedMessage);
+        const elapsedMs = Math.max(1, Date.now() - startedAt);
+        logger.info('backend.upload', 'telegram_delivery_finished', {
+            uploadId: operationId, bytes: request.fileSize, elapsedMs,
+            // Includes connection, reconciliation and SendMedia acknowledgement.
+            deliveryBytesPerSecond: Math.round(request.fileSize * 1000 / elapsedMs),
+        });
 
         return {
             provider: 'telegram',

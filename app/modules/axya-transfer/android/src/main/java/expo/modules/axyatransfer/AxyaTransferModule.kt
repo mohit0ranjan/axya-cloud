@@ -20,6 +20,12 @@ class AxyaTransferModule : Module() {
   private var sharedIntent: Intent? = null
   override fun definition() = ModuleDefinition {
     Name("AxyaTransfer")
+    AsyncFunction("directConfigure") { owner: String, config: String -> DirectTelegram.configure(context,owner,config).status().toString() }
+    AsyncFunction("directStatus") { owner: String -> DirectTelegram.get(context,owner)?.status()?.toString() ?: JSONObject().put("ready",false).put("state","NotConnected").toString() }
+    AsyncFunction("directAuthenticate") { owner: String, kind: String, value: String ->
+      val direct = DirectTelegram.get(context,owner) ?: error("Connect Telegram first")
+      direct.authenticate(kind,value); direct.status().toString()
+    }
     Events("incomingShare")
     OnNewIntent { intent ->
       if (intent.action in listOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) { sharedIntent = intent; sendEvent("incomingShare", emptyMap<String, Any>()) }
@@ -50,7 +56,7 @@ class AxyaTransferModule : Module() {
       TransferStore.all(context).filter { it.optString("owner") == owner && it.optString("status") !in listOf("completed", "cancelled", "failed", "paused") }.forEach { t ->
         TransferStore.patch(context, t.getString("id")) { it.put("status", "paused"); it.put("pausedForAccount", true) }
       }
-      TransferStore.credentials(context, owner, null); TransferScheduler.stop(context, owner)
+      TransferStore.credentials(context, owner, null); TransferScheduler.stop(context, owner); DirectTelegram.close(owner)
     }
     AsyncFunction("enqueue") { owner: String, serialized: String ->
       val tasks = JSONArray(serialized)
@@ -86,6 +92,18 @@ class AxyaTransferModule : Module() {
           "priority" -> it.put("priority", 1)
         }
       }
+      if (action in listOf("pause","cancel")) {
+        val t = TransferStore.all(context).find { it.optString("owner") == owner && it.optString("id") == id }
+        if (t != null && t.optLong("tdMessageId") != 0L) {
+          val cancelled = runCatching { DirectTelegram.get(context,owner)?.cancel(t.optLong("tdMessageId")) }.isSuccess
+          if(cancelled) TransferStore.patch(context,id) { it.remove("tdMessageId") }
+        }
+        if(action=="cancel" && t!=null && t.optString("directId").isNotEmpty()) {
+          if(DirectTelegram.cancelReservation(context,owner,t.getString("directId"))) {
+            TransferStore.patch(context,id) { it.put("status","completed");it.put("progress",100);it.put("bytesUploaded",it.getJSONObject("file").getLong("size")) }
+          }
+        }
+      }
       if (action in listOf("resume", "retry", "priority")) TransferScheduler.schedule(context, owner)
     }
     AsyncFunction("clearFinished") { owner: String ->
@@ -93,6 +111,7 @@ class AxyaTransferModule : Module() {
       TransferStore.all(context).filter { it.optString("owner") == owner && it.optString("status") in listOf("completed", "cancelled") }.forEach {
         val file = File(URI(it.getJSONObject("file").getString("uri")))
         if (file.canonicalPath.startsWith(File(context.filesDir, "upload-sources").canonicalPath + File.separator)) file.delete()
+        DirectTelegram.cleanupSource(context,owner,it.getString("id"))
       }
       TransferStore.removeFinished(context, owner)
     }

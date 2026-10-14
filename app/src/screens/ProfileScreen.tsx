@@ -512,6 +512,12 @@ export default function ProfileScreen({ navigation }: any) {
             "Transfers",
             () => navigation.navigate("UploadManager"),
           )}
+          {Platform.OS === 'android' && renderMenuItem(
+            <ArrowUpDown color={BLUE} size={20} />,
+            theme.colors.primaryLight,
+            "Direct Telegram uploads",
+            () => navigation.navigate("DirectUpload"),
+          )}
           {renderMenuItem(
             <LinkIcon color="#10B981" size={20} />,
             theme.colors.successSoft,

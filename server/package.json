@@ -21,6 +21,8 @@
     "node": "24.x"
   },
   "dependencies": {
+    "@mtcute/convert": "0.32.4",
+    "@mtcute/node": "0.32.4",
     "@types/archiver": "^7.0.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/busboy": "^1.5.4",

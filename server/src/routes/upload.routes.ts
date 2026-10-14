@@ -1,4 +1,5 @@
 import express from 'express';
+import { nativeUploadConfig, initDirectUpload, finishDirectUpload, cancelDirectUpload } from '../controllers/direct-upload.controller';
 import multer from 'multer';
 import os from 'os';
 import path from 'path';
@@ -67,6 +68,10 @@ const withQuery = <T extends z.ZodTypeAny>(query: T) => z.object({
 });
 
 const uploadIdSchema = z.string().trim().uuid();
+router.get('/native-config', asyncRoute(nativeUploadConfig));
+router.post('/direct/init', asyncRoute(initDirectUpload));
+router.post('/direct/:id/complete', asyncRoute(finishDirectUpload));
+router.post('/direct/:id/cancel', asyncRoute(cancelDirectUpload));
 
 const initUploadSchema = withBody(z.object({
     originalname: z.string().trim().min(1).max(512),

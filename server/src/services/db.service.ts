@@ -495,6 +495,11 @@ export const initSchema = async () => {
         upload_id UUID,name TEXT NOT NULL,bytes BIGINT NOT NULL,created_at TIMESTAMPTZ DEFAULT NOW(),PRIMARY KEY(request_id,client_key));
       ALTER TABLE file_request_uploads ALTER COLUMN upload_id TYPE UUID USING upload_id::uuid;
       CREATE INDEX IF NOT EXISTS idx_request_upload_session ON file_request_uploads(request_id,upload_id)`);
+    await client.query(`CREATE TABLE IF NOT EXISTS direct_uploads (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      client_key TEXT NOT NULL,file_name TEXT NOT NULL,total_bytes BIGINT NOT NULL,mime_type TEXT NOT NULL,
+      folder_id UUID REFERENCES folders(id) ON DELETE SET NULL,file_id UUID REFERENCES files(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),completed_at TIMESTAMPTZ,cancelled_at TIMESTAMPTZ,UNIQUE(user_id,client_key))`);
     await client.query('COMMIT');
     console.log('Migrations applied.');
   } catch (error) {

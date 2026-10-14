@@ -54,6 +54,7 @@ import DiscoverScreen from "./src/screens/DiscoverScreen";
 import BulkOrganiseScreen from "./src/screens/BulkOrganiseScreen";
 import FileRequestsScreen from "./src/screens/FileRequestsScreen";
 import PhotoBackupScreen from "./src/screens/PhotoBackupScreen";
+import DirectUploadScreen from "./src/screens/DirectUploadScreen";
 import ShareInbox from "./src/components/ShareInbox";
 import MainTabs from "./src/navigation/MainTabs";
 import AnimatedSplashScreen from "./src/screens/AnimatedSplashScreen";
@@ -206,6 +207,7 @@ function RootNavigator() {
                 component={FileRequestsScreen}
               />
               <Stack.Screen name="PhotoBackup" component={PhotoBackupScreen} />
+              <Stack.Screen name="DirectUpload" component={DirectUploadScreen} />
               <Stack.Screen name="Analytics" component={AnalyticsScreen} />
               <Stack.Screen name="Files" component={FilesScreen} />
               <Stack.Screen name="AllFiles" component={AllFilesScreen} />

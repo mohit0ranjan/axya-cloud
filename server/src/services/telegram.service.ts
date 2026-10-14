@@ -1,10 +1,10 @@
 /**
- * telegram.service.ts — Production TDLib (GramJS) integration
+ * telegram.service.ts — MTProto integration using GramJS
  *
  * ✅ Persistent TelegramClient pool with auto-reconnect
  * ✅ Multi-user session handling (phone login + OTP + 2FA)
  * ✅ Secure session storage (encrypted in DB, never exposed to client)
- * ✅ API ID / HASH never leave the server
+ * ✅ Account auth keys stay server-side; direct mode authorizes separately on-device
  * ✅ Progressive file download via iterDownload (no full buffering)
  * ✅ Client pool with 1h TTL + keep-alive pinging
  * ✅ Expired session detection + graceful error propagation

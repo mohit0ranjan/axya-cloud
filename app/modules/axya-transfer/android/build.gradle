@@ -7,6 +7,10 @@ version = '1.0.0'
 android {
   namespace 'expo.modules.axyatransfer'
   defaultConfig { versionCode 1; versionName '1.0.0' }
+  def tdRoot = new File(["node", "--print", "require.resolve('react-native-tdlib/package.json')"].execute(null, rootDir).text.trim()).parentFile
+  sourceSets.main.java.srcDir new File(tdRoot, 'android/src/main/java/org')
+  sourceSets.main.jniLibs.srcDir new File(tdRoot, 'android/src/main/jniLibs')
+  defaultConfig.consumerProguardFiles 'consumer-rules.pro'
 }
 dependencies {
   implementation 'androidx.work:work-runtime-ktx:2.11.0'

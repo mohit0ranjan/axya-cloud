@@ -71,7 +71,10 @@ internal class DirectTelegram private constructor(private val context: Context, 
       is TdApi.UpdateMessageSendFailed -> failures[update.oldMessageId] = "Telegram could not send this file. Retry the transfer."
     }
   }, null, null)
-  init { initialized.complete(client) }
+  init {
+    Client.execute(TdApi.SetLogVerbosityLevel(0))
+    initialized.complete(client)
+  }
   private fun clientParameters(root: File) {
     val p = TdApi.SetTdlibParameters().apply {
       databaseDirectory = root.absolutePath; filesDirectory = File(root,"files").absolutePath

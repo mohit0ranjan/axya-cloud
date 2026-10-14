@@ -73,14 +73,28 @@ verified integrity/deduplication hashes. Direct mode still requires the backend
 for registration/confirmation. It does not make metadata available offline.
 
 Checks: backend build + 53 server tests, app typecheck + 39 JavaScript tests.
-Android build 7 completed successfully (TDLib JNI + Kotlin compiled). Final build
-8 also includes cancellation serialization and direct-source cleanup:
-https://expo.dev/accounts/mohit0344/projects/axya/builds/9a64a050-1f50-40fc-b58e-3a21ca6a47ff
-Native compilation / device authorization / background recovery and production
-batch throughput remain release gates until verified.
+Final Android build 9 completed successfully, including TDLib JNI/Kotlin,
+cancellation serialization, source cleanup, notification progress and disabled
+verbose TDLib logs:
+https://expo.dev/accounts/mohit0344/projects/axya/builds/a04385de-a49b-49f3-a3d1-4ad71aaa63e6
+APK signing/content digest, original signing certificate continuity, deployed
+URLs, native classes and arm64 16 KiB alignment verified from the actual APK.
+Device authorization / background recovery / production batch throughput remain
+release gates until tested on a physical phone.
 
-Backend push/deploy held: database inspection found two uploading and seven
-queued staged sessions. A free Render redeploy can discard these pending bytes.
+Backend commit ea2eef3 was pushed after active admission counters cleared; CI
+passed and the new authenticated endpoints are live. Admission counters being
+empty does not mean every paused upload is completed. Render's ephemeral storage
+limitation remains for staged transfers; retained phone sources and chunk
+reconciliation are still required after a restart.
+
+Live Render contract checks passed: native configuration, owned reservation,
+forged completion rejection, cancellation persistence and post-cancel rejection.
+Full generated 12 MiB staging tests were not completed: one timed out and a
+second queued while user uploads were active. Both diagnostic sessions were
+cancelled; no production bulk speed result is claimed. Later source-only release
+changes are published by release tag without restarting the watched backend
+branch while transfers remain active.
 
 Local comparison, same file/account, alternating sequential uploads (two samples
 each): original GramJS four-worker uploader 5,841 / 4,565 ms; mtcute 4,134 / 963 ms.
@@ -114,7 +128,8 @@ remain available. No claim of physical-device completion is made.
 * **Telegram MTProto:** already integrated; optimize this delivery path first.
   Telegram explicitly recommends continuous local part queues, 512 KiB parts,
   and allows additional parallel transfer connections. Extra TCP sessions are
-  not implemented by this change.
+  implemented through mtcute's bounded upload pool; the GramJS fallback still
+  uses its existing sender.
   https://core.telegram.org/api/files
 * **TDLib (official C++ Telegram library):** candidate for a native Android
   direct-to-Telegram transport that removes the Render byte relay. Requires
@@ -143,7 +158,7 @@ queue changes need a new APK; the existing build 6 does not contain them.
 Local TypeScript build and server unit tests cover part retries, exact bytes,
 continuous scheduling, checksum, bounded concurrency, big-part RPC selection,
 and permanent-error handling. They are not Telegram speed measurements.
-Android native compilation and physical-device testing remain pending.
+Android native compilation passed; physical-device testing remains pending.
 Validation completed: server TypeScript build, 53 server unit tests, 39 app
 JavaScript unit tests, and git diff whitespace checks. The latter app tests do
 not compile the changed Kotlin implementation.

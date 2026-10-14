@@ -28,7 +28,7 @@
     "android": {
       "softwareKeyboardLayoutMode": "resize",
       "package": "com.mohit.axya",
-      "versionCode": 8,
+      "versionCode": 9,
       "permissions": [
         "CAMERA",
         "RECEIVE_BOOT_COMPLETED",

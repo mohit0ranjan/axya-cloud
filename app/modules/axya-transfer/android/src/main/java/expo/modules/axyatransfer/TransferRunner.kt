@@ -156,14 +156,19 @@ internal class TransferRunner(private val context: Context, private val owner: S
     TransferStore.patch(context,id) { it.put("status",if(status.first) "processing" else "uploading")
       it.put("bytesUploaded",minOf(size,status.second)); it.put("progress",(status.second.toDouble()/size*95).coerceIn(0.0,95.0))
       it.put("retryAt",0); it.put("retryCount",0); it.remove("error") }
+    notify(task.getJSONObject("file").getString("name"),if(status.first)95 else (status.second.toDouble()/size*95).coerceIn(0.0,95.0).toInt())
     if (status.first) { request(config,"/direct/$directId/complete",JSONObject()); guard(id); complete(task) }
   }
   private fun complete(task: JSONObject) {
     val id = task.getString("id")
-    TransferStore.patch(context, id) { it.put("status", "completed"); it.put("progress", 100); it.put("bytesUploaded", it.getJSONObject("file").getLong("size")); it.put("completedAt", System.currentTimeMillis()); it.remove("error") }
+    TransferStore.patch(context, id) {
+      if(it.optString("status") in listOf("paused","cancelled")) return@patch
+      it.put("status", "completed"); it.put("progress", 100); it.put("bytesUploaded", it.getJSONObject("file").getLong("size")); it.put("completedAt", System.currentTimeMillis()); it.remove("error")
+    }
+    if(TransferStore.all(context).find { it.optString("id")==id }?.optString("status")!="completed")throw TransferStopped()
     // Only remove the retained source once Telegram and metadata both confirm completion.
     runCatching { File(URI(task.getJSONObject("file").getString("uri"))).delete() }
-    if (task.optString("directId").isNotEmpty()) runCatching { DirectTelegram.get(context,owner)?.cleanup(id) }
+    DirectTelegram.cleanupSource(context,owner,id)
   }
   fun run(): Boolean {
     while (!stopped()) {
@@ -203,7 +208,8 @@ internal class TransferRunner(private val context: Context, private val owner: S
           }
         } finally { claims.remove(claim) }
       }
-      notify("Saving your files to Telegram", 0)
+      val pending=TransferStore.all(context).filter { it.optString("owner")==owner && it.optString("status") !in listOf("completed","cancelled","failed","paused") }
+      if(pending.isNotEmpty())notify("Uploading ${pending.size} files",pending.map { it.optDouble("progress") }.average().toInt().coerceIn(0,99))
       Thread.sleep(2500)
     }
     return true

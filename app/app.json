@@ -28,7 +28,7 @@
     "android": {
       "softwareKeyboardLayoutMode": "resize",
       "package": "com.mohit.axya",
-      "versionCode": 5,
+      "versionCode": 6,
       "permissions": [
         "CAMERA",
         "RECEIVE_BOOT_COMPLETED",
@@ -41,7 +41,9 @@
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.DOWNLOAD_WITHOUT_NOTIFICATION",
-        "android.permission.ACCESS_NETWORK_STATE"
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_IMAGES"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#4B6EF5",
@@ -100,7 +102,7 @@
       "enabled": true,
       "checkAutomatically": "ON_LOAD",
       "fallbackToCacheTimeout": 0,
-      "url": "https://u.expo.dev/6f616215-0dfa-43cd-a895-32751f6864d9"
+      "url": "https://u.expo.dev/c468dc65-fd62-4c5b-859b-447ada0f9502"
     },
     "plugins": [
       "expo-updates",
@@ -149,10 +151,10 @@
         }
       ]
     ],
-    "owner": "mohit5051",
+    "owner": "mohit0344",
     "extra": {
       "eas": {
-        "projectId": "6f616215-0dfa-43cd-a895-32751f6864d9"
+        "projectId": "c468dc65-fd62-4c5b-859b-447ada0f9502"
       }
     }
   }

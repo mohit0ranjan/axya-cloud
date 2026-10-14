@@ -34,6 +34,8 @@ Thumbs.db
 # Expo
 .expo/
 *.jks
+credentials.json
+.signing/
 *.p8
 *.p12
 *.key

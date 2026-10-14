@@ -93,6 +93,8 @@ It checks API readiness, web HTML, the web-to-API proxy and the hidden productio
 
 Once production checks pass, build the phone install artifact from `app`:
 
+The current EAS owner is `mohit0344`, project `@mohit0344/axya`, ID `c468dc65-fd62-4c5b-859b-447ada0f9502`. The app's OTA update URL uses this same project ID. The former owner's project is no longer referenced by the runtime app configuration. Release signing credentials are configured in the new account; the certificate was preserved so this release can update an APK signed with the existing key. Private signing backups and `credentials.json` are ignored by Git and must never be committed.
+
 ```sh
 npx eas-cli build --platform android --profile production-apk
 ```
